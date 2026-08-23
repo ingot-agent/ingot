@@ -38,7 +38,7 @@ func (home *Home) ResolveModuleQuery(ctx context.Context, specification string) 
 	if err != nil {
 		return "", "", err
 	}
-	defer os.RemoveAll(temporary)
+	defer func() { _ = os.RemoveAll(temporary) }()
 	if err := os.WriteFile(filepath.Join(temporary, "go.mod"), []byte("module ingot.local/version-query\n\ngo 1.24.0\n"), 0o600); err != nil {
 		return "", "", err
 	}
