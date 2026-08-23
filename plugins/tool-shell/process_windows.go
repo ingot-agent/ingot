@@ -3,8 +3,11 @@
 package toolshell
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -12,7 +15,7 @@ import (
 
 type processController struct{ job windows.Handle }
 
-func newProcessController(_ *exec.Cmd) (processController, error) {
+func newProcessController(command *exec.Cmd) (processController, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return processController{}, err
@@ -23,6 +26,10 @@ func newProcessController(_ *exec.Cmd) (processController, error) {
 		_ = windows.CloseHandle(job)
 		return processController{}, err
 	}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED
 	return processController{job: job}, nil
 }
 
@@ -32,10 +39,15 @@ func (c *processController) Attach(process *os.Process) error {
 		return err
 	}
 	defer windows.CloseHandle(handle)
-	return windows.AssignProcessToJobObject(c.job, handle)
+	if err := windows.AssignProcessToJobObject(c.job, handle); err != nil {
+		return err
+	}
+	return resumePrimaryThread(uint32(process.Pid))
 }
 
-func (c *processController) Terminate(_ *os.Process) error {
+func (c *processController) Terminate(process *os.Process) error {
+	_ = windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(process.Pid))
+	time.Sleep(250 * time.Millisecond)
 	return windows.TerminateJobObject(c.job, 1)
 }
 func (c *processController) Close() error {
@@ -45,4 +57,38 @@ func (c *processController) Close() error {
 	err := windows.CloseHandle(c.job)
 	c.job = 0
 	return err
+}
+
+func resumePrimaryThread(processID uint32) error {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("snapshot process threads: %w", err)
+	}
+	defer windows.CloseHandle(snapshot)
+
+	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
+	if err := windows.Thread32First(snapshot, &entry); err != nil {
+		return fmt.Errorf("enumerate process threads: %w", err)
+	}
+	for {
+		if entry.OwnerProcessID == processID {
+			thread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, entry.ThreadID)
+			if err != nil {
+				return fmt.Errorf("open primary process thread: %w", err)
+			}
+			_, resumeErr := windows.ResumeThread(thread)
+			closeErr := windows.CloseHandle(thread)
+			if resumeErr != nil {
+				return fmt.Errorf("resume primary process thread: %w", resumeErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close primary process thread: %w", closeErr)
+			}
+			return nil
+		}
+		entry.Size = uint32(unsafe.Sizeof(windows.ThreadEntry32{}))
+		if err := windows.Thread32Next(snapshot, &entry); err != nil {
+			return fmt.Errorf("find primary process thread for pid %d: %w", processID, err)
+		}
+	}
 }

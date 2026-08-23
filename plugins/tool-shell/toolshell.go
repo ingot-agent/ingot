@@ -144,10 +144,14 @@ func normalizeEnvironment(explicit map[string]string, inherited []string) ([]str
 		if err := validateEnvironmentKey(key); err != nil {
 			return nil, err
 		}
+		identity := environmentKeyIdentity(key)
+		if _, duplicate := seen[identity]; duplicate {
+			return nil, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
+		}
 		if strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
 			return nil, fmt.Errorf("environment value %q is invalid: %w", key, ErrInvalidConfig)
 		}
-		seen[key] = struct{}{}
+		seen[identity] = struct{}{}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -159,7 +163,8 @@ func normalizeEnvironment(explicit map[string]string, inherited []string) ([]str
 		if err := validateEnvironmentKey(key); err != nil {
 			return nil, err
 		}
-		if _, duplicate := seen[key]; duplicate {
+		identity := environmentKeyIdentity(key)
+		if _, duplicate := seen[identity]; duplicate {
 			return nil, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
 		}
 		value, ok := os.LookupEnv(key)
@@ -169,7 +174,7 @@ func normalizeEnvironment(explicit map[string]string, inherited []string) ([]str
 		if strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
 			return nil, fmt.Errorf("inherited environment value %q is invalid: %w", key, ErrInvalidConfig)
 		}
-		seen[key] = struct{}{}
+		seen[identity] = struct{}{}
 		result = append(result, key+"="+value)
 	}
 	return result, nil
@@ -180,6 +185,13 @@ func validateEnvironmentKey(key string) error {
 		return fmt.Errorf("invalid environment key %q: %w", key, ErrInvalidConfig)
 	}
 	return nil
+}
+
+func environmentKeyIdentity(key string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(key)
+	}
+	return key
 }
 
 func (t *shellTool) Definition() tool.Definition {
@@ -228,7 +240,8 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 	defer cancel()
 	command := exec.Command(t.config.shell, shellCommandArgs(*args.Command)...)
 	command.Dir = t.config.workingDirectory
-	command.Env = append([]string(nil), t.config.environment...)
+	command.Env = make([]string, len(t.config.environment))
+	copy(command.Env, t.config.environment)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return tool.Result{}, err
@@ -253,9 +266,10 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 		return tool.Result{}, err
 	}
 	collector := newOutputCollector(t.config.maxOutputBytes)
-	readDone := make(chan error, 2)
-	go copyOutput(stdout, collector, false, readDone)
-	go copyOutput(stderr, collector, true, readDone)
+	stdoutDone := make(chan error, 1)
+	stderrDone := make(chan error, 1)
+	go copyOutput(stdout, collector, false, stdoutDone)
+	go copyOutput(stderr, collector, true, stderrDone)
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
 	var waitErr error
@@ -267,16 +281,16 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 		if closeErr := controller.Close(); closeErr != nil {
 			cleanupErr = errors.Join(cleanupErr, closeErr)
 		}
-		<-readDone
-		<-readDone
+		<-stdoutDone
+		<-stderrDone
 		if cleanupErr != nil {
 			return tool.Result{}, errors.Join(runCtx.Err(), cleanupErr)
 		}
 		return tool.Result{}, runCtx.Err()
 	}
 	closeErr := controller.Close()
-	stdoutErr := <-readDone
-	stderrErr := <-readDone
+	stdoutErr := <-stdoutDone
+	stderrErr := <-stderrDone
 	if closeErr != nil {
 		return tool.Result{}, fmt.Errorf("close process controller: %w: %w", ErrProcessCleanup, closeErr)
 	}
@@ -319,6 +333,9 @@ func terminateAndWait(command *exec.Cmd, controller processController) error {
 		if err := controller.Terminate(command.Process); err != nil {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
+		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
 		if _, err := command.Process.Wait(); err != nil {
 			var doneErr *os.PathError
 			if !errors.As(err, &doneErr) && !errors.Is(err, os.ErrProcessDone) {
@@ -339,20 +356,28 @@ func terminateProcess(command *exec.Cmd, controller processController) error {
 	if command.Process == nil {
 		return nil
 	}
+	var cleanupErr error
 	if err := controller.Terminate(command.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return fmt.Errorf("%w: %w", ErrProcessCleanup, err)
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	if cleanupErr != nil {
+		return fmt.Errorf("%w: %w", ErrProcessCleanup, cleanupErr)
 	}
 	return nil
 }
 
 type outputCollector struct {
-	mu             sync.Mutex
-	stdoutLimit    int
-	stderrLimit    int
-	stdoutUsed     int
-	stderrUsed     int
-	stdout, stderr bytes.Buffer
-	truncated      bool
+	mu              sync.Mutex
+	stdoutLimit     int
+	stderrLimit     int
+	stdoutUsed      int
+	stderrUsed      int
+	stdout, stderr  bytes.Buffer
+	stdoutTruncated bool
+	stderrTruncated bool
 }
 
 func newOutputCollector(limit int) *outputCollector {
@@ -373,7 +398,11 @@ func (c *outputCollector) write(stderr bool, p []byte) {
 	if remaining > 0 {
 		if len(p) > remaining {
 			p = p[:remaining]
-			c.truncated = true
+			if stderr {
+				c.stderrTruncated = true
+			} else {
+				c.stdoutTruncated = true
+			}
 		}
 		if stderr {
 			_, _ = c.stderr.Write(p)
@@ -386,18 +415,43 @@ func (c *outputCollector) write(stderr bool, p []byte) {
 			c.stdoutUsed += len(p)
 		}
 	} else {
-		c.truncated = true
+		if stderr {
+			c.stderrTruncated = true
+		} else {
+			c.stdoutTruncated = true
+		}
 	}
 }
 func (c *outputCollector) format(code int) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stdout, stderr := c.stdout.String(), c.stderr.String()
-	if c.truncated {
+	if c.stdoutTruncated {
+		stdout = trimIncompleteUTF8Suffix(stdout)
 		stdout += "\n" + outputTruncationMarker
+	}
+	if c.stderrTruncated {
+		stderr = trimIncompleteUTF8Suffix(stderr)
+		stderr += "\n" + outputTruncationMarker
 	}
 	return fmt.Sprintf("exit_code: %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 }
+
+func trimIncompleteUTF8Suffix(value string) string {
+	if value == "" || utf8.ValidString(value) {
+		return value
+	}
+	data := []byte(value)
+	start := len(data) - 1
+	for start > 0 && !utf8.RuneStart(data[start]) {
+		start--
+	}
+	if utf8.FullRune(data[start:]) {
+		return value
+	}
+	return string(data[:start])
+}
+
 func copyOutput(reader io.Reader, collector *outputCollector, stderr bool, done chan<- error) {
 	_, err := io.Copy(outputWriter{collector: collector, stderr: stderr}, reader)
 	done <- err
