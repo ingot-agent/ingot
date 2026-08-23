@@ -10,7 +10,7 @@ import (
 	"github.com/ingot-agent/ingot/internal/builder"
 )
 
-var pluginHeaderPattern = regexp.MustCompile(`(?m)^[ \t]*\[\[plugins\]\][ \t]*(?:#[^\r\n]*)?\r?$`)
+var pluginHeaderPattern = regexp.MustCompile(`(?m)^[ \t]*\[\[plugins]][ \t]*(?:#[^\r\n]*)?\r?$`)
 var pluginAssignmentPattern = regexp.MustCompile(`^([ \t]*)(module|version|path)[ \t]*=`)
 
 // marshalDesiredPreservingComments reuses and reorders existing raw plugin
