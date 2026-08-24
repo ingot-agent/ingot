@@ -1,0 +1,44 @@
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+
+      - name: Test all Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' mod_file; do
+            module_dir="$(dirname "$mod_file")"
+            echo "::group::go test -race ${module_dir}/..."
+            (
+              cd "$module_dir"
+              GOWORK=off go test -race ./...
+            )
+            echo "::endgroup::"
+          done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
