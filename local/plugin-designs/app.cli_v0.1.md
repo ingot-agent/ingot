@@ -62,7 +62,7 @@ func New(
 
 - `Render` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
 - `Ask`和`ReadLine`共享一个Context-aware input gate，严格串行；
-- `AskRequest.Options` 非空时按顺序显示编号、label 和可选 description；`AllowTextInput` 为 true 时追加“Other”入口，选择该入口后的第二次读取仍属于同一次持锁的 Ask；
+- 所有`AskRequest`（包括无Options的纯文本提问）在输出前验证Prompt、Options和UTF-8；`AskRequest.Options` 非空时按顺序显示编号、label 和可选 description；`AllowTextInput` 为 true 时追加“Other”入口，选择该入口后的第二次读取仍属于同一次持锁的 Ask，空白自由输入继续提示而不作为有效回答返回；
 - 选择预设项返回其 label，自由输入返回原文；没有 options 时保持普通文本询问；
 - 等gate和等用户输入都观察Context；
 - TextEvent写普通输出，StatusEvent使用可降级状态行，ErrorEvent写stderr，Tool events使用稳定人类可读格式；
@@ -71,11 +71,13 @@ func New(
 - EOF返回可识别`io.EOF`；
 - 不关闭并非自己拥有的stdin/stdout/stderr。
 
-标准`bufio.Reader.ReadString`无法被Context可靠取消。Production实现必须使用platform terminal driver：Unix采用poll/select或可取消fd读取，Windows采用Console/handle等待；不得用无法join的永久blocked goroutine伪装取消。
+标准`bufio.Reader.ReadString`无法被Context可靠取消。Production实现必须使用platform terminal driver：Unix采用poll/select或可取消fd读取；Windows Console采用handle等待，重定向pipe必须先使用`PeekNamedPipe`确认有数据再执行同步Read，不能把pipe handle的signaled状态直接等同于可安全读取；不得用无法join的永久blocked goroutine伪装取消。
 
 ### 3.2 Lifecycle
 
-`New`检测TTY、初始化terminal mode和内部同步结构，不读取第一行并及时返回。Cleanup取消pending input、恢复terminal mode并等待Plugin-owned helper退出。没有可靠可取消input adapter的平台必须在startup fail-closed或声明不支持，不能违反Channel Contract。
+`New`检测TTY、初始化terminal mode和内部同步结构，不读取第一行并及时返回。同一进程的标准stdin/stdout/stderr是独占物理资源，只允许一个`app.cli/interaction`实例持有；第二个实例在startup返回`ErrTerminalInUse`，Cleanup完成后释放租约。`color=auto`在Windows只在stdout Console已启用Virtual Terminal Processing时输出ANSI颜色。
+
+Cleanup先关闭新调用入口并取消pending input，再以cleanup Context等待全部active input调用退出，最后恢复terminal mode并释放终端租约；超时返回Context错误且不能提前把仍被旧实例使用的租约交给新实例。没有可靠可取消input adapter的平台必须在startup fail-closed或声明不支持，不能违反Channel Contract。
 
 ## 4. `app` Component
 
@@ -128,7 +130,7 @@ Cleanup
 → return stored fatal loop error, if any
 ```
 
-`New`只同步返回Config、Dependency和有界初始化错误；不得读取第一条输入或把loop阻塞在constructor。goroutine、current Session和loop result均属于该Component instance，不能使用package-level mutable singleton。
+`New`只同步返回Config、Dependency和有界初始化错误；不得读取第一条输入或把loop阻塞在constructor。goroutine、current Session和loop result均属于该Component instance，不能使用package-level mutable singleton。CLI、Web、TUI等不同frontend实例可以并存；两个`app.cli`不能同时争用同一套进程标准终端，这属于显式物理资源排他而非全局Entry限制。
 
 `app`依赖`interaction` Component，因此generated reverse order会先Cleanup app loop，再Cleanup interaction terminal adapter。Cleanup等待loop时观察自己的cleanup Context；超时不得遗留Plugin-owned goroutine。Component不得调用`os.Exit`、发送进程信号、取消parent Context或使用隐藏全局channel影响进程生命周期。
 
@@ -166,9 +168,9 @@ Plugin不声明State；两个Component共享root Config。
 ### Interaction
 
 - Render并发不交错、event格式golden、TTY/plain降级；
-- 纯文本与选项 Ask、自由输入入口、Ask/ReadLine serialization和等待取消；
+- 纯文本与选项 Ask统一校验、自由输入入口及空白重试、Ask/ReadLine serialization和等待取消；
 - input EOF、limit、invalid UTF-8；
-- terminal mode restore和helper join；
+- terminal独占租约、Windows VT color判断、terminal mode restore和Context-aware active input join；
 - platform adapter conformance与race test。
 
 ### App
