@@ -4,6 +4,8 @@ package filesystemlocal
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -60,6 +62,9 @@ func New(
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
+	if err := securePlatform(); err != nil {
+		return Exports{}, nil, fmt.Errorf("workspace confinement is unavailable: %w: %w", ErrInvalidConfig, err)
+	}
 
 	absolute, err := filepath.Abs(cfg.Root)
 	if err != nil {
@@ -94,9 +99,27 @@ func New(
 		_ = rootHandle.Close()
 		return Exports{}, nil, fmt.Errorf("stat workspace root handle %q: %w: %w", cfg.Root, ErrInvalidConfig, err)
 	}
-	created := &localFS{root: canonical, rootHandle: rootHandle, rootInfo: rootInfo}
+	secureRoot, err := os.OpenRoot(canonical)
+	if err != nil {
+		_ = rootHandle.Close()
+		return Exports{}, nil, fmt.Errorf("securely open workspace root %q: %w: %w", cfg.Root, ErrInvalidConfig, err)
+	}
+	secureRootInfo, err := secureRoot.Stat(".")
+	if err != nil {
+		_ = secureRoot.Close()
+		_ = rootHandle.Close()
+		return Exports{}, nil, fmt.Errorf("stat secure workspace root %q: %w: %w", cfg.Root, ErrInvalidConfig, err)
+	}
+	if !os.SameFile(rootInfo, secureRootInfo) {
+		_ = secureRoot.Close()
+		_ = rootHandle.Close()
+		return Exports{}, nil, fmt.Errorf("workspace root changed while opening: %w: %w", ErrInvalidConfig, ErrRootChanged)
+	}
+	created := &localFS{root: canonical, rootHandle: rootHandle, secureRoot: secureRoot, rootInfo: rootInfo}
 	cleanup := sdk.Cleanup(func(ctx context.Context) error {
-		created.closeOnce.Do(func() { created.closeErr = rootHandle.Close() })
+		created.closeOnce.Do(func() {
+			created.closeErr = errors.Join(secureRoot.Close(), rootHandle.Close())
+		})
 		if created.closeErr != nil {
 			return created.closeErr
 		}
@@ -111,13 +134,14 @@ func New(
 type localFS struct {
 	root       string
 	rootHandle *os.File
+	secureRoot *os.Root
 	rootInfo   fs.FileInfo
 	closeOnce  sync.Once
 	closeErr   error
 }
 
 func (f *localFS) ensureRoot() error {
-	if f.rootHandle == nil || f.rootInfo == nil {
+	if f.rootHandle == nil || f.secureRoot == nil || f.rootInfo == nil {
 		return fmt.Errorf("workspace root handle is unavailable: %w", ErrRootChanged)
 	}
 	handleInfo, err := f.rootHandle.Stat()
@@ -128,7 +152,12 @@ func (f *localFS) ensureRoot() error {
 	if err != nil {
 		return fmt.Errorf("stat workspace root path: %w: %w", ErrRootChanged, err)
 	}
-	if !handleInfo.IsDir() || !pathInfo.IsDir() || !os.SameFile(f.rootInfo, handleInfo) || !os.SameFile(f.rootInfo, pathInfo) {
+	secureInfo, err := f.secureRoot.Stat(".")
+	if err != nil {
+		return fmt.Errorf("stat secure workspace root: %w: %w", ErrRootChanged, err)
+	}
+	if !handleInfo.IsDir() || !pathInfo.IsDir() || !secureInfo.IsDir() ||
+		!os.SameFile(f.rootInfo, handleInfo) || !os.SameFile(f.rootInfo, pathInfo) || !os.SameFile(f.rootInfo, secureInfo) {
 		return fmt.Errorf("workspace root identity changed: %w", ErrRootChanged)
 	}
 	return nil
@@ -141,7 +170,7 @@ func (f *localFS) ReadFile(ctx context.Context, logical string) ([]byte, error) 
 	if err := f.ensureRoot(); err != nil {
 		return nil, operationError("read", logical, err)
 	}
-	host, info, err := f.resolveExisting(logical)
+	info, err := f.resolveExisting(logical)
 	if err != nil {
 		return nil, operationError("read", logical, err)
 	}
@@ -152,11 +181,18 @@ func (f *localFS) ReadFile(ctx context.Context, logical string) ([]byte, error) 
 		return nil, operationError("read", logical, err)
 	}
 
-	file, err := os.Open(host)
+	file, err := f.secureRoot.Open(logical)
 	if err != nil {
 		return nil, operationError("read", logical, err)
 	}
 	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, operationError("read", logical, err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) {
+		return nil, operationError("read", logical, fmt.Errorf("path changed before open: %w", fs.ErrInvalid))
+	}
 
 	var output bytes.Buffer
 	buffer := make([]byte, 64*1024)
@@ -199,18 +235,14 @@ func (f *localFS) WriteFile(ctx context.Context, logical string, data []byte, mo
 	if parentLogical == "." && logical == "." {
 		return operationError("write", logical, fmt.Errorf("workspace root is not a file: %w", fs.ErrInvalid))
 	}
-	parentHost, parentInfo, err := f.resolveExisting(parentLogical)
+	parentInfo, err := f.resolveExisting(parentLogical)
 	if err != nil {
 		return operationError("write", logical, err)
 	}
 	if !parentInfo.IsDir() {
 		return operationError("write", logical, fmt.Errorf("parent is not a directory: %w", fs.ErrInvalid))
 	}
-	targetHost, err := f.joinValidated(logical)
-	if err != nil {
-		return operationError("write", logical, err)
-	}
-	if targetInfo, statErr := os.Lstat(targetHost); statErr == nil {
+	if targetInfo, statErr := f.secureRoot.Lstat(logical); statErr == nil {
 		if err := rejectSymlink(targetInfo); err != nil {
 			return operationError("write", logical, err)
 		}
@@ -221,16 +253,15 @@ func (f *localFS) WriteFile(ctx context.Context, logical string, data []byte, mo
 		return operationError("write", logical, statErr)
 	}
 
-	temporary, err := os.CreateTemp(parentHost, ".ingot-write-*")
+	temporary, temporaryLogical, err := f.createTemporary(parentLogical)
 	if err != nil {
 		return operationError("write", logical, err)
 	}
-	temporaryName := temporary.Name()
 	committed := false
 	defer func() {
 		_ = temporary.Close()
 		if !committed {
-			_ = os.Remove(temporaryName)
+			_ = f.secureRoot.Remove(temporaryLogical)
 		}
 	}()
 
@@ -260,7 +291,7 @@ func (f *localFS) WriteFile(ctx context.Context, logical string, data []byte, mo
 	if err := f.ensureRoot(); err != nil {
 		return operationError("write", logical, err)
 	}
-	if err := atomicReplace(temporaryName, targetHost); err != nil {
+	if err := atomicReplaceAt(f.rootHandle, temporaryLogical, logical); err != nil {
 		return operationError("write", logical, err)
 	}
 	committed = true
@@ -277,7 +308,7 @@ func (f *localFS) ReadDir(ctx context.Context, logical string) ([]fs.DirEntry, e
 	if err := f.ensureRoot(); err != nil {
 		return nil, operationError("read directory", logical, err)
 	}
-	host, info, err := f.resolveExisting(logical)
+	info, err := f.resolveExisting(logical)
 	if err != nil {
 		return nil, operationError("read directory", logical, err)
 	}
@@ -287,7 +318,19 @@ func (f *localFS) ReadDir(ctx context.Context, logical string) ([]fs.DirEntry, e
 	if err := f.ensureRoot(); err != nil {
 		return nil, operationError("read directory", logical, err)
 	}
-	entries, err := os.ReadDir(host)
+	directory, err := f.secureRoot.Open(logical)
+	if err != nil {
+		return nil, operationError("read directory", logical, err)
+	}
+	defer directory.Close()
+	openedInfo, err := directory.Stat()
+	if err != nil {
+		return nil, operationError("read directory", logical, err)
+	}
+	if !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+		return nil, operationError("read directory", logical, fmt.Errorf("path changed before open: %w", fs.ErrInvalid))
+	}
+	entries, err := directory.ReadDir(-1)
 	if err != nil {
 		return nil, operationError("read directory", logical, err)
 	}
@@ -312,7 +355,7 @@ func (f *localFS) Stat(ctx context.Context, logical string) (fs.FileInfo, error)
 	if err := f.ensureRoot(); err != nil {
 		return nil, operationError("stat", logical, err)
 	}
-	_, info, err := f.resolveExisting(logical)
+	info, err := f.resolveExisting(logical)
 	if err != nil {
 		return nil, operationError("stat", logical, err)
 	}
@@ -336,7 +379,13 @@ func (f *localFS) MkdirAll(ctx context.Context, logical string, mode fs.FileMode
 	if err != nil {
 		return operationError("mkdir", logical, err)
 	}
-	current := f.root
+	currentRoot := f.secureRoot
+	var openedRoots []*os.Root
+	defer func() {
+		for index := len(openedRoots) - 1; index >= 0; index-- {
+			_ = openedRoots[index].Close()
+		}
+	}()
 	for _, segment := range segments {
 		if err := checkContext(ctx); err != nil {
 			return err
@@ -344,13 +393,12 @@ func (f *localFS) MkdirAll(ctx context.Context, logical string, mode fs.FileMode
 		if err := f.ensureRoot(); err != nil {
 			return operationError("mkdir", logical, err)
 		}
-		current = filepath.Join(current, segment)
-		info, statErr := os.Lstat(current)
+		info, statErr := currentRoot.Lstat(segment)
 		if errors.Is(statErr, fs.ErrNotExist) {
-			if mkdirErr := os.Mkdir(current, mode.Perm()); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
+			if mkdirErr := currentRoot.Mkdir(segment, mode.Perm()); mkdirErr != nil && !errors.Is(mkdirErr, fs.ErrExist) {
 				return operationError("mkdir", logical, mkdirErr)
 			}
-			info, statErr = os.Lstat(current)
+			info, statErr = currentRoot.Lstat(segment)
 		}
 		if statErr != nil {
 			return operationError("mkdir", logical, statErr)
@@ -361,6 +409,21 @@ func (f *localFS) MkdirAll(ctx context.Context, logical string, mode fs.FileMode
 		if !info.IsDir() {
 			return operationError("mkdir", logical, fmt.Errorf("path component is not a directory: %w", fs.ErrExist))
 		}
+		nextRoot, openErr := currentRoot.OpenRoot(segment)
+		if openErr != nil {
+			return operationError("mkdir", logical, openErr)
+		}
+		openedInfo, statErr := nextRoot.Stat(".")
+		if statErr != nil {
+			_ = nextRoot.Close()
+			return operationError("mkdir", logical, statErr)
+		}
+		if !openedInfo.IsDir() || !os.SameFile(info, openedInfo) {
+			_ = nextRoot.Close()
+			return operationError("mkdir", logical, fmt.Errorf("path changed before open: %w", fs.ErrInvalid))
+		}
+		openedRoots = append(openedRoots, nextRoot)
+		currentRoot = nextRoot
 	}
 	if err := f.ensureRoot(); err != nil {
 		return operationError("mkdir", logical, err)
@@ -375,7 +438,7 @@ func (f *localFS) Remove(ctx context.Context, logical string) error {
 	if err := f.ensureRoot(); err != nil {
 		return operationError("remove", logical, err)
 	}
-	host, info, err := f.resolveExisting(logical)
+	info, err := f.resolveExisting(logical)
 	if err != nil {
 		return operationError("remove", logical, err)
 	}
@@ -391,7 +454,7 @@ func (f *localFS) Remove(ctx context.Context, logical string) error {
 	if err := f.ensureRoot(); err != nil {
 		return operationError("remove", logical, err)
 	}
-	if err := os.Remove(host); err != nil {
+	if err := f.secureRoot.Remove(logical); err != nil {
 		return operationError("remove", logical, err)
 	}
 	if err := f.ensureRoot(); err != nil {
@@ -407,7 +470,7 @@ func (f *localFS) Rename(ctx context.Context, source, destination string) error 
 	if err := f.ensureRoot(); err != nil {
 		return operationError("rename source", source, err)
 	}
-	sourceHost, _, err := f.resolveExisting(source)
+	_, err := f.resolveExisting(source)
 	if err != nil {
 		return operationError("rename source", source, err)
 	}
@@ -418,21 +481,20 @@ func (f *localFS) Rename(ctx context.Context, source, destination string) error 
 		return operationError("rename destination", destination, err)
 	}
 	destinationParent := path.Dir(destination)
-	parentHost, parentInfo, err := f.resolveExisting(destinationParent)
+	parentInfo, err := f.resolveExisting(destinationParent)
 	if err != nil {
 		return operationError("rename destination", destination, err)
 	}
 	if !parentInfo.IsDir() {
 		return operationError("rename destination", destination, fmt.Errorf("parent is not a directory: %w", fs.ErrInvalid))
 	}
-	destinationHost := filepath.Join(parentHost, filepath.Base(filepath.FromSlash(destination)))
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
 	if err := f.ensureRoot(); err != nil {
 		return operationError("rename", source+" -> "+destination, err)
 	}
-	if err := atomicRenameNoReplace(sourceHost, destinationHost); err != nil {
+	if err := atomicRenameNoReplaceAt(f.rootHandle, source, destination); err != nil {
 		return operationError("rename", source+" -> "+destination, err)
 	}
 	if err := f.ensureRoot(); err != nil {
@@ -441,66 +503,56 @@ func (f *localFS) Rename(ctx context.Context, source, destination string) error 
 	return nil
 }
 
-func (f *localFS) resolveExisting(logical string) (string, fs.FileInfo, error) {
+func (f *localFS) createTemporary(parentLogical string) (*os.File, string, error) {
+	for range 100 {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", err
+		}
+		name := ".ingot-write-" + hex.EncodeToString(random[:])
+		logical := name
+		if parentLogical != "." {
+			logical = path.Join(parentLogical, name)
+		}
+		file, err := f.secureRoot.OpenFile(logical, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return file, logical, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, "", err
+		}
+	}
+	return nil, "", fmt.Errorf("allocate temporary file: %w", fs.ErrExist)
+}
+
+func (f *localFS) resolveExisting(logical string) (fs.FileInfo, error) {
 	if err := f.ensureRoot(); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	segments, err := logicalSegments(logical)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	current := f.root
+	current := "."
 	var info fs.FileInfo
 	if len(segments) == 0 {
-		info, err = os.Lstat(current)
-		return current, info, err
+		info, err = f.secureRoot.Lstat(current)
+		return info, err
 	}
 	for _, segment := range segments {
-		current = filepath.Join(current, segment)
-		info, err = os.Lstat(current)
+		current = path.Join(current, segment)
+		info, err = f.secureRoot.Lstat(current)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
 		if err := rejectSymlink(info); err != nil {
-			return "", nil, err
+			return nil, err
 		}
 	}
-	if err := f.ensureBoundary(current); err != nil {
-		return "", nil, err
-	}
 	if err := f.ensureRoot(); err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	return current, info, nil
-}
-
-func (f *localFS) joinValidated(logical string) (string, error) {
-	if err := f.ensureRoot(); err != nil {
-		return "", err
-	}
-	segments, err := logicalSegments(logical)
-	if err != nil {
-		return "", err
-	}
-	joined := filepath.Join(append([]string{f.root}, segments...)...)
-	if err := f.ensureBoundary(joined); err != nil {
-		return "", err
-	}
-	if err := f.ensureRoot(); err != nil {
-		return "", err
-	}
-	return joined, nil
-}
-
-func (f *localFS) ensureBoundary(host string) error {
-	relative, err := filepath.Rel(f.root, host)
-	if err != nil {
-		return fmt.Errorf("compare workspace boundary: %w: %w", ErrPathEscape, err)
-	}
-	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
-		return fmt.Errorf("%w: %w", ErrPathEscape, fs.ErrPermission)
-	}
-	return nil
+	return info, nil
 }
 
 func logicalSegments(logical string) ([]string, error) {

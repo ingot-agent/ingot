@@ -150,7 +150,7 @@ var (
 
 ### 6.2 External mutation
 
-workspace 可能被 Plugin 外部进程并发修改。`New` 打开并持有 canonical root directory handle，所有 operation 在关键阶段重新验证 root identity；关键 mutation 继续使用平台原子 primitive。路径 ancestor 仍需在执行前验证，root identity 改变时 fail-closed。测试至少覆盖检查期间 root/path 被替换的场景。
+workspace 可能被 Plugin 外部进程并发修改。`New` 打开并持有 canonical root directory handle，所有 path operation 通过 Go 1.24 `os.Root` 或以该 handle 为锚点的 `*at`/Windows handle-relative primitive 执行，而不是在校验后重新按绝对路径解析。所有 operation 在关键阶段重新验证 root identity；root identity 改变时 fail-closed。无法提供 traversal-resistant root primitive 的平台在 `New` 时返回 unsupported。测试至少覆盖检查期间 root/path 被替换的场景。
 
 ## 7. Operation semantics
 
@@ -292,6 +292,6 @@ Plugin 不声明 `[state]`。workspace 是用户数据，不是 Plugin-owned per
 - module path 为 `github.com/ingot-agent/filesystem-local`；
 - workspace 内外的 symlink 均 fail-closed，root 在 `New` 时 canonicalize；
 - `New` 持有 canonical root directory handle，并在操作关键阶段验证 root identity；
-- Windows、Linux 和 macOS 提供平台原子 rename 适配；其他平台使用保守 fallback，正式支持矩阵由 Runtime Image 发布策略确定；
+- Windows、Linux 和 macOS 提供 handle/fd-relative 原子 no-replace rename；其他 Unix 平台的普通 replace 仍使用 fd-relative `renameat`，但 `Rename` 在缺少原子 no-replace primitive 时返回 `errors.ErrUnsupported`，不得使用 check-then-rename fallback；
 - `WriteFile` 保证同目录 replace 的 whole-file visibility，不承诺断电持久性；
 - Windows file mode 使用 `os.Chmod` 的平台 best-effort 语义。
