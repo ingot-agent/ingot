@@ -79,7 +79,7 @@ func writeGeneratedHeader(source *bytes.Buffer, imports map[string]string) {
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		fmt.Fprintf(source, "\t%s %q\n", imports[path], path)
+		_, _ = fmt.Fprintf(source, "\t%s %q\n", imports[path], path)
 	}
 	source.WriteString(")\n\n")
 }
@@ -95,7 +95,7 @@ func formatAndWriteGenerated(rootDirectory, name string, source []byte) error {
 }
 
 func writeRuntimeSupport(source *bytes.Buffer, sdkModule string) {
-	fmt.Fprintf(source, "const ingotSDKModule = %q\n\n", sdkModule)
+	_, _ = fmt.Fprintf(source, "const ingotSDKModule = %q\n\n", sdkModule)
 	source.WriteString(`
 const defaultCleanupTimeout = 10 * time.Second
 
@@ -190,21 +190,21 @@ func main() {
 	for index, argument := range os.Args[1:] {
 		if argument == "--ingot-check" {
 			if check || len(os.Args) != 2 {
-				fmt.Fprintln(os.Stderr, "--ingot-check must be the only runtime argument")
+				_, _ = fmt.Fprintln(os.Stderr, "--ingot-check must be the only runtime argument")
 				os.Exit(2)
 			}
 			check = true
 			continue
 		}
 		if strings.HasPrefix(argument, "--ingot-") {
-			fmt.Fprintf(os.Stderr, "unknown ingot runtime argument at index %d: %s\n", index, argument)
+			_, _ = fmt.Fprintf(os.Stderr, "unknown ingot runtime argument at index %d: %s\n", index, argument)
 			os.Exit(2)
 		}
 	}
 	home := os.Getenv("INGOT_HOME")
 	if home == "" {
 		userHome, err := os.UserHomeDir()
-		if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+		if err != nil { _, _ = fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 		home = filepath.Join(userHome, ".ingot")
 	}
 	configPath := os.Getenv("INGOT_CONFIG")
@@ -214,7 +214,7 @@ func main() {
 	processContext, stop := signal.NotifyContext(context.Background(), processSignals()...)
 	defer stop()
 	if err := run(processContext, configPath, stateRoot, check); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -225,15 +225,15 @@ func main() {
 func writeRuntimeConfig(source *bytes.Buffer, lock *Lock, aliases map[string]string) {
 	source.WriteString("type decodedConfigs struct {\n")
 	for i, plugin := range lock.Plugins {
-		fmt.Fprintf(source, "\tPlugin%d %s.Config\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)])
+		_, _ = fmt.Fprintf(source, "\tPlugin%d %s.Config\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)])
 	}
 	source.WriteString("}\n\nfunc decodeConfigs(path string) (decodedConfigs, error) {\n\tvar result decodedConfigs\n\tdata, err := os.ReadFile(path)\n\tif err != nil { return result, fmt.Errorf(\"read runtime config: %w\", err) }\n\ttables, err := sdkconfig.ResolveTables(data, []sdkconfig.PluginReference{\n")
 	for _, plugin := range lock.Plugins {
-		fmt.Fprintf(source, "\t\t{ID: %q, Name: %q},\n", plugin.ID, plugin.Name)
+		_, _ = fmt.Fprintf(source, "\t\t{ID: %q, Name: %q},\n", plugin.ID, plugin.Name)
 	}
 	source.WriteString("\t})\n\tif err != nil { return result, err }\n")
 	for i, plugin := range lock.Plugins {
-		fmt.Fprintf(source, "\tresult.Plugin%d, err = sdkconfig.Decode[%s.Config](tables[%q])\n\tif err != nil { return result, fmt.Errorf(%q, err) }\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)], plugin.ID, "decode config for plugin "+plugin.ID+": %w")
+		_, _ = fmt.Fprintf(source, "\tresult.Plugin%d, err = sdkconfig.Decode[%s.Config](tables[%q])\n\tif err != nil { return result, fmt.Errorf(%q, err) }\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)], plugin.ID, "decode config for plugin "+plugin.ID+": %w")
 	}
 	source.WriteString("\treturn result, nil\n}\n\n")
 }
@@ -251,25 +251,25 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 	for _, component := range graph.CreationOrder {
 		number := componentNumber[component]
 		alias := aliases[component.ImportPath]
-		fmt.Fprintf(source, "\tcomponentContext%d := sdkconfig.WithStateDir(ctx, filepath.Join(stateRoot, %q))\n", number, component.PluginID)
-		fmt.Fprintf(source, "\tif err := os.MkdirAll(filepath.Join(stateRoot, %q), 0o700); err != nil { return cleanupAll(ctx, cleanups, err) }\n", component.PluginID)
-		fmt.Fprintf(source, "\tdeps%d := %s.Dependencies{\n", number, alias)
+		_, _ = fmt.Fprintf(source, "\tcomponentContext%d := sdkconfig.WithStateDir(ctx, filepath.Join(stateRoot, %q))\n", number, component.PluginID)
+		_, _ = fmt.Fprintf(source, "\tif err := os.MkdirAll(filepath.Join(stateRoot, %q), 0o700); err != nil { return cleanupAll(ctx, cleanups, err) }\n", component.PluginID)
+		_, _ = fmt.Fprintf(source, "\tdeps%d := %s.Dependencies{\n", number, alias)
 		for _, dependency := range component.DependencyList {
-			fmt.Fprintf(source, "\t\t%s: %s,\n", dependency.Name, dependencyExpression(dependency, componentNumber, aliases))
+			_, _ = fmt.Fprintf(source, "\t\t%s: %s,\n", dependency.Name, dependencyExpression(dependency, componentNumber, aliases))
 		}
 		source.WriteString("\t}\n")
 		for _, dependency := range component.DependencyList {
 			path := component.ID + ".Dependencies." + dependency.Name
 			if dependency.Cardinality == CardinalityMany {
-				fmt.Fprintf(source, "\tif err := validateCollection(reflect.ValueOf(deps%d.%s), %q, true); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
+				_, _ = fmt.Fprintf(source, "\tif err := validateCollection(reflect.ValueOf(deps%d.%s), %q, true); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
 			} else {
-				fmt.Fprintf(source, "\tif err := validateRequired(reflect.ValueOf(deps%d.%s), %q); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
+				_, _ = fmt.Fprintf(source, "\tif err := validateRequired(reflect.ValueOf(deps%d.%s), %q); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
 			}
 		}
-		fmt.Fprintf(source, "\texports%d, cleanup, constructErr := %s.New(componentContext%d, configs.Plugin%d, deps%d)\n", number, alias, number, pluginNumber[component.PluginID], number)
-		fmt.Fprintf(source, "\t_ = exports%d\n", number)
+		_, _ = fmt.Fprintf(source, "\texports%d, cleanup, constructErr := %s.New(componentContext%d, configs.Plugin%d, deps%d)\n", number, alias, number, pluginNumber[component.PluginID], number)
+		_, _ = fmt.Fprintf(source, "\t_ = exports%d\n", number)
 		source.WriteString("\tif cleanup != nil { cleanups = append(cleanups, cleanup) }\n")
-		fmt.Fprintf(source, "\tif constructErr != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(%q, constructErr)) }\n", "construct "+component.ID+": %w")
+		_, _ = fmt.Fprintf(source, "\tif constructErr != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(%q, constructErr)) }\n", "construct "+component.ID+": %w")
 	}
 	source.WriteString("\tif check { return cleanupAll(ctx, cleanups, nil) }\n\t<-ctx.Done()\n\treturn cleanupAll(ctx, cleanups, nil)\n}\n")
 }
@@ -297,13 +297,13 @@ func dependencyExpression(dependency *Dependency, componentNumber map[*Component
 	case CardinalityMany:
 		var expression strings.Builder
 		target := typeString(dependency.Target)
-		fmt.Fprintf(&expression, "func() []%s { values := make([]%s, 0)", target, target)
+		_, _ = fmt.Fprintf(&expression, "func() []%s { values := make([]%s, 0)", target, target)
 		for _, provider := range dependency.Providers {
 			suffix := ""
 			if provider.Flatten {
 				suffix = "..."
 			}
-			fmt.Fprintf(&expression, "; values = append(values, %s%s)", sourceExpression(provider), suffix)
+			_, _ = fmt.Fprintf(&expression, "; values = append(values, %s%s)", sourceExpression(provider), suffix)
 		}
 		expression.WriteString("; return values }()")
 		return expression.String()

@@ -179,7 +179,7 @@ type Exports struct { Clients []httpx.Client }
 type client struct{}
 func (*client) Do(context.Context, *http.Request) (*http.Response, error) { return nil, nil }
 func New(_ context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
-	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer file.Close(); _, err = fmt.Fprintln(file, "`+packageName+`"); return err }
+	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "`+packageName+`"); return err }
 	if cfg.Null { var value *client; return Exports{Clients: []httpx.Client{value}}, cleanup, nil }
 	return Exports{Clients: []httpx.Client{&client{}}}, cleanup, nil
 }
@@ -211,7 +211,7 @@ type Dependencies struct {
 }
 type Exports struct{}
 func New(_ context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
-	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer file.Close(); _, err = fmt.Fprintln(file, "consumer"); return err }
+	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "consumer"); return err }
 	if cfg.Fail { return Exports{}, cleanup, errors.New("requested constructor failure") }
 	return Exports{}, cleanup, nil
 }

@@ -565,11 +565,11 @@ func (l *Lock) RestoreRootModule(directory string) error {
 		if plugin.SourceKind == "dev" {
 			version = replacements[plugin.ID].SyntheticVersion
 		}
-		fmt.Fprintf(&goMod, "\t%s %s\n", plugin.ID, version)
+		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", plugin.ID, version)
 		seen[plugin.ID] = true
 	}
 	if !seen[l.SDK.ModulePath] {
-		fmt.Fprintf(&goMod, "\t%s %s\n", l.SDK.ModulePath, l.SDK.Version)
+		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", l.SDK.ModulePath, l.SDK.Version)
 		seen[l.SDK.ModulePath] = true
 	}
 	// Go's pruned module graph requires the root to retain selected transitive
@@ -577,13 +577,13 @@ func (l *Lock) RestoreRootModule(directory string) error {
 	// -mod=readonly enforce the exact selected graph before package loading.
 	for _, item := range l.Modules {
 		if !seen[item.Path] {
-			fmt.Fprintf(&goMod, "\t%s %s // indirect\n", item.Path, item.Version)
+			_, _ = fmt.Fprintf(&goMod, "\t%s %s // indirect\n", item.Path, item.Version)
 			seen[item.Path] = true
 		}
 	}
 	goMod.WriteString(")\n")
 	for _, replacement := range l.Replacements {
-		fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(filepath.ToSlash(replacement.DevPath)))
+		_, _ = fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(filepath.ToSlash(replacement.DevPath)))
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(goMod.String()), nil)
 	if err != nil {

@@ -22,12 +22,12 @@ func (home *Home) acquire(ctx context.Context) (func(), error) {
 			return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			file.Close()
+			_ = file.Close()
 			return nil, err
 		}
 		select {
 		case <-ctx.Done():
-			file.Close()
+			_ = file.Close()
 			return nil, ctx.Err()
 		case <-time.After(25 * time.Millisecond):
 		}

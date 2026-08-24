@@ -156,7 +156,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(staging)
+	defer func() { _ = os.RemoveAll(staging) }()
 	if err := writeResolveRoot(staging, options, sources); err != nil {
 		return nil, err
 	}
@@ -321,16 +321,16 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 	content.WriteString("\n\nrequire (\n")
 	seen := map[string]bool{}
 	for _, source := range sources {
-		fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, source.version)
+		_, _ = fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, source.version)
 		seen[source.plugin.Module] = true
 	}
 	if !seen[options.SDKModule] {
-		fmt.Fprintf(&content, "\t%s %s\n", options.SDKModule, options.SDKVersion)
+		_, _ = fmt.Fprintf(&content, "\t%s %s\n", options.SDKModule, options.SDKVersion)
 	}
 	content.WriteString(")\n")
 	for _, source := range sources {
 		if source.devPath != "" {
-			fmt.Fprintf(&content, "\nreplace %s => %s\n", source.plugin.Module, goModQuote(filepath.ToSlash(source.devPath)))
+			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", source.plugin.Module, goModQuote(filepath.ToSlash(source.devPath)))
 		}
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(content.String()), nil)

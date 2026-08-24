@@ -31,12 +31,12 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 	}
 	homePath, arguments, err := parseGlobalHome(arguments)
 	if err != nil {
-		fmt.Fprintln(cli.Stderr, err)
+		_, _ = fmt.Fprintln(cli.Stderr, err)
 		return 2
 	}
 	home, err := ingothome.Open(homePath)
 	if err != nil {
-		fmt.Fprintln(cli.Stderr, err)
+		_, _ = fmt.Fprintln(cli.Stderr, err)
 		return 1
 	}
 	if len(arguments) == 0 {
@@ -52,7 +52,7 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		lock, err := home.Resolve(ctx, builder.ResolveOptions{})
 		if err == nil {
 			id, _ := lock.ImageID()
-			fmt.Fprintln(cli.Stdout, id)
+			_, _ = fmt.Fprintln(cli.Stdout, id)
 		}
 		return cli.result(err)
 	case "build":
@@ -61,7 +61,7 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		}
 		result, err := home.Build(ctx)
 		if err == nil {
-			fmt.Fprintln(cli.Stdout, result.ImageID)
+			_, _ = fmt.Fprintln(cli.Stdout, result.ImageID)
 		}
 		return cli.result(err)
 	case "apply":
@@ -70,7 +70,7 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		}
 		result, err := home.Apply(ctx, builder.ResolveOptions{})
 		if err == nil {
-			fmt.Fprintln(cli.Stdout, result.ImageID)
+			_, _ = fmt.Fprintln(cli.Stdout, result.ImageID)
 		}
 		return cli.result(err)
 	case "status":
@@ -106,7 +106,7 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		err := home.Rollback(ctx, imageID)
 		if err == nil {
 			current, _ := home.Current()
-			fmt.Fprintln(cli.Stdout, current)
+			_, _ = fmt.Fprintln(cli.Stdout, current)
 		}
 		return cli.result(err)
 	case "gc":
@@ -344,10 +344,10 @@ func (cli CLI) result(err error) int {
 	if err == nil {
 		return 0
 	}
-	fmt.Fprintln(cli.Stderr, err)
+	_, _ = fmt.Fprintln(cli.Stderr, err)
 	return 1
 }
-func (cli CLI) usageError(message string) int { fmt.Fprintln(cli.Stderr, message); return 2 }
+func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <resolve|build|apply|status|inspect|rollback|gc|plugin ...|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <resolve|build|apply|status|inspect|rollback|gc|plugin ...|runtime command>")
 }

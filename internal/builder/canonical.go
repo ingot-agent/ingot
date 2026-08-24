@@ -103,7 +103,7 @@ func writeCanonicalString(out *bytes.Buffer, value string) {
 			out.WriteString(`\r`)
 		default:
 			if character < 0x20 {
-				fmt.Fprintf(out, `\u%04x`, character)
+				_, _ = fmt.Fprintf(out, `\u%04x`, character)
 			} else {
 				out.WriteRune(character)
 			}
