@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -57,14 +56,10 @@ func executeHook(ctx context.Context, hook normalizedHook, input []byte) ([]byte
 	command.Dir = hook.dir
 	command.Env = append(make([]string, 0, len(hook.environment)), hook.environment...)
 	command.Stdin = bytes.NewReader(input)
-	stdoutPipe, err := command.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderrPipe, err := command.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
+	stdout := &capturedOutput{limit: hook.maxOutput}
+	stderr := &capturedOutput{limit: hook.maxOutput}
+	command.Stdout = stdout
+	command.Stderr = stderr
 	controller, err := newProcessController(command)
 	if err != nil {
 		return nil, err
@@ -75,12 +70,6 @@ func executeHook(ctx context.Context, hook normalizedHook, input []byte) ([]byte
 	if err := controller.Attach(command.Process); err != nil {
 		return nil, errors.Join(processCleanupError(err), terminateAndWait(command, controller))
 	}
-	stdout := &capturedOutput{limit: hook.maxOutput}
-	stderr := &capturedOutput{limit: hook.maxOutput}
-	stdoutDone := make(chan error, 1)
-	stderrDone := make(chan error, 1)
-	go func() { _, copyErr := io.Copy(stdout, stdoutPipe); stdoutDone <- copyErr }()
-	go func() { _, copyErr := io.Copy(stderr, stderrPipe); stderrDone <- copyErr }()
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
 	var waitErr error
@@ -90,15 +79,11 @@ func executeHook(ctx context.Context, hook normalizedHook, input []byte) ([]byte
 		cleanupErr := terminateProcess(command, controller)
 		waitErr = <-waitDone
 		closeErr := processCleanupError(controller.Close())
-		stdoutErr := <-stdoutDone
-		stderrErr := <-stderrDone
-		return nil, errors.Join(runCtx.Err(), cleanupErr, closeErr, stdoutErr, stderrErr, waitErr)
+		return nil, errors.Join(runCtx.Err(), cleanupErr, closeErr, waitErr)
 	}
 	closeErr := processCleanupError(controller.Close())
-	stdoutErr := <-stdoutDone
-	stderrErr := <-stderrDone
-	if closeErr != nil || stdoutErr != nil || stderrErr != nil {
-		return nil, errors.Join(closeErr, stdoutErr, stderrErr)
+	if closeErr != nil {
+		return nil, closeErr
 	}
 	if stdout.Truncated() || stderr.Truncated() {
 		return nil, fmt.Errorf("hook output exceeded %d bytes", hook.maxOutput)

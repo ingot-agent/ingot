@@ -242,14 +242,9 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 	command.Dir = t.config.workingDirectory
 	command.Env = make([]string, len(t.config.environment))
 	copy(command.Env, t.config.environment)
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		return tool.Result{}, err
-	}
-	stderr, err := command.StderrPipe()
-	if err != nil {
-		return tool.Result{}, err
-	}
+	collector := newOutputCollector(t.config.maxOutputBytes)
+	command.Stdout = outputWriter{collector: collector}
+	command.Stderr = outputWriter{collector: collector, stderr: true}
 	controller, err := newProcessController(command)
 	if err != nil {
 		return tool.Result{}, err
@@ -265,11 +260,6 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 		}
 		return tool.Result{}, err
 	}
-	collector := newOutputCollector(t.config.maxOutputBytes)
-	stdoutDone := make(chan error, 1)
-	stderrDone := make(chan error, 1)
-	go copyOutput(stdout, collector, false, stdoutDone)
-	go copyOutput(stderr, collector, true, stderrDone)
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
 	var waitErr error
@@ -281,24 +271,14 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 		if closeErr := controller.Close(); closeErr != nil {
 			cleanupErr = errors.Join(cleanupErr, closeErr)
 		}
-		<-stdoutDone
-		<-stderrDone
 		if cleanupErr != nil {
 			return tool.Result{}, errors.Join(runCtx.Err(), cleanupErr)
 		}
 		return tool.Result{}, runCtx.Err()
 	}
 	closeErr := controller.Close()
-	stdoutErr := <-stdoutDone
-	stderrErr := <-stderrDone
 	if closeErr != nil {
 		return tool.Result{}, fmt.Errorf("close process controller: %w: %w", ErrProcessCleanup, closeErr)
-	}
-	if stdoutErr != nil {
-		return tool.Result{}, fmt.Errorf("read stdout: %w", stdoutErr)
-	}
-	if stderrErr != nil {
-		return tool.Result{}, fmt.Errorf("read stderr: %w", stderrErr)
 	}
 	if waitErr != nil {
 		var exitErr *exec.ExitError
@@ -336,9 +316,9 @@ func terminateAndWait(command *exec.Cmd, controller processController) error {
 		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			cleanupErr = errors.Join(cleanupErr, err)
 		}
-		if _, err := command.Process.Wait(); err != nil {
-			var doneErr *os.PathError
-			if !errors.As(err, &doneErr) && !errors.Is(err, os.ErrProcessDone) {
+		if err := command.Wait(); err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) && !errors.Is(err, os.ErrProcessDone) {
 				cleanupErr = errors.Join(cleanupErr, err)
 			}
 		}
@@ -450,11 +430,6 @@ func trimIncompleteUTF8Suffix(value string) string {
 		return value
 	}
 	return string(data[:start])
-}
-
-func copyOutput(reader io.Reader, collector *outputCollector, stderr bool, done chan<- error) {
-	_, err := io.Copy(outputWriter{collector: collector, stderr: stderr}, reader)
-	done <- err
 }
 
 type outputWriter struct {
