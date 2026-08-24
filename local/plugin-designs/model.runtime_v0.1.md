@@ -1,6 +1,6 @@
 # `model.runtime` Plugin v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Implemented v0.1
 > Exports：`model.Runtime`、`model.StreamingRuntime`
 
 ## 1. 定位与 Contract
@@ -45,14 +45,14 @@ type Config struct {
 
 ```text
 deep-copy request
-→ materialize provider/model defaults
+→ materialize provider/model defaults once
 → complete 或 stream interceptor chain
-→ terminal provider lookup
-→ provider method
-→ normalize provider/model fields
+→ terminal validate final provider/model and lookup
+→ provider method and terminal-only response normalization
+→ deep-copy returned response
 ```
 
-Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或按 copy-on-write 改写 Provider/Model 选择；terminal 对改写后的值重新 lookup。
+Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或改写本次调用拥有的 Provider/Model 选择；terminal 对改写后的最终值执行 lookup。默认值只在进入 chain 前填充一次，terminal 不会在 Interceptor 把字段改回空字符串后再次补默认值，此时按缺失 Provider/Model 报错。
 
 规则：
 
@@ -62,8 +62,11 @@ Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或按 co
 - Stream 要求选中 Value 实现 `model.StreamingProvider`，否则返回 `model.ErrStreamingUnsupported`；
 - StreamHandler error由 Provider/chain原样传播；
 - 不在 Runtime 隐式 fallback或 retry；相关能力通过显式 Interceptor实现；
-- `Messages`、`Tools`、`Stop`、所有 RawMessage 深拷贝，避免默认填充或恶意 Interceptor修改 caller aggregate；
-- Response aggregate 在返回前归一化为独立值。
+- `Messages`、`Tools`、`Stop`、所有 RawMessage和指针字段递归深拷贝，避免默认填充或恶意 Interceptor修改 caller aggregate；复制必须保留 `nil` 与“非 nil 空值”的 presence 差异，不能把 caller 明确提供的空 slice/RawMessage折叠为 `nil`；
+- 只有 terminal 实际调用 Provider 后才执行来源归一化：`Response.Provider` 强制设为最终选中的 Named Provider，`Response.Model` 非空时保留 Provider报告的实际模型，空时填入最终 Request.Model；
+- terminal 成功响应必须具有 assistant role、非空 Provider/Model、合法 UTF-8文本、非负且满足 `TotalTokens == InputTokens + OutputTokens` 的 Usage；每个 ToolCall必须有非空且合法 UTF-8的 ID/Name和合法 JSON Arguments，否则包装 `ErrInvalidResponse`；
+- Interceptor short-circuit 返回的 Response 不冒充某次 Provider调用，不填充或覆盖其 Provider/Model，只做 ownership deep-copy；
+- Response aggregate 在返回前归一化为独立值，Provider或Interceptor在返回后不得影响 caller持有的数据。
 
 ## 5. 并发、生命周期与错误
 
@@ -84,6 +87,6 @@ name = "default"
 package = "."
 ```
 
-测试覆盖 Provider empty/duplicate/typed nil、default resolution、unknown provider/model、request deep copy、complete/stream interceptor完整 trace、short-circuit、streaming unsupported、handler error、并发 Provider选择和 race test。
+测试覆盖 Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Interceptor改写后不二次补默认值、unknown provider/model、request/response deep copy与 presence保留、错误路径 partial response ownership、terminal响应校验、complete/stream interceptor完整 trace、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发 Provider选择和 race test。
 
 验收要求 Complete 与 Stream 行为对称但 chain独立；Runtime 不包含任何 OpenAI-specific logic。
