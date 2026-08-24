@@ -26,6 +26,8 @@ const defaultMaxLineBytes = 64 * 1024
 var (
 	// ErrInvalidConfig indicates invalid terminal configuration.
 	ErrInvalidConfig = errors.New("invalid app.cli interaction config")
+	// ErrTerminalInUse indicates that another app.cli instance owns the process terminal.
+	ErrTerminalInUse = errors.New("process terminal is already in use")
 	// ErrInputLimit indicates that one complete input line exceeded its byte limit.
 	ErrInputLimit = appcli.ErrInputLimit
 	// ErrInvalidInput indicates invalid UTF-8 terminal input.
@@ -46,19 +48,28 @@ type inputDriver interface {
 }
 
 type channel struct {
-	runCtx      context.Context
-	cancel      context.CancelFunc
-	driver      inputDriver
-	inputGate   chan struct{}
-	outputMu    sync.Mutex
-	lifecycleMu sync.Mutex
-	closed      bool
-	active      sync.WaitGroup
-	stdout      io.Writer
-	stderr      io.Writer
-	color       bool
-	maxLine     int
-	askPrompt   string
+	runCtx       context.Context
+	cancel       context.CancelFunc
+	driver       inputDriver
+	inputGate    chan struct{}
+	outputMu     sync.Mutex
+	lifecycleMu  sync.Mutex
+	closed       bool
+	active       int
+	activeDone   chan struct{}
+	resourceOnce sync.Once
+	resourceErr  error
+	releaseLease func()
+	stdout       io.Writer
+	stderr       io.Writer
+	color        bool
+	maxLine      int
+	askPrompt    string
+}
+
+var processTerminalLease struct {
+	sync.Mutex
+	held bool
 }
 
 // New initializes terminal state and returns promptly without reading input.
@@ -73,6 +84,10 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	if err != nil {
 		return Exports{}, nil, err
 	}
+	releaseLease, ok := acquireTerminalLease()
+	if !ok {
+		return Exports{}, nil, ErrTerminalInUse
+	}
 	runCtx, cancel := context.WithCancel(ctx)
 	instance := &channel{
 		runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
@@ -83,25 +98,42 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	driver, err := newTerminalInput(os.Stdin, os.Stdout)
 	if err != nil {
 		cancel()
+		releaseLease()
 		return Exports{}, nil, fmt.Errorf("initialize terminal input: %w", err)
 	}
 	instance.driver = driver
-	cleanup := sdk.Cleanup(func(cleanupCtx context.Context) error {
-		instance.lifecycleMu.Lock()
-		instance.closed = true
-		instance.cancel()
-		instance.lifecycleMu.Unlock()
-		instance.active.Wait()
-		closeErr := instance.driver.Close()
-		if cleanupCtx == nil {
-			return errors.Join(closeErr, context.Canceled)
-		}
-		if cleanupCtx.Err() != nil {
-			return errors.Join(closeErr, cleanupCtx.Err())
-		}
-		return closeErr
-	})
+	instance.releaseLease = releaseLease
+	cleanup := sdk.Cleanup(instance.cleanup)
 	return Exports{Channel: instance}, cleanup, nil
+}
+
+func (c *channel) cleanup(ctx context.Context) error {
+	c.lifecycleMu.Lock()
+	c.closed = true
+	c.cancel()
+	activeDone := c.activeDone
+	c.lifecycleMu.Unlock()
+
+	if activeDone != nil {
+		if ctx == nil {
+			return context.Canceled
+		}
+		select {
+		case <-activeDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	c.resourceOnce.Do(func() {
+		c.resourceErr = c.driver.Close()
+		if c.releaseLease != nil {
+			c.releaseLease()
+		}
+	})
+	if ctx == nil {
+		return errors.Join(c.resourceErr, context.Canceled)
+	}
+	return errors.Join(c.resourceErr, ctx.Err())
 }
 
 type normalizedConfig struct {
@@ -134,21 +166,21 @@ func normalizeConfig(cfg appcli.InteractionConfig) (normalizedConfig, error) {
 	if maxLine < 1 {
 		return normalizedConfig{}, fmt.Errorf("max_line_bytes must be positive: %w", ErrInvalidConfig)
 	}
-	color := mode == "always" || (mode == "auto" && isTerminal(os.Stdout))
+	color := mode == "always" || (mode == "auto" && supportsColor(os.Stdout))
 	return normalizedConfig{askPrompt: cfg.AskPrompt, color: color, maxLine: maxLine}, nil
 }
 
 func (c *channel) Ask(ctx context.Context, request interaction.AskRequest) (interaction.AskResponse, error) {
 	line, err := c.withInput(ctx, func(callCtx context.Context) (string, error) {
+		if err := validateAskRequest(request); err != nil {
+			return "", err
+		}
 		if len(request.Options) == 0 {
 			prompt := request.Prompt
 			if prompt != "" {
 				prompt += "\n"
 			}
 			return c.readLineHeld(callCtx, prompt+c.askPrompt)
-		}
-		if err := validateAskRequest(request); err != nil {
-			return "", err
 		}
 		return c.readChoiceHeld(callCtx, request)
 	})
@@ -173,9 +205,12 @@ func (c *channel) withInput(ctx context.Context, operation func(context.Context)
 		c.lifecycleMu.Unlock()
 		return "", interaction.ErrUnavailable
 	}
-	c.active.Add(1)
+	if c.active == 0 {
+		c.activeDone = make(chan struct{})
+	}
+	c.active++
 	c.lifecycleMu.Unlock()
-	defer c.active.Done()
+	defer c.finishInput()
 	callCtx, cancel := mergeContext(ctx, c.runCtx)
 	defer cancel()
 	select {
@@ -185,6 +220,16 @@ func (c *channel) withInput(ctx context.Context, operation func(context.Context)
 	}
 	defer func() { c.inputGate <- struct{}{} }()
 	return operation(callCtx)
+}
+
+func (c *channel) finishInput() {
+	c.lifecycleMu.Lock()
+	c.active--
+	if c.active == 0 {
+		close(c.activeDone)
+		c.activeDone = nil
+	}
+	c.lifecycleMu.Unlock()
 }
 
 func (c *channel) readLineHeld(ctx context.Context, prompt string) (string, error) {
@@ -223,7 +268,7 @@ func (c *channel) readChoiceHeld(ctx context.Context, request interaction.AskReq
 			case selected >= 1 && selected <= len(request.Options):
 				return request.Options[selected-1].Label, nil
 			case request.AllowTextInput && selected == len(request.Options)+1:
-				return c.readLineHeld(ctx, "Enter your response:\n"+c.askPrompt)
+				return c.readNonEmptyLineHeld(ctx, "Enter your response:\n"+c.askPrompt)
 			default:
 				prompt = "Please choose one of the listed numbers.\n" + c.askPrompt
 				continue
@@ -238,6 +283,19 @@ func (c *channel) readChoiceHeld(ctx context.Context, request interaction.AskReq
 			return line, nil
 		}
 		prompt = "Please choose one of the listed options.\n" + c.askPrompt
+	}
+}
+
+func (c *channel) readNonEmptyLineHeld(ctx context.Context, prompt string) (string, error) {
+	for {
+		line, err := c.readLineHeld(ctx, prompt)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(line) != "" {
+			return line, nil
+		}
+		prompt = "Please enter a response.\n" + c.askPrompt
 	}
 }
 
@@ -338,9 +396,21 @@ func mergeContext(caller, owner context.Context) (context.Context, context.Cance
 	}
 }
 
-func isTerminal(file *os.File) bool {
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+func acquireTerminalLease() (func(), bool) {
+	processTerminalLease.Lock()
+	defer processTerminalLease.Unlock()
+	if processTerminalLease.held {
+		return nil, false
+	}
+	processTerminalLease.held = true
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			processTerminalLease.Lock()
+			processTerminalLease.held = false
+			processTerminalLease.Unlock()
+		})
+	}, true
 }
 
 func isNil(value any) bool {
