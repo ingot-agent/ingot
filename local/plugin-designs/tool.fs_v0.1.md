@@ -1,6 +1,6 @@
 # `tool.fs` Plugin v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Implemented v0.1
 > Component：`default`  
 > Dependencies：`filesystem.FS`  
 > Exports：`[]tool.Tool`

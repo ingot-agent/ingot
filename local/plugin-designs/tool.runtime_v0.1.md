@@ -1,6 +1,6 @@
 # `tool.runtime` Plugin v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Implemented v0.1
 > Dependencies：`[]tool.Tool`、`[]tool.Interceptor`  
 > Exports：`tool.Runtime`
 

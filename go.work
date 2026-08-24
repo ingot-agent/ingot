@@ -11,6 +11,12 @@ use (
 	./plugins/tool-shell
 	./plugins/interceptor-approval
 	./plugins/tool-runtime
+	./plugins/model-openai-compatible
+	./plugins/model-runtime
+	./plugins/prompt-default
+	./plugins/agent-default
+	./plugins/app-cli
+	./plugins/interceptor-script
 )
 
 replace github.com/ingot-agent/sdk v0.1.0 => ../sdk

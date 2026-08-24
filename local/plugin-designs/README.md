@@ -19,17 +19,17 @@ Plugin 设计必须遵循：
 | [`http.default`](./http.default_v0.1.md) | Implemented v0.1 | `httpx.Client` | Context authority、请求不可变、共享连接池 |
 | [`filesystem.local`](./filesystem.local_v0.1.md) | Implemented v0.1 | `filesystem.FS` | workspace boundary、安全路径、原子文件操作 |
 | [`session.jsonl`](./session.jsonl_v0.1.md) | Implemented v0.1 | `session.Store` | append total order、持久化格式、State compatibility |
-| [`tool.shell`](./tool.shell_v0.1.md) | Draft | `[]tool.Tool` | 子进程树、环境隔离、输出与时间边界 |
-| [`tool.fs`](./tool.fs_v0.1.md) | Draft | `[]tool.Tool` | Filesystem-to-Tool typed adapter |
-| [`tool.ask`](./tool.ask_v0.1.md) | Draft | `[]tool.Tool` | Tool内同步用户交互 |
-| [`tool.runtime`](./tool.runtime_v0.1.md) | Draft | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
-| [`interceptor.approval`](./interceptor.approval_v0.1.md) | Draft | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
-| [`interceptor.script`](./interceptor.script_v0.1.md) | Draft | typed Interceptors | 外部策略/审计hook协议与进程回收 |
-| [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Draft | `[]sdk.Named[model.Provider]` | Chat Completions和SSE协议适配 |
-| [`model.runtime`](./model.runtime_v0.1.md) | Draft | complete/stream runtimes | Named Provider选择与独立拦截链 |
-| [`prompt.default`](./prompt.default_v0.1.md) | Draft | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
-| [`agent.default`](./agent.default_v0.1.md) | Draft | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
-| [`app.cli`](./app.cli_v0.1.md) | Draft / lifecycle gate | `interaction.Channel`、待新增`application.Runner` | Composite frontend和process lifecycle |
+| [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | 子进程树、环境隔离、输出与时间边界 |
+| [`tool.fs`](./tool.fs_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Filesystem-to-Tool typed adapter |
+| [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
+| [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
+| [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
+| [`interceptor.script`](./interceptor.script_v0.1.md) | Implemented v0.1 | typed Interceptors | 外部策略/审计hook协议与进程回收 |
+| [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Implemented v0.1 | `[]sdk.Named[model.Provider]` | Chat Completions和SSE协议适配 |
+| [`model.runtime`](./model.runtime_v0.1.md) | Implemented v0.1 | complete/stream runtimes | Named Provider选择与独立拦截链 |
+| [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
+| [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
+| [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel`（app Component无导出） | Composite frontend后台循环和Cleanup |
 
 共14个Plugin、15个Component；`app.cli`包含`interaction`和`app`两个Component。
 
@@ -43,12 +43,12 @@ Batch 4  prompt.default / agent.default
 Batch 5  app.cli / interceptor.script hardening
 ```
 
-`app.cli/app`实现前需要冻结`application.Runner`或等价的显式SDK Contract，使generated main能观察CLI正常结束并执行reverse Cleanup。该问题记录在app.cli设计中，不能通过`os.Exit`或隐藏全局channel绕过。
+`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend局部结束不控制整个process，不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。
 
 ## 共同实现约定
 
 - 一个 Plugin 对应一个独立 Go Module；canonical Plugin ID 来自其 `go.mod` module path。
-- Manifest 显式声明 `[[components]]`，首批三个 Plugin 均只有 `default` Component。
+- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余13个Plugin均只有`default` Component。
 - Component package 提供当前 package 的 `Dependencies`、`Exports` 和精确签名的 `New`。
 - `New` 可重复、可并发调用，每次创建独立实例，不使用 package-level mutable singleton。
 - Config 只读；需要保留 slice、map、pointer 或 bytes 时先复制。
@@ -59,4 +59,4 @@ Batch 5  app.cli / interceptor.script hardening
 
 ## 文档状态
 
-首批三个 Plugin 已按各自文档实现；其“v0.1 实现决策”记录首版实际选择。其余文档仍为实现前 Draft，标为“待确认”的内容在编码前需要形成明确结论。
+14个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。
