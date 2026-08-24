@@ -19,6 +19,8 @@ import (
 const (
 	defaultMaxPromptBytes   = 16 * 1024
 	defaultMaxResponseBytes = 16 * 1024
+	defaultMaxOptions       = 8
+	defaultMaxOptionsBytes  = 16 * 1024
 )
 
 var (
@@ -30,12 +32,16 @@ var (
 	ErrPromptLimit = errors.New("ask prompt exceeds configured limit")
 	// ErrResponseLimit indicates that the response exceeds its configured bound.
 	ErrResponseLimit = errors.New("ask response exceeds configured limit")
+	// ErrOptionsLimit indicates that the options exceed their configured bounds.
+	ErrOptionsLimit = errors.New("ask options exceed configured limit")
 )
 
-// Config bounds prompt and response sizes.
+// Config bounds prompt, option, and response sizes.
 type Config struct {
 	MaxPromptBytes   int `toml:"max_prompt_bytes"`
 	MaxResponseBytes int `toml:"max_response_bytes"`
+	MaxOptions       int `toml:"max_options"`
+	MaxOptionsBytes  int `toml:"max_options_bytes"`
 }
 
 // Dependencies contains the user interaction channel.
@@ -49,6 +55,44 @@ type Exports struct{ Tools []tool.Tool }
 type askTool struct {
 	channel                          interaction.Channel
 	maxPromptBytes, maxResponseBytes int
+	maxOptions, maxOptionsBytes      int
+}
+
+type askArguments struct {
+	Prompt  *string            `json:"prompt"`
+	Options askOptionArguments `json:"options"`
+}
+
+type askOptionArgument struct {
+	Label       *string `json:"label"`
+	Description string  `json:"description"`
+}
+
+type askOptionArguments struct {
+	present bool
+	values  []askOptionArgument
+}
+
+func (o *askOptionArguments) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("options must be an array")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var values []askOptionArgument
+	if err := decoder.Decode(&values); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("options contain trailing JSON")
+		}
+		return err
+	}
+	o.present = true
+	o.values = values
+	return nil
 }
 
 // New validates dependencies and creates the ask_user tool.
@@ -76,14 +120,31 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 	if maxResponse < 1 {
 		return Exports{}, nil, fmt.Errorf("max_response_bytes must be positive: %w", ErrInvalidConfig)
 	}
-	return Exports{Tools: []tool.Tool{&askTool{channel: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse}}}, nil, nil
+	maxOptions := cfg.MaxOptions
+	if maxOptions == 0 {
+		maxOptions = defaultMaxOptions
+	}
+	if maxOptions < 1 {
+		return Exports{}, nil, fmt.Errorf("max_options must be positive: %w", ErrInvalidConfig)
+	}
+	maxOptionsBytes := cfg.MaxOptionsBytes
+	if maxOptionsBytes == 0 {
+		maxOptionsBytes = defaultMaxOptionsBytes
+	}
+	if maxOptionsBytes < 1 {
+		return Exports{}, nil, fmt.Errorf("max_options_bytes must be positive: %w", ErrInvalidConfig)
+	}
+	return Exports{Tools: []tool.Tool{&askTool{
+		channel: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse,
+		maxOptions: maxOptions, maxOptionsBytes: maxOptionsBytes,
+	}}}, nil, nil
 }
 
 func (t *askTool) Definition() tool.Definition {
 	return tool.Definition{
 		Name:        "ask_user",
-		Description: "Ask the user a question and return the response.",
-		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["prompt"],"properties":{"prompt":{"type":"string","minLength":1}}}`),
+		Description: "Ask the user a question, optionally with choices and a free-form response option.",
+		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["prompt"],"properties":{"prompt":{"type":"string","minLength":1},"options":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["label"],"properties":{"label":{"type":"string","minLength":1},"description":{"type":"string"}}}}}}`),
 	}
 }
 
@@ -97,9 +158,7 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 	if call.Name != "" && call.Name != "ask_user" {
 		return tool.Result{}, fmt.Errorf("call name %q: %w", call.Name, ErrInvalidArguments)
 	}
-	var args struct {
-		Prompt *string `json:"prompt"`
-	}
+	var args askArguments
 	if err := decodeObject(call.Arguments, &args); err != nil {
 		return tool.Result{}, err
 	}
@@ -109,7 +168,15 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 	if len([]byte(*args.Prompt)) > t.maxPromptBytes {
 		return tool.Result{}, ErrPromptLimit
 	}
-	response, err := t.channel.Ask(ctx, interaction.AskRequest{Prompt: *args.Prompt})
+	options, err := t.validateOptions(args.Options)
+	if err != nil {
+		return tool.Result{}, err
+	}
+	response, err := t.channel.Ask(ctx, interaction.AskRequest{
+		Prompt:         *args.Prompt,
+		Options:        options,
+		AllowTextInput: len(options) > 0,
+	})
 	if err != nil {
 		return tool.Result{}, err
 	}
@@ -120,6 +187,39 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 		return tool.Result{}, ErrResponseLimit
 	}
 	return tool.Result{Content: response.Text}, nil
+}
+
+func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.AskOption, error) {
+	if !raw.present {
+		return nil, nil
+	}
+	if len(raw.values) == 0 {
+		return nil, fmt.Errorf("options must not be empty: %w", ErrInvalidArguments)
+	}
+	if len(raw.values) > t.maxOptions {
+		return nil, ErrOptionsLimit
+	}
+	options := make([]interaction.AskOption, 0, len(raw.values))
+	labels := make(map[string]struct{}, len(raw.values))
+	totalBytes := 0
+	for index, option := range raw.values {
+		if option.Label == nil || *option.Label == "" || !utf8.ValidString(*option.Label) {
+			return nil, fmt.Errorf("option %d label must be a non-empty UTF-8 string: %w", index, ErrInvalidArguments)
+		}
+		if !utf8.ValidString(option.Description) {
+			return nil, fmt.Errorf("option %d description must be UTF-8: %w", index, ErrInvalidArguments)
+		}
+		if _, exists := labels[*option.Label]; exists {
+			return nil, fmt.Errorf("option %d duplicates label %q: %w", index, *option.Label, ErrInvalidArguments)
+		}
+		labels[*option.Label] = struct{}{}
+		totalBytes += len([]byte(*option.Label)) + len([]byte(option.Description))
+		if totalBytes > t.maxOptionsBytes {
+			return nil, ErrOptionsLimit
+		}
+		options = append(options, interaction.AskOption{Label: *option.Label, Description: option.Description})
+	}
+	return options, nil
 }
 
 func decodeObject(raw json.RawMessage, target any) error {

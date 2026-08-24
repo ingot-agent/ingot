@@ -471,7 +471,7 @@ SDK 详细 API 与语义见《ingot SDK v0.1 设计方案》。
 | `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes |
 | `tool.shell` | shell tool | Export `[]tool.Tool` |
 | `tool.fs` | file tools | Consume `filesystem.FS`; export `[]tool.Tool` |
-| `tool.ask` | 同步用户询问 | Consume `interaction.Channel`; export `[]tool.Tool` |
+| `tool.ask` | 同步文本/选项询问，选项模式保留自由输入 | Consume `interaction.Channel`; export `[]tool.Tool` |
 | `tool.runtime` | tool lookup、校验与 interceptor chain | Consume tools/interceptors; export `tool.Runtime` |
 | `interceptor.approval` | tool approval | Consume optional interaction; export `[]tool.Interceptor` |
 | `interceptor.script` | runtime-configured executable hook | Export typed interceptors |

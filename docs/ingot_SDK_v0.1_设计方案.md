@@ -816,14 +816,26 @@ type Channel interface {
     Render(context.Context, Event) error
 }
 
+type AskOption struct {
+    Label       string
+    Description string
+}
+
 type AskRequest struct {
-    Prompt string
+    Prompt         string
+    Options        []AskOption
+    AllowTextInput bool
 }
 
 type AskResponse struct {
     Text string
 }
 ```
+
+`Options` 非空时，frontend 按声明顺序展示选项。选择预设项时，
+`AskResponse.Text` 返回对应 `Label`；`AllowTextInput` 为 true 时，frontend
+还必须展示一项自由输入入口，并原样返回用户输入。`Options` 为空时保持普通文本
+询问语义。aggregate input 的 ownership 规则同样适用于 `Options` slice。
 
 Event 使用 SDK 封闭类型集合：
 

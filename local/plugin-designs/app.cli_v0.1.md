@@ -1,6 +1,6 @@
 # `app.cli` Composite Plugin v0.1 设计方案
 
-> 状态：Draft，存在一个SDK生命周期前置决策  
+> 状态：Implemented v0.1
 > Components：`interaction`、`app`
 
 ## 1. 定位
@@ -62,6 +62,8 @@ func New(
 
 - `Render` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
 - `Ask`和`ReadLine`共享一个Context-aware input gate，严格串行；
+- `AskRequest.Options` 非空时按顺序显示编号、label 和可选 description；`AllowTextInput` 为 true 时追加“Other”入口，选择该入口后的第二次读取仍属于同一次持锁的 Ask；
+- 选择预设项返回其 label，自由输入返回原文；没有 options 时保持普通文本询问；
 - 等gate和等用户输入都观察Context；
 - TextEvent写普通输出，StatusEvent使用可降级状态行，ErrorEvent写stderr，Tool events使用稳定人类可读格式；
 - 非TTY时关闭color和in-place status，只输出plain text；
@@ -77,7 +79,7 @@ func New(
 
 ## 4. `app` Component
 
-现有文档可表达其Dependencies：
+`app` 是 graph leaf，不向其他 Component 导出 Capability：
 
 ```go
 type Dependencies struct {
@@ -85,6 +87,14 @@ type Dependencies struct {
     Interaction interaction.Channel
     Store       session.Store
 }
+
+type Exports struct{}
+
+func New(
+    ctx context.Context,
+    cfg root.Config,
+    deps Dependencies,
+) (Exports, sdk.Cleanup, error)
 ```
 
 CLI commands首版固定为：
@@ -95,63 +105,42 @@ CLI commands首版固定为：
 | `/use <id>` | 验证Load后切换Session |
 | `/list` | List并渲染Session摘要 |
 | `/help` | 展示命令 |
-| `/exit` | 正常结束application run |
+| `/exit` | 正常停止当前CLI frontend loop，不终止整个进程 |
 
 非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。`Result.Output`只用于无Interaction的其他Agent consumer。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
 
 App loop本身串行处理terminal输入；Agent运行期间不读取下一条顶层命令，因此`tool.ask`/approval可以通过同一个Channel取得input gate并读取用户响应。
 
-## 5. 必须解决的Application生命周期Contract
+## 5. 普通 Component 生命周期
 
-现有SDK只有`agent.Runtime`和Component `New/Cleanup`：
-
-- `New`必须及时返回，不能把CLI loop阻塞在constructor；
-- 若在background goroutine运行，现有generated main只等待process signal，无法观察`/exit`、EOF或loop error；
-- `os.Exit`会跳过generated reverse Cleanup；
-- Context只提供取消观察，Component无法安全取消parent process context。
-
-因此在实现`app` Component前必须补充一个显式root application Contract。推荐新增SDK package：
-
-```go
-package application
-
-type Runner interface {
-    Run(context.Context) error
-}
-```
-
-然后app Component：
-
-```go
-type Exports struct {
-    Runner application.Runner
-}
-```
-
-Generated main作为Builder-owned root consumer要求恰好一个`application.Runner`：
+顶层架构已规定 UI、TUI、server、watcher 与 daemon 统一使用普通 `New`/`Cleanup` 生命周期。`app` Component 不定义全局 Entry/Runner，也不要求 graph 中只能存在一个 frontend：
 
 ```text
-construct graph
-→ startup validation
-→ Runner.Run(processCtx)
-→ Run返回或signal取消
-→ cancel process context
-→ reverse Cleanup
-→ exit
+New
+→ validate Config and Dependencies
+→ derive instance-owned run context
+→ start CLI loop in one owned goroutine
+→ return promptly
+
+Cleanup
+→ cancel instance run context
+→ wait for CLI loop to finish
+→ return stored fatal loop error, if any
 ```
 
-这保持CLI是普通Component、退出可传播error且Cleanup不被绕过。备选方案是新增`process.Controller` Capability，但会把parent cancellation authority暴露给任意Component；v0.1推荐Runner方案。
+`New`只同步返回Config、Dependency和有界初始化错误；不得读取第一条输入或把loop阻塞在constructor。goroutine、current Session和loop result均属于该Component instance，不能使用package-level mutable singleton。
 
-在该Contract冻结前，`app.cli/app`状态为设计完成但实现blocked；不得通过special package import、global channel或`os.Exit`临时绕过。
+`app`依赖`interaction` Component，因此generated reverse order会先Cleanup app loop，再Cleanup interaction terminal adapter。Cleanup等待loop时观察自己的cleanup Context；超时不得遗留Plugin-owned goroutine。Component不得调用`os.Exit`、发送进程信号、取消parent Context或使用隐藏全局channel影响进程生命周期。
 
-## 6. Runner semantics
+## 6. Loop结束与错误语义
 
-- 同一个Runner instance只允许一次active Run；重复/并发调用返回`ErrAlreadyRunning`；
-- Run在caller goroutine执行loop，不自行转后台；
-- `/exit`和stdin EOF正常返回nil；
-- Context cancel返回Context error或按generated main shutdown policy归一化为正常退出；该政策需由application Contract文档固定；
-- Agent/Store/Interaction错误添加command/session上下文并返回或渲染后继续，按错误分类决定：Context/terminal fatal error终止，单个Agent turn业务error渲染后继续；
-- current Session只在Runner instance内存中，不写Plugin State；Session本身由Store持久化。
+- `/exit`和stdin EOF正常停止当前CLI loop并记录nil result；Component保持已构造但inactive，直到进程随后执行Cleanup；
+- `/exit`不等于退出整个Runtime。CLI、TUI、Web、server等普通Component可以同时存在，任一frontend结束不能替其他Component决定process lifetime；
+- process Context取消时，pending input和Agent调用观察派生Context并结束；由generated main按正常路径执行reverse Cleanup；
+- 单条命令、Store或Agent业务错误添加command/session上下文，通过`interaction.ErrorEvent`渲染后继续下一条输入；
+- terminal adapter fatal error或无法继续的内部错误best-effort渲染后停止loop，并保存在instance中；后续Cleanup返回该错误。顶层v0.1没有后台任务错误上报Capability，因此它不会反向取消整个进程；
+- Cleanup主动取消造成的`context.Canceled`/`DeadlineExceeded`不作为loop failure重复报告；取消前已记录的独立fatal error仍返回；
+- current Session只保存在app instance内存中，不写Plugin State；Session数据本身由Store持久化。
 
 ## 7. Manifest
 
@@ -177,19 +166,21 @@ Plugin不声明State；两个Component共享root Config。
 ### Interaction
 
 - Render并发不交错、event格式golden、TTY/plain降级；
-- Ask/ReadLine serialization和等待取消；
+- 纯文本与选项 Ask、自由输入入口、Ask/ReadLine serialization和等待取消；
 - input EOF、limit、invalid UTF-8；
 - terminal mode restore和helper join；
 - platform adapter conformance与race test。
 
 ### App
 
-- empty startup自动Create Session；
+- 首次普通输入时自动Create Session；
 - new/use/list/help/exit；
 - Agent input/result/error；
 - Agent运行中Ask复用Channel无deadlock；
-- EOF、signal和fatal error走完整reverse Cleanup；
-- Runner single-active-call；
+- `New`及时返回且每个instance只有一个owned loop；
+- `/exit`和EOF只停止当前frontend、不取消parent process Context；
+- process Context cancel、Cleanup cancel/join和fatal loop error回收；
+- 多个app/frontend instance可以并存且状态隔离；
 - fake clock、Store、Agent、Channel的deterministic transcript tests。
 
-验收前置条件：application Runner SDK Contract、Builder root-consumer规则和generated main lifecycle test全部落地。
+验收以顶层 `New`/`Cleanup` lifecycle conformance为准，不新增SDK application Contract或Builder root-consumer特例。
