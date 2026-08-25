@@ -415,7 +415,10 @@ func TestResponseProjectionFailureIsAfterFailure(t *testing.T) {
 
 func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 	hook := helperHook(t, "sleep-after")
-	hook.TimeoutSeconds = 1
+	// The race detector can make a fresh Windows helper process take more than
+	// one second to start. Keep the timeout below the helper's five-second sleep
+	// while leaving enough headroom for the before phase to complete.
+	hook.TimeoutSeconds = 3
 	exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
 	if err != nil {
 		t.Fatal(err)
