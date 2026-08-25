@@ -164,7 +164,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ## 7. Interceptor、ownership与错误
 
-Agent Interceptors按MANY stable order组合，第一个最外层。Interceptor short-circuit时不进入turn terminal，也不持久化user message，但仍处于same-session gate内。
+Agent Interceptors按MANY stable order组合，第一个最外层。Interceptor short-circuit时不进入turn terminal，也不持久化user message，但仍处于same-session gate内。Interceptor可以替换Input，但不得改变SessionID；Runtime在进入terminal前拒绝SessionID改写，避免绕过按原始Session获取的serialization gate。
 
 所有从Store、Prompt、Model、Tool得到的aggregate在保留前deep-copy；传给下游的Request不复用caller Turn内部mutable data（Turn当前只有string/ID）。
 

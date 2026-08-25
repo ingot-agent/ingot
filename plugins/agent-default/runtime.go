@@ -160,7 +160,11 @@ func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error
 	}
 	defer release()
 
+	originalSessionID := turn.SessionID
 	terminal := func(callCtx context.Context, selected agent.Turn) (agent.Result, error) {
+		if selected.SessionID != originalSessionID {
+			return agent.Result{}, fmt.Errorf("agent interceptor changed session id from %q to %q: %w", originalSessionID, selected.SessionID, ErrInvalidTurn)
+		}
 		return r.runTurn(callCtx, selected)
 	}
 	next := pipeline.Compose[agent.Turn, agent.Result](terminal, r.interceptors...)

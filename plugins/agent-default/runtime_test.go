@@ -13,6 +13,7 @@ import (
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -101,6 +102,12 @@ func (passthroughPrompt) Render(_ context.Context, request prompt.Request) ([]mo
 }
 
 type recordingInteraction struct{ events []interaction.Event }
+
+type agentInterceptorFunc func(context.Context, agent.Turn, pipeline.Next[agent.Turn, agent.Result]) (agent.Result, error)
+
+func (f agentInterceptorFunc) Invoke(ctx context.Context, turn agent.Turn, next pipeline.Next[agent.Turn, agent.Result]) (agent.Result, error) {
+	return f(ctx, turn, next)
+}
 
 func (r *recordingInteraction) Ask(context.Context, interaction.AskRequest) (interaction.AskResponse, error) {
 	return interaction.AskResponse{}, errors.New("unused")
@@ -342,5 +349,37 @@ func TestAgentSerializesSameSession(t *testing.T) {
 		if err := <-done; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestAgentRejectsInterceptorSessionIDRewriteBeforeTerminal(t *testing.T) {
+	t.Parallel()
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"original": {}, "rewritten": {}}}
+	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: "unused"}}}}
+	rewrite := agentInterceptorFunc(func(ctx context.Context, turn agent.Turn, next pipeline.Next[agent.Turn, agent.Result]) (agent.Result, error) {
+		turn.SessionID = "rewritten"
+		return next(ctx, turn)
+	})
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
+		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{}, Interceptors: []agent.Interceptor{rewrite},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "original", Input: "hello"})
+	if !errors.Is(err, ErrInvalidTurn) {
+		t.Fatalf("error=%v", err)
+	}
+	models.mu.Lock()
+	modelCalls := len(models.requests)
+	models.mu.Unlock()
+	if modelCalls != 0 {
+		t.Fatalf("model calls=%d, want 0", modelCalls)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.entries["original"]) != 0 || len(store.entries["rewritten"]) != 0 {
+		t.Fatalf("entries=%#v", store.entries)
 	}
 }
