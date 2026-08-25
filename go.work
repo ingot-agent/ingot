@@ -13,6 +13,7 @@ use (
 	./plugins/tool-runtime
 	./plugins/model-openai-compatible
 	./plugins/model-runtime
+	./plugins/context-compact
 	./plugins/prompt-default
 	./plugins/agent-default
 	./plugins/app-cli
