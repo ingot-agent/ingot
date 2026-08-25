@@ -1,3 +1,6 @@
 .idea
 .vscode
 dist
+# JetBrains IDE project files
+.idea/
+*.iml

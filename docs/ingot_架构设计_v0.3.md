@@ -449,7 +449,7 @@ SDK 提供：
 
 - `sdk.Cleanup`、`sdk.Optional[T]`、`sdk.Named[T]`；
 - typed pipeline Interceptor；
-- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`interaction`、`agent` Contract；
+- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract；
 - Context、错误、并发与 ownership 语义。
 
 Runtime 的主要 chokepoint：
@@ -471,13 +471,14 @@ SDK 详细 API 与语义见《ingot SDK v0.1 设计方案》。
 | `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes |
 | `tool.shell` | shell tool | Export `[]tool.Tool` |
 | `tool.fs` | file tools | Consume `filesystem.FS`; export `[]tool.Tool` |
-| `tool.ask` | 同步用户询问 | Consume `interaction.Channel`; export `[]tool.Tool` |
+| `tool.ask` | 同步文本/选项询问，选项模式保留自由输入 | Consume `interaction.Channel`; export `[]tool.Tool` |
 | `tool.runtime` | tool lookup、校验与 interceptor chain | Consume tools/interceptors; export `tool.Runtime` |
 | `interceptor.approval` | tool approval | Consume optional interaction; export `[]tool.Interceptor` |
 | `interceptor.script` | runtime-configured executable hook | Export typed interceptors |
 | `session.jsonl` | append-oriented session store | Export `session.Store`; own persistent State |
 | `prompt.default` | prompt rendering | Consume contributors; export `prompt.Renderer` |
-| `agent.default` | default agent turn | Consume model/tool/session/prompt/interaction/interceptors; export `agent.Runtime` |
+| `context.compact` | non-destructive invocation context compaction | Consume `model.Runtime`与`session.Store`; export `contextwindow.Compactor` |
+| `agent.default` | default agent turn | Consume model/tool/session/prompt/optional context compactor/interaction/interceptors; export `agent.Runtime` |
 | `app.cli` | CLI frontend | Composite：interaction Component + app Component |
 
 ```mermaid
@@ -494,10 +495,13 @@ flowchart LR
     CLIChannel["app.cli/interaction"] -->|interaction.Channel| Ask
     CLIChannel -->|interaction.Channel| Approval
 
+    ModelRuntime -->|model.Runtime| Compactor["context.compact"]
     ModelRuntime -->|model.Runtime| Agent["agent.default"]
     ToolRuntime -->|tool.Runtime| Agent
     Session["session.jsonl"] -->|session.Store| Agent
+    Session -->|session.Store| Compactor
     Prompt["prompt.default"] -->|prompt.Renderer| Agent
+    Compactor -->|contextwindow.Compactor| Agent
     CLIChannel -->|interaction.Channel| Agent
 
     Agent -->|agent.Runtime| CLIApp["app.cli/app"]
@@ -523,7 +527,7 @@ flowchart LR
 
 - `filesystem.local`、`tool.fs`、`tool.ask`；
 - `model.openai-compatible`、`model.runtime`；
-- `session.jsonl`、`prompt.default`、`agent.default`。
+- `session.jsonl`、`prompt.default`、`context.compact`、`agent.default`。
 
 ### Phase 3：Composite Frontend
 

@@ -1,0 +1,21 @@
+go 1.24.0
+
+use (
+	.
+	./plugins/filesystem-local
+	./plugins/http-default
+	./plugins/session-jsonl
+	./plugins/tool-fs
+	./plugins/tool-ask
+	./plugins/tool-shell
+	./plugins/interceptor-approval
+	./plugins/tool-runtime
+	./plugins/model-openai-compatible
+	./plugins/model-runtime
+	./plugins/context-compact
+	./plugins/prompt-default
+	./plugins/agent-default
+	./plugins/app-cli
+	./plugins/interceptor-script
+)
+
