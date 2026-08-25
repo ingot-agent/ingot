@@ -2,7 +2,6 @@ go 1.24.0
 
 use (
 	.
-	../sdk
 	./plugins/filesystem-local
 	./plugins/http-default
 	./plugins/session-jsonl
@@ -20,4 +19,3 @@ use (
 	./plugins/interceptor-script
 )
 
-replace github.com/ingot-agent/sdk v0.1.0 => ../sdk
