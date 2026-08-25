@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -260,6 +261,19 @@ func TestAgentRejectsTypedNilCompactor(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestAgentRejectsNonFiniteTemperature(t *testing.T) {
+	t.Parallel()
+	for _, temperature := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		temperature := temperature
+		_, _, err := New(context.Background(), Config{Temperature: &temperature}, Dependencies{
+			Model: &sequenceModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{}}, Prompt: passthroughPrompt{},
+		})
+		if !errors.Is(err, ErrInvalidConfig) {
+			t.Fatalf("temperature=%v error=%v", temperature, err)
+		}
 	}
 }
 

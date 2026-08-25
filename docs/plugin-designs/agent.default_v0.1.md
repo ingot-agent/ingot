@@ -45,7 +45,7 @@ type Config struct {
 ```
 
 - Provider/Model 可以为空，由 `model.runtime` default处理；
-- temperature若存在必须在 `[0,2]`；具体Provider可进一步收紧；
+- temperature若存在必须是finite number且在 `[0,2]`；具体Provider可进一步收紧；
 - max tokens若存在必须 `>0`；
 - max tool rounds默认8，必须 `>0`；一次 round是一条含ToolCalls的assistant response及其全部tool results；
 - streaming默认false；true时 `Streaming.Valid` 必须为true，否则 `New`失败；

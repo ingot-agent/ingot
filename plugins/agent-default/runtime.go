@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"unicode/utf8"
 
@@ -107,7 +108,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 	if deps.Interaction.Valid && isNil(deps.Interaction.Value) {
 		return Exports{}, nil, fmt.Errorf("interaction dependency is typed nil: %w", ErrInvalidConfig)
 	}
-	if cfg.Temperature != nil && (*cfg.Temperature < 0 || *cfg.Temperature > 2) {
+	if cfg.Temperature != nil && (math.IsNaN(*cfg.Temperature) || math.IsInf(*cfg.Temperature, 0) || *cfg.Temperature < 0 || *cfg.Temperature > 2) {
 		return Exports{}, nil, fmt.Errorf("temperature must be in [0,2]: %w", ErrInvalidConfig)
 	}
 	if cfg.MaxTokens != nil && *cfg.MaxTokens < 1 {
