@@ -136,7 +136,7 @@ func TestCompactPreservesAnchorRecentAndPersistsDelta(t *testing.T) {
 	}
 	response := model.Response{
 		Message:  model.Message{Role: model.RoleAssistant, Content: `{"summary":"middle work was completed","operations":[{"op":"set","path":"/project/root","value":"D:\\ingot-local\\ingot"}]}`},
-		Provider: "summary-provider", Model: "summary-model",
+		Provider: "main-provider", Model: "main-model",
 	}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &fakeModel{responses: []model.Response{response}}
@@ -463,6 +463,78 @@ func TestCompactSerializesSameSessionAndSecondCallReusesCheckpoint(t *testing.T)
 	}
 }
 
+func TestCheckpointReuseRequiresMatchingResolvedModelIdentity(t *testing.T) {
+	t.Parallel()
+	request := longRequest()
+	raw, _ := canonicalRequestBytes(request)
+	models := &fakeModel{responses: []model.Response{
+		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"stale identity","operations":[]}`}, Provider: "other-provider", Model: "other-model"},
+		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"matching identity","operations":[]}`}, Provider: request.Provider, Model: request.Model},
+	}}
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	cfg := Config{
+		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: len(raw) - 500,
+		AnchorTurns: 1, RecentTurns: 1, SummaryChunkBytes: 1,
+	}
+	exports, _, err := New(context.Background(), cfg, Dependencies{Model: models, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models.requests) != 2 || !strings.Contains(messagesText(second.Messages), "matching identity") {
+		t.Fatalf("summary calls=%d messages=%#v", len(models.requests), second.Messages)
+	}
+
+	restarted, _, err := New(context.Background(), cfg, Dependencies{Model: &fakeModel{err: errors.New("must reuse matching checkpoint")}, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reused, err := restarted.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(messagesText(reused.Messages), "matching identity") {
+		t.Fatalf("reused messages=%#v", reused.Messages)
+	}
+}
+
+func TestCheckpointWithRuntimeDefaultSelectionIsNotReused(t *testing.T) {
+	t.Parallel()
+	request := longRequest()
+	request.Provider = ""
+	request.Model = ""
+	raw, _ := canonicalRequestBytes(request)
+	models := &fakeModel{responses: []model.Response{
+		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"default one","operations":[]}`}, Provider: "provider-one", Model: "model-one"},
+		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"default two","operations":[]}`}, Provider: "provider-two", Model: "model-two"},
+	}}
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	cfg := Config{
+		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: len(raw) - 500,
+		AnchorTurns: 1, RecentTurns: 1, SummaryChunkBytes: 1,
+	}
+	exports, _, err := New(context.Background(), cfg, Dependencies{Model: models, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models.requests) != 2 || !strings.Contains(messagesText(second.Messages), "default two") {
+		t.Fatalf("summary calls=%d messages=%#v", len(models.requests), second.Messages)
+	}
+}
+
 func longRequest() model.Request {
 	return model.Request{
 		Provider: "main-provider", Model: "main-model",
@@ -498,7 +570,7 @@ func manyMiddleTurnsRequest(middle int) model.Request {
 }
 
 func summaryResponse(content string) model.Response {
-	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content}, Provider: "summary-provider", Model: "summary-model"}
+	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content}, Provider: "main-provider", Model: "main-model"}
 }
 
 func messagesText(messages []model.Message) string {

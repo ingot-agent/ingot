@@ -92,7 +92,14 @@ func (r *compactor) policyDigest(request model.Request) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-func (r *compactor) loadChain(ctx context.Context, id session.ID, policy string, layout messageLayout) (chainState, error) {
+func (r *compactor) loadChain(
+	ctx context.Context,
+	id session.ID,
+	policy string,
+	provider string,
+	modelName string,
+	layout messageLayout,
+) (chainState, error) {
 	entries, err := r.store.Load(ctx, id)
 	if err != nil {
 		return chainState{}, fmt.Errorf("load context checkpoints for session %q: %w", id, err)
@@ -120,6 +127,9 @@ func (r *compactor) loadChain(ctx context.Context, id session.ID, policy string,
 		lastSequence = checkpoint.Sequence
 		best.maxSequence = checkpoint.Sequence
 		if checkpoint.PolicyDigest != policy || checkpoint.CoveredMessages < layout.anchorEnd || checkpoint.CoveredMessages > layout.eligibleEnd {
+			continue
+		}
+		if provider == "" || modelName == "" || checkpoint.Provider != provider || checkpoint.Model != modelName {
 			continue
 		}
 		if len(checkpoint.Summary) > r.cfg.summaryMaxBytes {

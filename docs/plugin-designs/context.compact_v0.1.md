@@ -64,7 +64,7 @@ type Config struct {
 - `max_summary_passes` 默认8，限制单次 Compact 的 Model 调用数量；
 - Provider/Model 非空时覆盖摘要调用选择；为空时继承本次 Invocation。最终选择仍为空时由 `model.Runtime` 自身 default或错误语义处理。
 
-Config、Dependencies 和 fixed summary protocol共同进入 `policy_digest`。摘要 Provider/Model 的最终请求值也进入本次 active policy，避免不同模型错误复用同一摘要链。
+Config、Dependencies 和 fixed summary protocol共同进入 `policy_digest`。持久化checkpoint还记录摘要响应的实际Provider/Model；只有调用前的摘要选择已经完全确定且与这两个字段精确匹配时才允许复用。选择仍依赖`model.Runtime` default，或Runtime/Interceptor报告了不同实际身份时，旧checkpoint视为stale，避免不同模型错误复用同一摘要链；需要稳定restart reuse时应显式配置准确的摘要Provider/Model。
 
 ## 4. Input validation 与 Turn grouping
 

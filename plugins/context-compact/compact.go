@@ -37,7 +37,8 @@ func (r *compactor) Compact(ctx context.Context, input contextwindow.CompactionR
 	if err != nil {
 		return contextwindow.CompactionResult{}, fmt.Errorf("compute compaction policy: %w", err)
 	}
-	chain, err := r.loadChain(ctx, input.SessionID, policy, layout)
+	provider, modelName := r.summarySelection(request)
+	chain, err := r.loadChain(ctx, input.SessionID, policy, provider, modelName, layout)
 	if err != nil {
 		return contextwindow.CompactionResult{}, err
 	}
