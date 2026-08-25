@@ -1,6 +1,6 @@
 # `agent.default` Plugin v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Implemented v0.1
 > Exports：`agent.Runtime`
 
 ## 1. 定位
@@ -18,6 +18,7 @@ type Dependencies struct {
     Tools        tool.Runtime
     Store        session.Store
     Prompt       prompt.Renderer
+    Compactor    sdk.Optional[contextwindow.Compactor]
     Interaction  sdk.Optional[interaction.Channel]
     Interceptors []agent.Interceptor
 }
@@ -84,6 +85,18 @@ Payload exact semantic shape：
 - `agent.message`未知Version返回 `ErrUnsupportedEntryVersion`，不静默跳过；
 - role和tool-call关联必须通过模型消息校验；corrupt Agent payload返回`ErrCorruptHistory`。
 
+### 4.1 尾部未完成 Tool round
+
+Assistant tool-call message 必须先于对应 Tool result 持久化，因此进程取消、Tool error、达到 round上限或崩溃可能留下**仅位于 Agent history 尾部**的未完成 round。这不是 Store corruption，Agent按以下规则恢复：
+
+- 已存在的 Tool message 必须按 assistant `tool_calls` 顺序构成从0开始的连续前缀，`tool_call_id`逐项匹配；
+- 只允许最后一个 assistant tool-call round缺少后缀结果；缺少中间结果后又出现其他 Agent message、未知call id、重复结果或多个未完成round仍返回`ErrCorruptHistory`；
+- 下一次`Run`在写入新user message前，为每个缺失call按原顺序 Append一个synthetic RoleTool message，Content固定为`tool error [interrupted]: previous execution was interrupted; result unknown`；
+- synthetic result只修复对话关联，不重新执行Tool。尤其不得自动重试可能已经产生副作用但commit status unknown的调用；
+- recovery Append沿用正常Context和Store原子语义。中途失败时立即返回；下次Load从已提交的更长前缀继续，不重复已存在结果。
+
+这样正常的尾部中断可以恢复，而真正的历史乱序或关联破坏仍然fail-closed。
+
 ## 5. Same-session serialization
 
 `Runtime.Run`首先验证非空SessionID，再以Context-aware keyed gate按Session序列化**整个Interceptor chain和turn terminal**。
@@ -105,13 +118,16 @@ SDK所说“按调用顺序串行”以成功获得Runtime入口序号定义。�
 ### 6.1 初始化
 
 1. 检查Context、SessionID和Input UTF-8；
-2. `Store.Load`并decode Agent history；
+2. `Store.Load`并decode Agent history；若存在4.1定义的尾部未完成Tool round，先完成synthetic recovery并加入in-memory history；
 3. 构造当前user `model.Message`；
 4. 先把user message Append到Session；
 5. 调用 `Prompt.Render{SessionID, Input, History}`；
-6. snapshot `Tools.Definitions()`并构造初始 `model.Request`。
+6. snapshot `Tools.Definitions()`并构造初始 `model.Request`；
+7. 若可选Compactor存在，在每次Model invocation前调用`Compact{SessionID, Invocation}`，仅以返回的完整Messages替换本次Request.Messages。
 
 User message在模型调用前持久化。之后Prompt/Model失败时，用户输入仍留在Session，便于诊断和重试；重试是一个新turn，不自动删除已提交数据。
+
+Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memory message sequence。Compactor输出是单次Model invocation视图，不得写回该原始sequence；工具循环的下一次调用重新从完整sequence构造Request并再次Compact。无论`CompactionResult.Changed`为何值，返回的Messages都是完整replacement。Compactor错误在主模型调用前传播并保留错误链，已经Append的Agent message不回滚。
 
 ### 6.2 Model 调用
 
@@ -133,10 +149,18 @@ User message在模型调用前持久化。之后Prompt/Model失败时，用户�
 4. 可选Interaction依次Render ToolCallEvent和ToolResultEvent；
 5. 调用`Tools.Call(ctx, call)`；
 6. 成功结果生成RoleTool Message并Append；
-7. 非Context error在mode=result时转换为明确、受限的tool error content；mode=fail时终止turn；
+7. 非Context error在mode=result时按以下固定映射转换为tool result；mode=fail时立即返回包装后的原错误，尚未产生的result由下一次Run按4.1恢复；
 8. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
 
-Tool error result不得包含Go stack、secret或无限长度错误；默认上限64KiB，超出截断并标记。即使某个Tool失败，之前已提交的assistant/tool记录不回滚。
+`result`模式提供给模型和持久化历史的Content只使用稳定安全文本，不拼接`err.Error()`、Go stack或其他下游诊断：
+
+| Error classification | Content |
+|---|---|
+| `errors.Is(err, tool.ErrNotFound)` | `tool error [not_found]: requested tool is unavailable` |
+| `errors.Is(err, tool.ErrInvalidArguments)` | `tool error [invalid_arguments]: tool arguments were rejected` |
+| 其他非Context error | `tool error [execution_failed]: tool execution failed` |
+
+转换后的`tool.Result`正常Render `ToolResultEvent`并Append RoleTool message。原错误不向模型暴露；`fail`模式则通过`Run`错误链交给调用方。无论模式，之前已提交的assistant/tool记录不回滚。
 
 ## 7. Interceptor、ownership与错误
 
@@ -184,14 +208,16 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 - exactDependencies/Exports/New contract；
 - Config与optional streaming组合；
 - agent.message v1 golden和corruption/version；
+- trailing incomplete Tool round的prefix识别、synthetic recovery、recovery中断续跑和禁止自动重试；
 - user→prompt→model→assistant persistence顺序；
 - multi-round tool call完整trace；
 - ToolCalls顺序、tool error result/fail、max rounds；
 - Complete/Stream、chunk顺序、handler/Render error；
+- optional Compactor absent/typed-nil、完整Request输入、每轮调用、replacement ownership和错误传播；
 - Interaction absent；
 - Agent Interceptor outermost/short-circuit；
 - same-session ticket order、等待取消、cross-session并发；
 - partial failure不回滚已提交Entry；
 - aggregate ownership和race test。
 
-待确认：tool error向模型暴露的标准text格式、stream delta由Agent还是frontend聚合显示，以及是否需要独立token/turn usage event。它们不阻塞非streaming MVP。
+未来可增加独立token/turn usage event；v0.1 stream delta仍由Agent通过可选Interaction按顺序渲染，frontend不重复聚合输出。

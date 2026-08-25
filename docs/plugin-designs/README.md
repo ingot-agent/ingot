@@ -28,10 +28,11 @@ Plugin 设计必须遵循：
 | [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Implemented v0.1 | `[]sdk.Named[model.Provider]` | Chat Completions和SSE协议适配 |
 | [`model.runtime`](./model.runtime_v0.1.md) | Implemented v0.1 | complete/stream runtimes | Named Provider选择与独立拦截链 |
 | [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
+| [`context.compact`](./context.compact_v0.1.md) | Implemented v0.1 | `contextwindow.Compactor` | 非破坏式增量摘要、事实Delta与checkpoint复用 |
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
 | [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel`（app Component无导出） | Composite frontend后台循环和Cleanup |
 
-共14个Plugin、15个Component；`app.cli`包含`interaction`和`app`两个Component。
+共15个Plugin、16个Component；`app.cli`包含`interaction`和`app`两个Component。
 
 ## 依赖与建议实施批次
 
@@ -39,7 +40,7 @@ Plugin 设计必须遵循：
 Batch 1  http.default / filesystem.local / session.jsonl
 Batch 2  tool.shell / tool.fs / tool.ask / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime
-Batch 4  prompt.default / agent.default
+Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.cli / interceptor.script hardening
 ```
 
@@ -48,7 +49,7 @@ Batch 5  app.cli / interceptor.script hardening
 ## 共同实现约定
 
 - 一个 Plugin 对应一个独立 Go Module；canonical Plugin ID 来自其 `go.mod` module path。
-- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余13个Plugin均只有`default` Component。
+- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余14个Plugin均只有`default` Component。
 - Component package 提供当前 package 的 `Dependencies`、`Exports` 和精确签名的 `New`。
 - `New` 可重复、可并发调用，每次创建独立实例，不使用 package-level mutable singleton。
 - Config 只读；需要保留 slice、map、pointer 或 bytes 时先复制。
@@ -59,4 +60,4 @@ Batch 5  app.cli / interceptor.script hardening
 
 ## 文档状态
 
-14个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。
+15个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。

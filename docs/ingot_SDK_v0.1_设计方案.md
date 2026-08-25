@@ -11,7 +11,7 @@ ingot SDK 是 Component Graph 的公共 Go Contract 层。Builder 读取 Compone
 SDK 提供：
 
 - 少量 Composition primitives；
-- 稳定的 Tool、Model、Session、Prompt、Interaction、Agent 等领域 Contract；
+- 稳定的 Tool、Model、Session、Prompt、Context Window、Interaction、Agent 等领域 Contract；
 - typed Interceptor；
 - Context、生命周期、错误、并发和 ownership 语义。
 
@@ -41,7 +41,7 @@ SDK 的设计目标是小、稳定、显式、typed，并保持普通 Go Library
 5. 阻塞操作接收 `context.Context`，参数 Context 是 cancellation/deadline authority。
 6. `New` 创建独立实例；长期任务归实例生命周期管理。
 7. Public value 具有明确 ownership 与 mutability 规则。
-8. SDK v0.1 聚焦 text、tool calling、单 interaction scope 和静态 Component composition。
+8. SDK v0.1 聚焦 text、tool calling、可选 context compaction、单 interaction scope 和静态 Component composition。
 
 官方 SDK Contract 的 module path：
 
@@ -64,6 +64,7 @@ github.com/ingot-agent/sdk
 | `model` | complete/stream provider、runtime 与 interceptor |
 | `session` | append-oriented session persistence |
 | `prompt` | contributors 与 renderer |
+| `contextwindow` | model invocation context compaction |
 | `interaction` | frontend interaction channel |
 | `agent` | agent turn runtime 与 interceptor |
 
@@ -803,9 +804,40 @@ type Exports struct {
 }
 ```
 
-## 16. `interaction`
+## 16. `contextwindow`
 
-### 16.1 Contract
+```go
+package contextwindow
+
+type CompactionRequest struct {
+    SessionID  session.ID
+    Invocation model.Request
+}
+
+type CompactionResult struct {
+    Messages []model.Message
+    Changed  bool
+}
+
+type Compactor interface {
+    Compact(
+        context.Context,
+        CompactionRequest,
+    ) (CompactionResult, error)
+}
+```
+
+`Compactor` 位于 Prompt render 之后、Model invocation 之前，接收包含 Provider、Model、Messages、Tools 和 generation parameters 的完整只读 `model.Request`，但只返回本次调用要使用的完整 `Messages` replacement。它不能通过返回值改写 Provider、Model、Tools 或 generation parameters。
+
+`CompactionResult.Messages` 不是增量 patch；无论 `Changed` 为 true 或 false，都必须是可直接用于本次 Model 调用的完整 message sequence，aggregate output ownership 在返回时交给 caller。`Changed=false` 只表示实现未对语义上下文执行压缩，不能借此返回依赖 caller input backing storage 的别名。
+
+SDK 不规定摘要模型、tokenizer、字节或 token budget、首尾保留策略、增量事实 patch、checkpoint schema 或持久化方式。这些属于具体 Compactor Plugin 的 policy 和 owned persistence format。实现可以通过自身 Component Dependencies 使用 `model.Runtime` 与 `session.Store`，但所有 Model 调用仍经过标准 Model chokepoint，持久化记录使用实现自有的 `session.Entry.Kind`，不得删除或改写其他 Plugin 拥有的原始 Entry。
+
+Compactor concurrent-safe；不同 Session 可并行。实现复用或持久化 Session-scoped compaction state 时，必须保证同一 Session 的状态演进有序，并在等待内部序列化、Model、Store 或其他阻塞操作时观察 Context。
+
+## 17. `interaction`
+
+### 17.1 Contract
 
 ```go
 package interaction
@@ -856,7 +888,7 @@ type ToolResultEvent struct {
 var ErrUnavailable = errors.New("interaction unavailable")
 ```
 
-### 16.2 调用与并发
+### 17.2 调用与并发
 
 `Ask` 与 `ReadLine` 以同步 typed call 表达交互，并继承调用栈、错误与 Context。Web/GUI adapter 可通过 queue/channel 将异步 frontend 转换为该调用模型。
 
@@ -868,7 +900,7 @@ var ErrUnavailable = errors.New("interaction unavailable")
 
 v0.1 Channel 对应单一 logical interaction scope。Multi-user Web 与 request-scoped routing 使用未来的 scoped capability。
 
-## 17. `agent`
+## 18. `agent`
 
 ```go
 package agent
@@ -898,6 +930,7 @@ type Dependencies struct {
     Tools        tool.Runtime
     Store        session.Store
     Prompt       prompt.Renderer
+    Compactor    sdk.Optional[contextwindow.Compactor]
     Interaction  sdk.Optional[interaction.Channel]
     Interceptors []agent.Interceptor
 }
@@ -905,21 +938,23 @@ type Dependencies struct {
 
 不同 Session 的 turn 可并行；同一 Session 的 turn 按调用顺序串行化。等待 same-session serialization 时观察 Context。
 
-## 18. Capability Graph 与 Package Dependencies
+## 19. Capability Graph 与 Package Dependencies
 
-### 18.1 首批 Capability Graph
+### 19.1 首批 Capability Graph
 
 ```mermaid
 flowchart LR
     HTTP["httpx.Client"] --> Provider["model.Provider"]
     Provider --> Model["model.Runtime / StreamingRuntime"]
     Model --> Agent["agent.Runtime"]
+    Model --> Compactor["contextwindow.Compactor"] --> Agent
 
     Tools["[]tool.Tool"] --> ToolRuntime["tool.Runtime"]
     ToolInts["[]tool.Interceptor"] --> ToolRuntime
     ToolRuntime --> Agent
 
     Store["session.Store"] --> Agent
+    Store --> Compactor
     Contributors["[]prompt.Contributor"] --> Renderer["prompt.Renderer"] --> Agent
     Interaction["interaction.Channel"] --> Agent
     Agent --> App["app Component"]
@@ -927,7 +962,7 @@ flowchart LR
 
 Build Time 确定 available Provider set；Runtime Config 选择 Named Provider 与具体 model。
 
-### 18.2 SDK Package Dependency Direction
+### 19.2 SDK Package Dependency Direction
 
 ```mermaid
 flowchart TD
@@ -939,6 +974,7 @@ flowchart TD
     Model["model"]
     Session["session"]
     Prompt["prompt"]
+    ContextWindow["contextwindow"]
     Interaction["interaction"]
     Agent["agent"]
 
@@ -948,16 +984,19 @@ flowchart TD
     Model --> Tool
     Prompt --> Model
     Prompt --> Session
+    ContextWindow --> Model
+    ContextWindow --> Session
     Interaction --> Tool
     Agent --> Model
     Agent --> Tool
     Agent --> Session
+    Agent --> ContextWindow
     Agent --> Interaction
 ```
 
 底层 Capability 保持较少的 domain dependency。
 
-## 19. Error Semantics
+## 20. Error Semantics
 
 SDK 使用普通 Go error chain：
 
@@ -973,9 +1012,9 @@ SDK 使用普通 Go error chain：
 return fmt.Errorf("model request: %w", err)
 ```
 
-## 20. Concurrency 与 Ownership
+## 21. Concurrency 与 Ownership
 
-### 20.1 默认并发规则
+### 21.1 默认并发规则
 
 SDK Capability 默认 concurrent-safe；领域顺序如下：
 
@@ -985,10 +1024,11 @@ SDK Capability 默认 concurrent-safe；领域顺序如下：
 | Tool | 不同 call 可并发；实现管理内部资源 |
 | Model | 不同 request 可并发 |
 | Session | 不同 Session 可并发；同 Session Append total order |
+| Context Window | 不同 Session 可并发；同 Session 的持久化压缩状态有序 |
 | Interaction | Render 可并发；Ask/ReadLine 串行 |
 | Agent | 不同 Session 可并发；同 Session turn 串行 |
 
-### 20.2 Public Value Ownership
+### 21.2 Public Value Ownership
 
 默认规则：
 
@@ -1000,7 +1040,7 @@ SDK Capability 默认 concurrent-safe；领域顺序如下：
 
 规则递归适用于 slice、map、pointer 与 `json.RawMessage`。
 
-## 21. SDK Versioning
+## 22. SDK Versioning
 
 设计版本 v0.1 完成 conformance 与 freeze criteria 后，第一条生态稳定线发布为：
 
@@ -1020,11 +1060,11 @@ Breaking change 包括：
 
 扩展优先增加新的 interface、type 或 capability。Streaming 使用独立 `StreamingProvider`、`StreamingRuntime` 与 `StreamInterceptor`，以保持 complete contract 稳定。
 
-Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、`tool.Result` 与 `session.Entry` 按稳定 Contract 管理。
+Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、`tool.Result`、`session.Entry`、`contextwindow.CompactionRequest` 与 `contextwindow.CompactionResult` 按稳定 Contract 管理。
 
-## 22. Contract Tests
+## 23. Contract Tests
 
-### 22.1 Composition
+### 23.1 Composition
 
 - Component signature 与 field rules；
 - ONE、OPTIONAL、MANY scalar/flatten；
@@ -1036,7 +1076,7 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 - Named uniqueness；
 - nil、typed-nil 与 nested value path。
 
-### 22.2 Lifecycle 与 Config
+### 23.2 Lifecycle 与 Config
 
 - repeated/concurrent `New` 产生独立实例；
 - 有界初始化 error 与 partial Cleanup；
@@ -1046,7 +1086,7 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 - strict Config decode；
 - normal/check `StateDir` isolation。
 
-### 22.3 Domain Contracts
+### 23.3 Domain Contracts
 
 - Pipeline outermost order；
 - HTTP Context authority；
@@ -1055,17 +1095,18 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 - Model complete/stream wiring、handler error 与 retry boundary；
 - Session append atomicity、same-session order 与 State compatibility；
 - Prompt contributor order；
+- Context Window complete replacement、ownership、Context 与 concurrent calls；
 - Interaction serialization 与 Context；
 - Agent same-session serialization。
 
-### 22.4 Compatibility
+### 23.4 Compatibility
 
 - SDK minimum/latest compatible version build；
 - SDK major mismatch diagnostic；
 - identical build input 的 graph 与 wiring order；
 - public struct keyed literal checks。
 
-## 23. 实施顺序
+## 24. 实施顺序
 
 ### Phase 1：Composition Kernel
 
@@ -1091,7 +1132,8 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 ### Phase 4：Persistence 与 Prompt
 
 - `session.jsonl`、`prompt.default`；
-- Append、State compatibility、Contributor order。
+- `contextwindow.Compactor` Contract 与 `context.compact`；
+- Append、State compatibility、Contributor order、optional compaction wiring。
 
 ### Phase 5：Agent 与 Composite Frontend
 
@@ -1105,7 +1147,7 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 - cross-version、deterministic build、Context、concurrency、persistence 与 streaming tests；
 - SDK v1 freeze decision，包括正式的 multimodal contract scope。
 
-## 24. 验收标准
+## 25. 验收标准
 
 首批官方 Plugin 组成以下主链：
 
@@ -1115,6 +1157,9 @@ flowchart TD
     App --> Agent["agent.Runtime"]
     Agent --> Store["session.Store"]
     Agent --> Prompt["prompt.Renderer"]
+    Agent --> Compactor["contextwindow.Compactor"]
+    Compactor --> Store
+    Compactor --> Model
     Agent --> Model["model.Runtime"]
     Model --> Provider["Named model.Provider"]
     Agent --> Tools["tool.Runtime"]
@@ -1135,8 +1180,9 @@ flowchart TD
 5. Complete 与 Streaming 拥有独立、一致的扩展链；
 6. Session State 按 reader window fail-closed；
 7. Component 实例、Cleanup、Context 与 ownership 语义通过 conformance tests。
+8. 可选 Context Compactor 能在不改写原始 Session history 的前提下替换单次 Model invocation 的消息上下文。
 
-## 25. 设计不变量
+## 26. 设计不变量
 
 1. SDK 定义 Capability edge；Manifest 与 Builder定义 Plugin/Component identity。
 2. Dependency target 具有稳定 nominal identity；Provider source 按 assignability 匹配。
