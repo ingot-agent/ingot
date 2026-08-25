@@ -158,6 +158,38 @@ func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
 	}
 }
 
+func TestAgentValidatesCompleteResponseBeforeRendering(t *testing.T) {
+	t.Parallel()
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleUser, Content: "must not render"}}}}
+	ui := &recordingInteraction{}
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
+		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{}, Interaction: sdk.Some[interaction.Channel](ui),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
+	if !errors.Is(err, ErrInvalidModelMessage) {
+		t.Fatalf("error=%v", err)
+	}
+	if len(ui.events) != 0 {
+		t.Fatalf("events=%#v, want none", ui.events)
+	}
+	entries, err := store.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries=%d, want committed user only", len(entries))
+	}
+	message, err := decodePersistedMessage(entries[0].Payload)
+	if err != nil || message.Role != model.RoleUser || message.Content != "hello" {
+		t.Fatalf("committed message=%#v error=%v", message, err)
+	}
+}
+
 func TestAgentCompactsEveryModelInvocationWithoutReplacingRawMessages(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{responses: []model.Response{

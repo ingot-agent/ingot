@@ -131,7 +131,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ### 6.2 Model 调用
 
-- streaming=false使用`Model.Complete`；收到每条assistant response后，如果Interaction有效且Content非空，统一Render一次TextEvent；
+- streaming=false使用`Model.Complete`；完整assistant response先通过role、UTF-8和ToolCalls校验，随后在Interaction有效且Content非空时统一Render一次TextEvent；
 - streaming=true使用`Streaming.Stream`；每个TextDelta按顺序通过可选Interaction Render为TextEvent，最终不重复Render完整Content；
 - Interaction absent时仍可stream并累积，但配置校验可提示这种选择无UI收益；
 - Stream handler/Render error立即停止并传播；

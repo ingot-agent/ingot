@@ -205,9 +205,6 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 		if err != nil {
 			return agent.Result{}, err
 		}
-		if err := validateAssistant(response.Message); err != nil {
-			return agent.Result{}, err
-		}
 		if err := r.appendMessage(ctx, turn.SessionID, response.Message); err != nil {
 			return agent.Result{}, fmt.Errorf("append assistant message: %w", err)
 		}
@@ -269,6 +266,9 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 		if err != nil {
 			return model.Response{}, fmt.Errorf("complete model: %w", err)
 		}
+		if err := validateAssistant(response.Message); err != nil {
+			return model.Response{}, err
+		}
 		if response.Message.Content != "" {
 			if err := r.render(ctx, interaction.TextEvent{Text: response.Message.Content}); err != nil {
 				return model.Response{}, err
@@ -284,6 +284,9 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 	})
 	if err != nil {
 		return model.Response{}, fmt.Errorf("stream model: %w", err)
+	}
+	if err := validateAssistant(response.Message); err != nil {
+		return model.Response{}, err
 	}
 	return response, nil
 }
