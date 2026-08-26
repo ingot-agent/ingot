@@ -1,5 +1,5 @@
-github.com/ingot-agent/sdk v0.1.2 h1:qfhFSMRhdZVNpCx9xI6WWFScp3S4HbUPgYaT+hEIAZI=
-github.com/ingot-agent/sdk v0.1.2/go.mod h1:+/tfM9PLeg588df4RQnb/aclBPUmduzrYQjUlH8UKrE=
+github.com/ingot-agent/sdk v0.1.3 h1:bPXxnBzKmH1tHDROZKaqiiiX3fwMMRZJNhtg+UqEf4Q=
+github.com/ingot-agent/sdk v0.1.3/go.mod h1:+/tfM9PLeg588df4RQnb/aclBPUmduzrYQjUlH8UKrE=
 github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
 github.com/pelletier/go-toml/v2 v2.2.4/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=
 golang.org/x/sys v0.41.0 h1:Ivj+2Cp/ylzLiEU89QhWblYnOE9zerudt9Ftecq2C6k=

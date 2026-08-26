@@ -345,6 +345,14 @@ and plain text, so it works when stdin/stdout are not a terminal (pipes,
 redirection, non-interactive scripts). Model provider and API keys are
 configured in `config.toml`, not on the command line.
 
+On the first ordinary message, the app immediately creates a session using a
+normalized, shortened form of that message. After the first successful turn it
+makes one best-effort model call to replace that temporary title with a stable
+title; later turns never update it automatically. `/new Project name` creates a
+manually titled session, `/new` waits for the next message, and `/rename New
+title` changes the current title. Manual titles are never overwritten, and a
+title-generation failure does not affect the conversation.
+
 If there is no current image (or it is missing), the command fails with an
 error explaining the problem.
 

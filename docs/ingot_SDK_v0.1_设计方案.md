@@ -770,6 +770,11 @@ type Store interface {
     List(context.Context, Query) ([]Summary, error)
 }
 
+type MutableStore interface {
+    Store
+    Rename(context.Context, ID, string) error
+}
+
 var ErrNotFound = errors.New("session not found")
 ```
 
@@ -782,6 +787,12 @@ var ErrNotFound = errors.New("session not found")
 Power-loss durability 由 Store implementation 的 fsync/WAL policy 定义。需要跨实现统一的强 durability 时，通过新的显式 Contract 演进。
 
 Store 打开 persistent data 时按 Plugin State reader window 校验兼容性。
+
+### 14.3 Title 更新（SDK v0.1.3）
+
+`MutableStore` 自 SDK v0.1.3 起提供，是 `Store` 的可选扩展能力，只允许修改 Session 的展示标题。`Rename` 不改变 Session ID、Entry committed sequence、`CreatedAt` 或 `UpdatedAt`，也不向 Entry sequence 写入元数据事件。同一 Session 的 Rename 与 Append/Load 使用相同的有序边界，不同 Session 仍可并行。
+
+Title 必须是非空 valid UTF-8；不存在的 Session 返回包装 `session.ErrNotFound`。具体 Store 可以使用原子 metadata replacement、事务或数据库 update 实现，但成功返回后后续 `List` 必须可见新标题。
 
 ## 15. `prompt`
 

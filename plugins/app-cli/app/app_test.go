@@ -94,6 +94,7 @@ type fakeAgent struct {
 	loaded   []session.ID
 	loadErr  error
 	blockRun bool
+	output   string
 }
 
 func (f *fakeAgent) Run(ctx context.Context, turn agent.Turn) (agent.Result, error) {
@@ -106,7 +107,11 @@ func (f *fakeAgent) Run(ctx context.Context, turn agent.Turn) (agent.Result, err
 		<-ctx.Done()
 		return agent.Result{}, ctx.Err()
 	}
-	return agent.Result{Output: "ignored"}, err
+	output := f.output
+	if output == "" {
+		output = "assistant answer"
+	}
+	return agent.Result{Output: output}, err
 }
 
 func (f *fakeAgent) Load(_ context.Context, id session.ID) ([]model.Message, error) {
@@ -122,6 +127,11 @@ type fakeStore struct {
 	createErr error
 	summaries []session.Summary
 	listErr   error
+	renamed   []struct {
+		id    session.ID
+		title string
+	}
+	renameErr error
 }
 
 func (f *fakeStore) Create(_ context.Context, metadata session.Metadata) (session.ID, error) {
@@ -140,6 +150,31 @@ func (*fakeStore) Load(context.Context, session.ID) ([]session.Entry, error) { r
 
 func (f *fakeStore) List(context.Context, session.Query) ([]session.Summary, error) {
 	return append([]session.Summary(nil), f.summaries...), f.listErr
+}
+
+func (f *fakeStore) Rename(_ context.Context, id session.ID, title string) error {
+	f.renamed = append(f.renamed, struct {
+		id    session.ID
+		title string
+	}{id: id, title: title})
+	return f.renameErr
+}
+
+type fakeModel struct {
+	requests []model.Request
+	response model.Response
+	err      error
+}
+
+func (f *fakeModel) Complete(_ context.Context, request model.Request) (model.Response, error) {
+	f.requests = append(f.requests, request)
+	if f.err != nil {
+		return model.Response{}, f.err
+	}
+	if f.response.Message.Role == "" {
+		return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "Generated title"}}, nil
+	}
+	return f.response, nil
 }
 
 type fakeProcess struct {
@@ -169,7 +204,7 @@ func (f *fakeProcess) Shutdown(err error) {
 
 func testApplication(frontend *fakeFrontend, runtime *fakeAgent, store *fakeStore, process *fakeProcess) *application {
 	return &application{
-		agent: runtime, history: runtime, interaction: frontend, frontend: frontend,
+		agent: runtime, history: runtime, model: &fakeModel{}, interaction: frontend, frontend: frontend,
 		store: store, process: process, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
 	}
 }
@@ -188,8 +223,11 @@ func TestLoopStartsBlankCreatesOnFirstSendAndExitsProcess(t *testing.T) {
 	if len(frontend.views) == 0 || frontend.views[0].Current != "" {
 		t.Fatalf("startup view=%#v, want blank current session", frontend.views)
 	}
-	if len(store.created) != 1 || store.created[0].Title != "Initial" {
+	if len(store.created) != 1 || store.created[0].Title != "hello" {
 		t.Fatalf("created=%#v", store.created)
+	}
+	if len(store.renamed) != 1 || store.renamed[0].id != "s1" || store.renamed[0].title != "Generated title" {
+		t.Fatalf("renamed=%#v", store.renamed)
 	}
 	if len(runtime.turns) != 1 || runtime.turns[0].SessionID != "s1" {
 		t.Fatalf("turns=%#v", runtime.turns)
@@ -210,7 +248,7 @@ func TestNewReturnsPromptlyAndCleanupCancelsOnlyOwnedLoop(t *testing.T) {
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
 	start := time.Now()
-	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +282,7 @@ func TestLoopCommandsProduceDeterministicTranscript(t *testing.T) {
 	}
 	want := []string{
 		"using session s1", "* s1  Work", "  s2  Other", "using session s2",
-		"/new [title]  /use <id>  /list  /help  /exit",
+		"/new [title]  /rename <title>  /use <id>  /list  /help  /exit",
 	}
 	if len(frontend.events) != len(want) {
 		t.Fatalf("events=%#v", frontend.events)
@@ -276,6 +314,71 @@ func TestLoopRendersAgentErrorAfterHistorySyncAndContinues(t *testing.T) {
 	if len(frontend.finishes) != 1 || frontend.finishes[0] != appcli.TurnFailed {
 		t.Fatalf("finishes=%#v", frontend.finishes)
 	}
+	if len(instance.store.(*fakeStore).renamed) != 0 {
+		t.Fatalf("failed first turn renamed session: %#v", instance.store.(*fakeStore).renamed)
+	}
+}
+
+func TestNewWithoutTitleWaitsForMessageAndRenameIsManual(t *testing.T) {
+	frontend := &fakeFrontend{lines: []string{"/new", "next task", "/rename Project X", "/exit"}}
+	runtime := &fakeAgent{}
+	store := &fakeStore{}
+	instance := testApplication(frontend, runtime, store, &fakeProcess{})
+
+	if err := instance.loop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.created) != 1 || store.created[0].Title != "next task" {
+		t.Fatalf("created=%#v", store.created)
+	}
+	if len(store.renamed) != 2 || store.renamed[0].title != "Generated title" || store.renamed[1].title != "Project X" {
+		t.Fatalf("renamed=%#v", store.renamed)
+	}
+}
+
+func TestAutomaticTitleFailureKeepsTemporaryTitle(t *testing.T) {
+	frontend := &fakeFrontend{lines: []string{"first message", "/exit"}}
+	runtime := &fakeAgent{}
+	store := &fakeStore{}
+	instance := testApplication(frontend, runtime, store, &fakeProcess{})
+	instance.model = &fakeModel{err: errors.New("title unavailable")}
+
+	if err := instance.loop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.created) != 1 || store.created[0].Title != "first message" || len(store.renamed) != 0 {
+		t.Fatalf("created=%#v renamed=%#v", store.created, store.renamed)
+	}
+}
+
+func TestAutomaticTitleRunsOnceAndNeverOverwritesManualNewTitle(t *testing.T) {
+	t.Run("automatic", func(t *testing.T) {
+		frontend := &fakeFrontend{lines: []string{"first topic", "follow up", "/exit"}}
+		store := &fakeStore{}
+		instance := testApplication(frontend, &fakeAgent{}, store, &fakeProcess{})
+		titleModel := &fakeModel{}
+		instance.model = titleModel
+		if err := instance.loop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(titleModel.requests) != 1 || len(store.renamed) != 1 {
+			t.Fatalf("title requests=%d renames=%#v", len(titleModel.requests), store.renamed)
+		}
+	})
+
+	t.Run("manual", func(t *testing.T) {
+		frontend := &fakeFrontend{lines: []string{"/new Project", "first topic", "/exit"}}
+		store := &fakeStore{}
+		instance := testApplication(frontend, &fakeAgent{}, store, &fakeProcess{})
+		titleModel := &fakeModel{}
+		instance.model = titleModel
+		if err := instance.loop(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(titleModel.requests) != 0 || len(store.renamed) != 0 || len(store.created) != 1 || store.created[0].Title != "Project" {
+			t.Fatalf("title requests=%d created=%#v renames=%#v", len(titleModel.requests), store.created, store.renamed)
+		}
+	})
 }
 
 func TestTurnCanBeCanceledWithoutExiting(t *testing.T) {
@@ -299,16 +402,19 @@ func TestTurnCanBeCanceledWithoutExiting(t *testing.T) {
 
 func TestNewRejectsTypedNilDependenciesAndMissingProcess(t *testing.T) {
 	var nilAgent *fakeAgent
+	var nilModel *fakeModel
 	var nilFrontend *fakeFrontend
 	var nilStore *fakeStore
 	validAgent := &fakeAgent{}
+	validModel := &fakeModel{}
 	validFrontend := &fakeFrontend{}
 	tests := []Dependencies{
-		{Agent: nilAgent, History: validAgent, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: nilAgent, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Interaction: nilFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Interaction: validFrontend, Frontend: nilFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Interaction: validFrontend, Frontend: validFrontend, Store: nilStore},
+		{Agent: nilAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
+		{Agent: validAgent, History: nilAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: nilModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: nilFrontend, Frontend: validFrontend, Store: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: nilFrontend, Store: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: nilStore},
 	}
 	ctx := applicationruntime.WithProcess(context.Background(), &fakeProcess{})
 	for index, deps := range tests {
@@ -316,7 +422,7 @@ func TestNewRejectsTypedNilDependenciesAndMissingProcess(t *testing.T) {
 			t.Fatalf("case %d New() error=%v", index, err)
 		}
 	}
-	valid := Dependencies{Agent: validAgent, History: validAgent, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}}
+	valid := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}}
 	if _, _, err := New(context.Background(), appcli.Config{}, valid); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("missing process error=%v", err)
 	}
@@ -327,7 +433,7 @@ func TestCheckModeValidatesGraphWithoutStartingLoop(t *testing.T) {
 	ctx := applicationruntime.WithProcess(context.Background(), process)
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
 	if err != nil || cleanup != nil {
 		t.Fatalf("cleanup=%v err=%v", cleanup, err)
 	}
@@ -339,7 +445,7 @@ func TestFatalLoopErrorRequestsProcessShutdownAndCleanupReturnsIt(t *testing.T) 
 	ctx := applicationruntime.WithProcess(context.Background(), process)
 	frontend := &fakeFrontend{readErr: wantErr}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}

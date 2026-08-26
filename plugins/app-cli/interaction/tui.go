@@ -892,7 +892,7 @@ func helpText() string {
 		"Enter        Send message", "Ctrl+J       Insert newline", "Ctrl+N       New session",
 		"Ctrl+O       Open sessions", "Tab          Switch sidebar/input", "PgUp/PgDn   Scroll transcript",
 		"Ctrl+C       Cancel turn, clear input, or exit", "Ctrl+Q       Exit", "F1 / Esc     Close help",
-		"", "Commands: /new [title]  /use <id>  /list  /help  /exit",
+		"", "Commands: /new [title]  /rename <title>  /use <id>  /list  /help  /exit",
 	}, "\n")
 }
 

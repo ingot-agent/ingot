@@ -48,7 +48,7 @@ type Dependencies struct{}
 
 // Exports contains the component's provided capabilities.
 type Exports struct {
-	Store session.Store
+	Store session.MutableStore
 }
 
 // New opens or initializes the plugin-scoped state directory.

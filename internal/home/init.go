@@ -194,6 +194,7 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 	write("--- model provider: required to run the agent ---\nFill in base_url, api_key and your model names.", "model.openai-compatible", "providers = [\n  { name = \"openai\", base_url = \"https://api.example.com/v1\", api_key = \"\", models = [\"gpt-4o-mini\"] },\n]\n")
 	write("--- defaults used when a request leaves provider/model empty ---\nKeep these in sync with the provider name and models above.", "model.runtime", "default_provider = \"openai\"\ndefault_model = \"gpt-4o-mini\"\n")
 	write("--- agent loop defaults (optional) ---", "agent.default", "# provider = \"openai\"\n# model = \"gpt-4o-mini\"\n# streaming = true\n# max_tool_rounds = 8\n")
+	write("--- session title model (optional) ---\nEmpty values reuse model.runtime defaults; choose a cheaper model here if desired.", "app.cli", "# app = { title_provider = \"openai\", title_model = \"gpt-4o-mini\" }\n")
 	if _, ok := byName["filesystem.local"]; ok {
 		write("--- workspace root for filesystem tools ---\n\".\" means the working directory where you start `ingot chat`.", "filesystem.local", "root = \".\"\n")
 	}
@@ -210,7 +211,7 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 	}
 	for _, entry := range entries {
 		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "agent.default", "filesystem.local", "tool.shell":
+		case "model.openai-compatible", "model.runtime", "agent.default", "app.cli", "filesystem.local", "tool.shell":
 			continue
 		}
 		write("", entry.Name, "")

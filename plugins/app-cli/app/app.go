@@ -28,31 +28,36 @@ var ErrInvalidConfig = errors.New("invalid app.cli app config")
 type Dependencies struct {
 	Agent       agent.Runtime
 	History     agent.History
+	Model       model.Runtime
 	Interaction interaction.Channel
 	Frontend    appcli.Frontend
-	Store       session.Store
+	Store       session.MutableStore
 }
 
 // Exports is empty because app is a graph leaf.
 type Exports struct{}
 
 type application struct {
-	agent        agent.Runtime
-	history      agent.History
-	interaction  interaction.Channel
-	frontend     appcli.Frontend
-	store        session.Store
-	process      applicationruntime.Process
-	inputPrompt  string
-	initialTitle string
-	showBanner   bool
-	now          func() time.Time
-	current      session.ID
+	agent            agent.Runtime
+	history          agent.History
+	model            model.Runtime
+	interaction      interaction.Channel
+	frontend         appcli.Frontend
+	store            session.MutableStore
+	process          applicationruntime.Process
+	inputPrompt      string
+	initialTitle     string
+	titleProvider    string
+	titleModel       string
+	showBanner       bool
+	now              func() time.Time
+	current          session.ID
+	autoTitlePending bool
 }
 
 // New starts one instance-owned CLI loop and returns promptly.
 func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
-	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) {
+	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Model) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) {
 		return Exports{}, nil, fmt.Errorf("construct app.cli app: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
@@ -65,7 +70,7 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sd
 	if process.Check() {
 		return Exports{}, nil, nil
 	}
-	if !utf8.ValidString(cfg.App.InitialSessionTitle) || !utf8.ValidString(cfg.Interaction.InputPrompt) {
+	if !utf8.ValidString(cfg.App.InitialSessionTitle) || !utf8.ValidString(cfg.App.TitleProvider) || !utf8.ValidString(cfg.App.TitleModel) || !utf8.ValidString(cfg.Interaction.InputPrompt) {
 		return Exports{}, nil, fmt.Errorf("configured text must be valid UTF-8: %w", ErrInvalidConfig)
 	}
 	inputPrompt := cfg.Interaction.InputPrompt
@@ -75,8 +80,9 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sd
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	instance := &application{
-		agent: deps.Agent, history: deps.History, interaction: deps.Interaction, frontend: deps.Frontend, store: deps.Store, process: process,
+		agent: deps.Agent, history: deps.History, model: deps.Model, interaction: deps.Interaction, frontend: deps.Frontend, store: deps.Store, process: process,
 		inputPrompt: inputPrompt, initialTitle: cfg.App.InitialSessionTitle,
+		titleProvider: cfg.App.TitleProvider, titleModel: cfg.App.TitleModel,
 		showBanner: cfg.App.ShowBanner, now: time.Now,
 	}
 	go func() {
@@ -152,12 +158,14 @@ func (a *application) loop(ctx context.Context) error {
 			continue
 		}
 		if a.current == "" {
-			if err := a.createSession(ctx, a.initialTitle); err != nil {
+			title := temporarySessionTitle(line, a.initialTitle)
+			if err := a.createSession(ctx, title); err != nil {
 				if renderErr := a.interaction.Render(ctx, interaction.ErrorEvent{Err: err}); renderErr != nil {
 					return renderErr
 				}
 				continue
 			}
+			a.autoTitlePending = true
 		}
 		exit, err := a.runTurn(ctx, line)
 		if err != nil {
@@ -171,22 +179,30 @@ func (a *application) loop(ctx context.Context) error {
 }
 
 func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
+	shouldGenerateTitle := a.autoTitlePending
+	a.autoTitlePending = false
 	if err := a.frontend.StartTurn(ctx, input); err != nil {
 		return false, err
 	}
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	done := make(chan error, 1)
+	type outcome struct {
+		result agent.Result
+		err    error
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		_, err := a.agent.Run(turnCtx, agent.Turn{SessionID: a.current, Input: input})
-		done <- err
+		result, err := a.agent.Run(turnCtx, agent.Turn{SessionID: a.current, Input: input})
+		done <- outcome{result: result, err: err}
 	}()
 	state := appcli.TurnCompleted
 	var turnErr error
+	var result agent.Result
 	interrupts := a.frontend.Interrupts()
 	for {
 		select {
-		case turnErr = <-done:
+		case completed := <-done:
+			result, turnErr = completed.result, completed.err
 			if turnErr != nil {
 				if ctx.Err() != nil {
 					return false, ctx.Err()
@@ -199,7 +215,8 @@ func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
 				continue
 			}
 			cancel()
-			turnErr = <-done
+			completed := <-done
+			turnErr = completed.err
 			state = appcli.TurnCanceled
 			if finishErr := a.frontend.FinishTurn(ctx, state); finishErr != nil {
 				return false, finishErr
@@ -224,6 +241,9 @@ func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
 	if err := a.frontend.FinishTurn(ctx, state); err != nil {
 		return false, err
 	}
+	if turnErr == nil && shouldGenerateTitle {
+		a.generateAndRenameTitle(ctx, input, result.Output)
+	}
 	if err := a.syncSession(ctx); err != nil {
 		return false, err
 	}
@@ -245,7 +265,38 @@ func (a *application) command(ctx context.Context, line string) (bool, error) {
 		}
 		return true, nil
 	case "/new":
-		return false, a.createSession(ctx, argument)
+		a.autoTitlePending = false
+		if argument == "" {
+			a.current = ""
+			if err := a.syncSession(ctx); err != nil {
+				return false, err
+			}
+			return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "new session: send a message to start"})
+		}
+		title, err := manualSessionTitle(argument)
+		if err != nil {
+			return false, err
+		}
+		return false, a.createSession(ctx, title)
+	case "/rename":
+		if a.current == "" {
+			return false, errors.New("no active session")
+		}
+		if argument == "" {
+			return false, errors.New("usage: /rename <title>")
+		}
+		title, err := manualSessionTitle(argument)
+		if err != nil {
+			return false, err
+		}
+		if err := a.store.Rename(ctx, a.current, title); err != nil {
+			return false, fmt.Errorf("rename session %q: %w", a.current, err)
+		}
+		a.autoTitlePending = false
+		if err := a.syncSession(ctx); err != nil {
+			return false, err
+		}
+		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "renamed session to " + title})
 	case "/use":
 		if argument == "" {
 			return false, errors.New("usage: /use <id>")
@@ -255,6 +306,7 @@ func (a *application) command(ctx context.Context, line string) (bool, error) {
 			return false, fmt.Errorf("load session %q: %w", id, err)
 		}
 		a.current = id
+		a.autoTitlePending = false
 		if err := a.syncSession(ctx); err != nil {
 			return false, err
 		}
@@ -281,7 +333,7 @@ func (a *application) command(ctx context.Context, line string) (bool, error) {
 		}
 		return false, nil
 	case "/help":
-		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "/new [title]  /use <id>  /list  /help  /exit"})
+		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "/new [title]  /rename <title>  /use <id>  /list  /help  /exit"})
 	default:
 		return false, fmt.Errorf("unknown command %q", command)
 	}

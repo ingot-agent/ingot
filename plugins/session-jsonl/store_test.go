@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -36,6 +38,7 @@ func TestComponentContract(t *testing.T) {
 	_ = constructor
 	created, _ := newTestStore(t)
 	var _ session.Store = created
+	var _ session.MutableStore = created
 }
 
 func TestRequiresStateScope(t *testing.T) {
@@ -92,6 +95,58 @@ func TestCreateAppendLoadAndOwnership(t *testing.T) {
 	}
 }
 
+func TestRenamePersistsTitleWithoutChangingConversationTimes(t *testing.T) {
+	t.Parallel()
+	created, _ := newTestStore(t)
+	createdAt := time.Date(2026, 8, 26, 10, 0, 0, 0, time.UTC)
+	id, err := created.Create(context.Background(), session.Metadata{Title: "First message", CreatedAt: createdAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendedAt := createdAt.Add(time.Minute)
+	created.now = func() time.Time { return appendedAt }
+	if err := created.Append(context.Background(), id, session.Entry{Kind: "message", Version: 1, Payload: json.RawMessage(`"hello"`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Rename(context.Background(), id, "Generated title"); err != nil {
+		t.Fatal(err)
+	}
+	summaries, err := created.List(context.Background(), session.Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].Title != "Generated title" || !summaries[0].CreatedAt.Equal(createdAt) || !summaries[0].UpdatedAt.Equal(appendedAt) {
+		t.Fatalf("summary=%#v", summaries)
+	}
+	entries, err := created.Load(context.Background(), id)
+	if err != nil || len(entries) != 1 || string(entries[0].Payload) != `"hello"` {
+		t.Fatalf("entries=%#v err=%v", entries, err)
+	}
+}
+
+func TestRenameValidationAndContext(t *testing.T) {
+	t.Parallel()
+	created, _ := newTestStore(t)
+	id, err := created.Create(context.Background(), session.Metadata{Title: "original", CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"", "   ", string([]byte{0xff})} {
+		if err := created.Rename(context.Background(), id, title); !errors.Is(err, ErrInvalidEntry) {
+			t.Fatalf("Rename(%q) error=%v", title, err)
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := created.Rename(canceled, id, "new"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Rename error=%v", err)
+	}
+	missing := session.ID("0123456789abcdef0123456789abcdef")
+	if err := created.Rename(context.Background(), missing, "new"); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("missing Rename error=%v", err)
+	}
+}
+
 func TestConcurrentAppendProducesCompleteSequence(t *testing.T) {
 	t.Parallel()
 	created, _ := newTestStore(t)
@@ -129,6 +184,42 @@ func TestConcurrentAppendProducesCompleteSequence(t *testing.T) {
 	}
 	if len(seen) != count {
 		t.Fatalf("unique values = %d, want %d", len(seen), count)
+	}
+}
+
+func TestConcurrentRenameAndAppendShareSessionOrdering(t *testing.T) {
+	t.Parallel()
+	created, _ := newTestStore(t)
+	id, err := created.Create(context.Background(), session.Metadata{Title: "initial", CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const count = 20
+	var wait sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wait.Add(2)
+		go func(value int) {
+			defer wait.Done()
+			payload, _ := json.Marshal(value)
+			if err := created.Append(context.Background(), id, session.Entry{Kind: "value", Version: 1, Payload: payload}); err != nil {
+				t.Errorf("Append(%d): %v", value, err)
+			}
+		}(i)
+		go func(value int) {
+			defer wait.Done()
+			if err := created.Rename(context.Background(), id, fmt.Sprintf("title-%d", value)); err != nil {
+				t.Errorf("Rename(%d): %v", value, err)
+			}
+		}(i)
+	}
+	wait.Wait()
+	entries, err := created.Load(context.Background(), id)
+	if err != nil || len(entries) != count {
+		t.Fatalf("entries=%d err=%v", len(entries), err)
+	}
+	summaries, err := created.List(context.Background(), session.Query{})
+	if err != nil || len(summaries) != 1 || !strings.HasPrefix(summaries[0].Title, "title-") {
+		t.Fatalf("summaries=%#v err=%v", summaries, err)
 	}
 }
 

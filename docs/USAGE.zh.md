@@ -304,6 +304,8 @@ ingot chat --plain
 
 `chat` 是 `app.cli` 的 runtime 命令：不带 `--plain` 时启动全屏 TUI（markdown transcript、tool 调用块、`Ctrl+O` 会话侧栏、Ask 选项面板；`Ctrl+Q` 退出，`Ctrl+C` 取消进行中的 turn，`F1` 帮助）。`chat --plain` 降级为 prompt 行输入与纯文本输出，stdin/stdout 非终端时（管道、重定向、非交互脚本）也能工作。模型 provider 与 API key 在 `config.toml` 中配置，不通过命令行传入。
 
+首次发送普通消息时，app先用该消息的规范化短文本立即创建Session；首轮成功后再调用一次模型生成稳定标题并替换，后续不自动更新。`/new 项目名`创建人工命名Session，`/new`等待下一条消息自动创建，`/rename 新标题`修改当前标题；人工标题不会被AI覆盖。标题生成失败只保留首条消息标题，不影响对话。
+
 如果当前没有镜像（或镜像缺失），命令会失败并给出说明。
 
 内部运行时参数（保留给 Builder 使用）：

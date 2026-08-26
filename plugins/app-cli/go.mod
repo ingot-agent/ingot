@@ -6,7 +6,7 @@ require (
 	charm.land/bubbles/v2 v2.0.0
 	charm.land/bubbletea/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.0
-	github.com/ingot-agent/sdk v0.1.2
+	github.com/ingot-agent/sdk v0.1.3
 	github.com/yuin/goldmark v1.7.8
 	golang.org/x/sys v0.41.0
 	golang.org/x/term v0.31.0
