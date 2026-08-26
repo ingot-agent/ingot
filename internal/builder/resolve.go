@@ -20,7 +20,7 @@ const (
 	DefaultIngotVersion   = "0.3.0"
 	DefaultBuilderVersion = "0.3.1"
 	DefaultSDKModule      = "github.com/ingot-agent/sdk"
-	DefaultSDKVersion     = "v0.1.0"
+	DefaultSDKVersion     = "v0.1.2"
 )
 
 type ResolveOptions struct {
@@ -28,17 +28,22 @@ type ResolveOptions struct {
 	BuilderVersion string
 	SDKModule      string
 	SDKVersion     string
-	Toolchain      string
-	GOOS           string
-	GOARCH         string
-	GOExperiment   []string
-	Tuning         []TargetKey
-	Tags           []string
-	LDFlags        []string
-	GCFlags        []string
-	ASMFlags       []string
-	GOMODCACHE     string
-	GOPROXY        string
+	// SDKPath replaces SDKModule with a local development checkout. When it
+	// is empty, Resolve discovers an unversioned local replacement from the
+	// nearest go.work file. The replacement is content-locked and copied into
+	// the build staging area like a development plugin.
+	SDKPath      string
+	Toolchain    string
+	GOOS         string
+	GOARCH       string
+	GOExperiment []string
+	Tuning       []TargetKey
+	Tags         []string
+	LDFlags      []string
+	GCFlags      []string
+	ASMFlags     []string
+	GOMODCACHE   string
+	GOPROXY      string
 }
 
 func (options ResolveOptions) defaults() ResolveOptions {
@@ -121,6 +126,30 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		return nil, err
 	}
 	options = options.defaults()
+	if options.SDKPath == "" {
+		options.SDKPath = workspaceModuleReplacement(options.SDKModule)
+	}
+	var sdkReplacement *Replacement
+	if options.SDKPath != "" {
+		absolute, pathErr := filepath.Abs(options.SDKPath)
+		if pathErr != nil {
+			return nil, pathErr
+		}
+		absolute = filepath.Clean(absolute)
+		identity, identityErr := moduleIdentity(filepath.Join(absolute, "go.mod"))
+		if identityErr != nil {
+			return nil, identityErr
+		}
+		if identity != options.SDKModule {
+			return nil, &Error{Code: "INGOT-RESOLVE-SDK-LOCAL-MODULE-MISMATCH", Path: absolute, Want: options.SDKModule, Actual: identity}
+		}
+		digest, digestErr := ModuleSourceDigest(absolute)
+		if digestErr != nil {
+			return nil, digestErr
+		}
+		options.SDKPath = absolute
+		sdkReplacement = &Replacement{ModulePath: options.SDKModule, SyntheticVersion: options.SDKVersion, DevPath: absolute, ContentSHA256: digest}
+	}
 	desiredDigest, err := desired.Digest()
 	if err != nil {
 		return nil, err
@@ -271,6 +300,9 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		lockedPlugins[i] = locked
 	}
+	if sdkReplacement != nil {
+		replacements = append(replacements, *sdkReplacement)
+	}
 
 	modules := make([]LockedModule, 0, len(selected))
 	for _, selectedModule := range selected {
@@ -293,11 +325,19 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		return modules[i].Version < modules[j].Version
 	})
-	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
 	sdkSelected, ok := selectedByPath[options.SDKModule]
-	if !ok || sdkSelected.Replace != nil {
+	if !ok || (sdkReplacement == nil && sdkSelected.Replace != nil) || (sdkReplacement != nil && (sdkSelected.Replace == nil || filepath.Clean(sdkSelected.Replace.Dir) != options.SDKPath)) {
 		return nil, &Error{Code: "INGOT-RESOLVE-SDK", Want: options.SDKModule}
 	}
+	if sdkReplacement != nil {
+		for index := range replacements {
+			if replacements[index].ModulePath == options.SDKModule {
+				replacements[index].SyntheticVersion = sdkSelected.Version
+				break
+			}
+		}
+	}
+	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
 	lock := &Lock{
 		LockVersion: 1, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
 		Replacements: replacements, SDK: SDKLock{ModulePath: options.SDKModule, Version: sdkSelected.Version}, Toolchain: ToolchainLock{Version: options.Toolchain},
@@ -389,11 +429,47 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", source.plugin.Module, goModQuote(filepath.ToSlash(source.devPath)))
 		}
 	}
+	if options.SDKPath != "" {
+		_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", options.SDKModule, goModQuote(filepath.ToSlash(options.SDKPath)))
+	}
 	parsed, err := modfile.Parse("go.mod", []byte(content.String()), nil)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(directory, "go.mod"), modfile.Format(parsed.Syntax), 0o644)
+}
+
+func workspaceModuleReplacement(modulePath string) string {
+	directory, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		workPath := filepath.Join(directory, "go.work")
+		data, readErr := os.ReadFile(workPath)
+		if readErr == nil {
+			work, parseErr := modfile.ParseWork(workPath, data, nil)
+			if parseErr != nil {
+				return ""
+			}
+			for _, replacement := range work.Replace {
+				if replacement.Old.Path != modulePath || replacement.Old.Version != "" || replacement.New.Version != "" {
+					continue
+				}
+				path := replacement.New.Path
+				if !filepath.IsAbs(path) {
+					path = filepath.Join(directory, filepath.FromSlash(path))
+				}
+				return filepath.Clean(path)
+			}
+			return ""
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return ""
+		}
+		directory = parent
+	}
 }
 
 func resolveEnvironment(options ResolveOptions) []string {

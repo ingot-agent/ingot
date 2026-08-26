@@ -30,7 +30,7 @@ Plugin 设计必须遵循：
 | [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
 | [`context.compact`](./context.compact_v0.1.md) | Implemented v0.1 | `contextwindow.Compactor` | 非破坏式增量摘要、事实Delta与checkpoint复用 |
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
-| [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel`（app Component无导出） | Composite frontend后台循环和Cleanup |
+| [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel` + `appcli.Frontend`（app Component无导出） | TUI/plain双前端、turn取消与受控进程退出 |
 
 共15个Plugin、16个Component；`app.cli`包含`interaction`和`app`两个Component。
 
@@ -44,7 +44,9 @@ Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.cli / interceptor.script hardening
 ```
 
-`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend局部结束不控制整个process，不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。
+`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend结束通过SDK `application.Process.Shutdown` 向generated main优雅报告进程结果（nil=退出0，err=退出1），不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。`application.Process`与`agent.History`自 SDK v0.1.2 起正式发布（`sdk`/`application` + `agent.History`），工作区所有 Plugin 模块统一依赖该版本。
+
+`app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
 
 ## 共同实现约定
 

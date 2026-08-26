@@ -112,11 +112,11 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", SDKPath: sdkSource, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 1 || lock.Replacements[0].SyntheticVersion != "v0.0.0" {
+	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 2 || lock.SDK.Version != "v0.1.0" {
 		t.Fatalf("local lock materialization = %#v / %#v", lock.Plugins[0], lock.Replacements)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
@@ -124,6 +124,15 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(result.BinaryPath); err != nil {
+		t.Fatal(err)
+	}
+	sdkDriftPath := filepath.Join(sdkSource, "changed.txt")
+	writeTestFile(t, sdkDriftPath, "drift")
+	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-DEV-DIGEST") || !strings.Contains(err.Error(), "example.com/ingot-test-sdk") {
+		t.Fatalf("SDK source drift error = %v", err)
+	}
+	if err := os.Remove(sdkDriftPath); err != nil {
 		t.Fatal(err)
 	}
 	writeTestFile(t, filepath.Join(pluginSource, "changed.txt"), "drift")
@@ -175,6 +184,7 @@ func Decode[T any]([]byte) (T, error) { var result T; return result, nil }
 type stateKey struct{}
 func WithStateDir(ctx context.Context, path string) context.Context { return context.WithValue(ctx, stateKey{}, path) }
 `)
+	writeTestApplicationPackage(t, sdkSource)
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
 
 	writeTestRemotePlugin(t, pluginSource)
@@ -302,6 +312,18 @@ func ResolveTables(data []byte, refs []PluginReference) (map[string][]byte, erro
 func Decode[T any]([]byte) (T, error) { var result T; return result, nil }
 type stateKey struct{}
 func WithStateDir(ctx context.Context, path string) context.Context { return context.WithValue(ctx, stateKey{}, path) }
+`)
+	writeTestApplicationPackage(t, root)
+}
+
+func writeTestApplicationPackage(t *testing.T, root string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(root, "application", "application.go"), `package application
+import "context"
+type Process interface { Arguments() []string; Check() bool; Shutdown(error) }
+type processKey struct{}
+func WithProcess(ctx context.Context, process Process) context.Context { return context.WithValue(ctx, processKey{}, process) }
+func FromContext(ctx context.Context) (Process, bool) { process, ok := ctx.Value(processKey{}).(Process); return process, ok }
 `)
 }
 

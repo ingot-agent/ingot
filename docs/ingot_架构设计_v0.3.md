@@ -131,7 +131,7 @@ flowchart TB
 | `~/.ingot/images/<ImageID>/manifest.json` | ImageID、ArtifactDigest 与 provenance |
 | `~/.ingot/current` | 当前 ImageID 的原子指针 |
 
-正常命令 `ingot chat` 读取 `current`，定位 image 并 `exec` 对应的 `ingot-runtime`。
+正常命令 `ingot chat` 读取 `current`，定位 image 并 `exec` 对应的 `ingot-runtime`。`chat` 是 `app.cli` runtime 命令：默认进入全屏 TUI，`--plain` 降级为可取消行输入（pipes/重定向）；运行时进程参数由 generated main 通过 `application.Process` 暴露给 Component。
 
 ### 3.2 Builder
 
@@ -449,7 +449,7 @@ SDK 提供：
 
 - `sdk.Cleanup`、`sdk.Optional[T]`、`sdk.Named[T]`；
 - typed pipeline Interceptor；
-- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract；
+- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract（含 `agent.History`）与 `application.Process`（SDK v0.1.2 起正式发布，工作区 Plugin 模块统一依赖该版本）；
 - Context、错误、并发与 ownership 语义。
 
 Runtime 的主要 chokepoint：

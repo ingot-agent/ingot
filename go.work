@@ -1,21 +1,20 @@
-go 1.24.0
+go 1.24.2
 
 use (
 	.
-	./plugins/filesystem-local
-	./plugins/http-default
-	./plugins/session-jsonl
-	./plugins/tool-fs
-	./plugins/tool-ask
-	./plugins/tool-shell
-	./plugins/interceptor-approval
-	./plugins/tool-runtime
-	./plugins/model-openai-compatible
-	./plugins/model-runtime
-	./plugins/context-compact
-	./plugins/prompt-default
 	./plugins/agent-default
 	./plugins/app-cli
+	./plugins/context-compact
+	./plugins/filesystem-local
+	./plugins/http-default
+	./plugins/interceptor-approval
 	./plugins/interceptor-script
+	./plugins/model-openai-compatible
+	./plugins/model-runtime
+	./plugins/prompt-default
+	./plugins/session-jsonl
+	./plugins/tool-ask
+	./plugins/tool-fs
+	./plugins/tool-runtime
+	./plugins/tool-shell
 )
-

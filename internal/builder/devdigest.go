@@ -30,6 +30,16 @@ type sourceDigestEntry struct {
 // DevSourceDigest computes the exact INGOT-DEV-SOURCE-DIGEST-V1 content
 // identity for a local plugin module.
 func DevSourceDigest(root string) (string, error) {
+	return sourceDigest(root, []string{"go.mod", "ingot.plugin.toml"})
+}
+
+// ModuleSourceDigest computes the same content identity for a local module
+// that is not an ingot plugin, such as a development SDK replacement.
+func ModuleSourceDigest(root string) (string, error) {
+	return sourceDigest(root, []string{"go.mod"})
+}
+
+func sourceDigest(root string, requiredFiles []string) (string, error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return "", err
@@ -40,7 +50,7 @@ func DevSourceDigest(root string) (string, error) {
 		return "", &Error{Code: "INGOT-DEV-SOURCE-ROOT", Path: absolute, Err: err}
 	}
 	absolute = filepath.Clean(resolvedRoot)
-	for _, required := range []string{"go.mod", "ingot.plugin.toml"} {
+	for _, required := range requiredFiles {
 		info, statErr := os.Stat(filepath.Join(absolute, required))
 		if statErr != nil || !info.Mode().IsRegular() {
 			if statErr == nil {

@@ -352,6 +352,22 @@ UI、TUI、server、watcher 与 daemon 使用普通 Component 生命周期。Gen
 
 `ingot-runtime --ingot-check` 是 generated main/Builder protocol，不属于 SDK API。它在隔离 persistent root 上构造并清理完整 Graph。
 
+### 7.4 Application Process Contract（SDK v0.1.2）
+
+Generated main 为每个 runtime 进程注入一个 `application.Process`（`sdk/application`），通过 Context 传递给所有 Component（`application.WithProcess` / `FromContext`）：
+
+```go
+package application
+
+type Process interface {
+    Arguments() []string   // os.Args[1:]；--ingot-check 时为 nil
+    Check() bool           // 是否处于 --ingot-check 校验模式
+    Shutdown(error)        // 幂等；首次调用决定进程结果，nil=正常完成
+}
+```
+
+`Arguments` 返回调用者拥有的副本，`Shutdown` 并发安全。该契约用于 frontend（如 `app.cli`）向 generated main 优雅报告自己的结束原因：Component 不得`os.Exit`、发信号或取消 parent Context。本契约随 SDK v0.1.2 发布（`sdk/application` 包，`agent.History` 同期加入），工作区 Plugin 模块统一依赖 v0.1.2。
+
 ## 8. Config Package
 
 ### 8.1 Decode
@@ -871,7 +887,9 @@ ownership 规则同样适用于 `Options` slice。
 
 行式读取（`ReadLine`）不是 SDK 契约的一部分：它是终端传输原语，只属于具体
 frontend 内部（如 `app.cli` 的 `appcli.LineInput`），不应由插件或非行式
-frontend 实现。
+frontend 实现。`app.cli` 将其扩展为本地 `appcli.Frontend` 传输（在
+`Sync`/`StartTurn`/`FinishTurn`/`Interrupts` 上同步会话与 turn 状态），
+该接口同样不属于 SDK。
 
 Event 使用 SDK 封闭类型集合：
 
@@ -922,8 +940,14 @@ type Runtime interface {
     Run(context.Context, Turn) (Result, error)
 }
 
+type History interface {
+    Load(context.Context, session.ID) ([]model.Message, error)
+}
+
 type Interceptor = pipeline.Interceptor[Turn, Result]
 ```
+
+`History.Load` 返回一个经过校验的、调用者持有的持久化消息快照（深层复制，不含中断回合恢复或写入）；同一 Session 的 Run 进行中时，Load 与 Run 按调用顺序串行化并观察Context。`agent.default` 同时导出 `Runtime` 与 `History`；`app.cli/app` 用它加载/校验 `/use` 目标并同步会话 transcript。
 
 `agent.default` 标准 Dependencies：
 

@@ -1,22 +1,25 @@
 # `app.cli` Composite Plugin v0.1 设计方案
 
-> 状态：Implemented v0.1
+> 状态：Implemented v0.1（TUI/plain 双前端）
 > Components：`interaction`、`app`
 
 ## 1. 定位
 
-`app.cli` 是普通Composite Plugin：`interaction` Component提供单一terminal interaction scope；`app` Component运行Session-aware CLI loop并调用`agent.Runtime`。两个Component共享一个root Config，但位于Component Graph不同拓扑位置。
+`app.cli` 是普通 Composite Plugin：`interaction` Component提供terminal interaction scope与本地前端传输；`app` Component运行Session-aware CLI loop并调用`agent.Runtime`。两个Component共享一个root Config，但位于Component Graph不同拓扑位置。
 
 ```text
 app.cli/interaction --interaction.Channel--> tool.ask
 app.cli/interaction --interaction.Channel--> interceptor.approval
 app.cli/interaction --interaction.Channel--> agent.default
-app.cli/interaction --appcli.LineInput----> app.cli/app
+app.cli/interaction --appcli.Frontend-----> app.cli/app
 app.cli/interaction --interaction.Channel----> app.cli/app
 
 agent.default ------agent.Runtime---------> app.cli/app
+agent.default ------agent.History----------> app.cli/app
 session.jsonl ------session.Store----------> app.cli/app
 ```
+
+process 级调用元数据（`application.Process`）由 generated main 通过 Context 注入，不经过 Component Graph。
 
 ## 2. Root Config
 
@@ -49,8 +52,8 @@ package interactioncomponent
 type Dependencies struct{}
 
 type Exports struct {
-    Channel interaction.Channel
-    Lines   appcli.LineInput
+    Channel  interaction.Channel
+    Frontend appcli.Frontend
 }
 
 func New(
@@ -60,7 +63,72 @@ func New(
 ) (Exports, sdk.Cleanup, error)
 ```
 
-### 3.1 Channel semantics
+### 3.1 Frontend 契约（app.cli 本地传输）
+
+`appcli.Frontend` 是 app.cli 内部的本地传输接口，**不是** SDK `interaction.Channel` 契约的一部分，不要求插件或其他 frontend 实现：
+
+```go
+type Frontend interface {
+    LineInput
+    Sync(context.Context, SessionView) error          // 整体替换可见会话状态
+    StartTurn(context.Context, string) error          // 开始渲染一次 turn
+    FinishTurn(context.Context, TurnState) error      // 记录 turn 结束状态
+    Interrupts() <-chan Interrupt                     // turn 进行中的用户打断
+}
+```
+
+`SessionView` 是调用者拥有的快照（`Current`、`Sessions`、`Messages`）；Frontend 在 `Sync` 返回后必须复制所有可变值。`Interrupt` 只有两种：`InterruptCancel`（取消当前 turn，前端继续运行）与 `InterruptExit`（取消当前 turn 并请求正常进程退出）。
+
+### 3.2 前端模式选择
+
+`New` 从 Context 取 `application.Process`，然后按下述优先级选择实现：
+
+1. `process.Check()` 为 true（`--ingot-check`）：构造**校验模式**实例——`Channel`/`Frontend` 都指向一个丢弃 stdout/stderr 的 line channel，不读终端、不启动 TUI，Cleanup 只做幂等释放。这样 graph startup validation 可以完整构造并清理 interaction scope；
+2. `appcli.ParseArguments(process.Arguments())`：
+   - `["chat"]` → **ModeTUI**（全屏终端前端）；
+   - `["chat", "--plain"]` → **ModePlain**（可取消行输入 + 纯文本输出）；
+   - 其他参数 → `ErrInvalidArguments`（usage: `ingot chat [--plain]`）。
+
+### 3.3 ModePlain
+
+普通行式前端：`Ask`/`ReadLine` 通过 Context-aware input gate 严格串行；UTF-8 与 `max_line_bytes` 校验、EOF 语义、Options 编号选择与自由输入重试均同 v0.1（plain 模式固定无色输出，color 配置只影响 TUI）。
+
+`Frontend` 由同一 `channel` 实例承担：
+
+- `Sync`/`StartTurn`/`FinishTurn` 只校验 Context，不改变输出（纯文本无需状态同步）；
+- `Interrupts()` 返回 nil——plain 模式下 turn 运行期间用户无法打断，只能随 process Context 取消。
+
+### 3.4 ModeTUI
+
+全屏 bubletea v2 前端，需要 terminal stdin 与 stdout，否则启动失败返回 `ErrTerminalRequired`（pipe/重定向请使用 plain 模式）；同一进程只能有一个实例持有终端，第二个实例返回 `ErrTerminalInUse`。
+
+TUI 布局：header（当前 Session / working 状态）、transcript viewport + composer、footer（状态与按键提示）。宽度 ≥100 时显示固定侧栏会话列表，窄屏退化为 `Ctrl+O` 浮层。终端可输出颜色时以背景色适配（`tea.RequestBackgroundColor`）。
+
+Transcript 渲染：
+
+- assistant 消息按流式 delta 聚合到同一 block，使用 GFM markdown 渲染（标题、列表、引用、围栏代码块、行内代码、强调、链接显示 label+destination、图片折叠为 `[label]`）；
+- tool 调用以独立 block 展示 name/id、arguments（截断至 4KiB）与按 call ID 配对的 result；
+- 渲染以 30fps 节流（`markdownFrame`），用户上翻后停止自动跟随。
+
+按键：
+
+| 按键 | 行为 |
+|---|---|
+| `Enter` | 发送（`busy` 时不响应） |
+| `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | 输入框换行 |
+| `Ctrl+N` | `/new` |
+| `Ctrl+O` | 打开/关闭会话侧栏，`Tab` 在输入与侧栏间切换焦点 |
+| `↑/↓` 或 `j/k` | 侧栏选择；`Enter` 执行 `/use <id>` |
+| `PgUp/PgDn/Home/End` | 滚动 transcript |
+| `Ctrl+C` | 输入框为空时 `/exit`，否则清空输入；turn 进行中 = 取消当前 turn |
+| `Ctrl+Q` | 退出（turn 进行中先取消再退出） |
+| `F1` | 帮助浮层，`Esc`/`q` 关闭 |
+
+Ask 渲染：选项列表（`›` 标记 + 编号），`↑/↓` 或 `j/k` 或 `1-9` 选择，`Enter` 确认；`AllowTextInput` 时追加 `Other…` 入口，选择后的输入仍属于同一次持锁 Ask，空输入继续提示；`Esc`/`Ctrl+C` 取消当前 turn，`Ctrl+Q` 退出。
+
+生命周期：`New` 启动 program goroutine、等待 first frame `ready` 后返回；`Render`/`Sync`/`StartTurn`/`FinishTurn` 通过 `program.Send` 投递并等待 ack（观察调用 Context 与 program done）；`ReadLine`/`Ask` 复用 input gate 串行化。Cleanup：取消 instance context → program 结束 → 释放终端租约 → 返回 program fatal error；非取消类 fatal error 通过 `process.Shutdown` 上报。
+
+### 3.5 Channel 语义（两种模式共同）
 
 - `Render` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
 - `Ask`严格串行，通过Context-aware input gate；行输入是frontend-local的`appcli.LineInput`能力，由同一实现层gate与`Ask`串行，但不属于SDK `interaction.Channel`契约；
@@ -75,7 +143,7 @@ func New(
 
 标准`bufio.Reader.ReadString`无法被Context可靠取消。Production实现必须使用platform terminal driver：Unix采用poll/select或可取消fd读取；Windows Console采用handle等待，重定向pipe必须先使用`PeekNamedPipe`确认有数据再执行同步Read，不能把pipe handle的signaled状态直接等同于可安全读取；不得用无法join的永久blocked goroutine伪装取消。
 
-### 3.2 Lifecycle
+### 3.6 Lifecycle
 
 `New`检测TTY、初始化terminal mode和内部同步结构，不读取第一行并及时返回。同一进程的标准stdin/stdout/stderr是独占物理资源，只允许一个`app.cli/interaction`实例持有；第二个实例在startup返回`ErrTerminalInUse`，Cleanup完成后释放租约。`color=auto`在Windows只在stdout Console已启用Virtual Terminal Processing时输出ANSI颜色。
 
@@ -88,8 +156,9 @@ Cleanup先关闭新调用入口并取消pending input，再以cleanup Context等
 ```go
 type Dependencies struct {
     Agent       agent.Runtime
+    History     agent.History
     Interaction interaction.Channel
-    Input       appcli.LineInput
+    Frontend    appcli.Frontend
     Store       session.Store
 }
 
@@ -102,19 +171,40 @@ func New(
 ) (Exports, sdk.Cleanup, error)
 ```
 
+`New` 从 Context 取 `application.Process`（缺失或非法 → `ErrInvalidConfig`）；`process.Check()` 为 true 时直接返回无 Cleanup 的 Exports，不启动 loop（与 interaction 的校验模式配合，`--ingot-check` 只验证构造）。
+
 CLI commands首版固定为：
 
 | Command | 行为 |
 |---|---|
-| `/new [title]` | Create并切换Session |
-| `/use <id>` | 验证Load后切换Session |
+| `/new [title]` | Create并切换Session，随后 `syncSession` |
+| `/use <id>` | 通过 `History.Load` 验证后切换Session并 `syncSession` |
 | `/list` | List并渲染Session摘要 |
 | `/help` | 展示命令 |
-| `/exit` | 正常停止当前CLI frontend loop，不终止整个进程 |
+| `/exit` | 请求正常进程退出（`process.Shutdown(nil)`） |
 
 非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。`Result.Output`只用于无Interaction的其他Agent consumer。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
 
-App loop本身串行处理terminal输入；Agent运行期间不读取下一条顶层命令，因此`tool.ask`/approval可以通过同一个Channel取得input gate并读取用户响应。
+### 4.1 会话同步
+
+`syncSession` 在每个关键点被调用（启动、`/new`、`/use`、每个 turn 结束、turn 取消后）：`store.List(limit 100)` 取摘要 + `history.Load(current)` 取已持久化 model 消息，打包为 `SessionView` 交给 `Frontend.Sync`。TUI 用它重建 transcript 与侧栏；plain 模式无操作。
+
+### 4.2 Turn 生命周期
+
+```text
+Frontend.StartTurn(input)
+→ agent.Run 在 instance-owned goroutine 执行（turnCtx 可取消）
+→ 等待: done | interrupt | ctx.Done
+→ Frontend.FinishTurn(TurnCompleted | TurnCanceled | TurnFailed)
+→ syncSession
+→ turn 出错: interaction.ErrorEvent（"session %q: %w"）后继续下一条输入
+```
+
+- `InterruptCancel`：取消 turnCtx、等待 goroutine join、`FinishTurn(TurnCanceled)`、同步并渲染 status "turn canceled"，继续读取下一条输入；
+- `InterruptExit`：取消并 join 后请求进程退出；
+- process Context 取消时同样先 join turn goroutine 再返回 Context 错误，不遗留 zombie。
+
+App loop本身串行处理terminal输入；Agent运行期间不读取下一条顶层命令，因此`tool.ask`/approval可以通过同一个Channel取得input gate并读取用户响应（TUI 下由 Ask 的选项面板承接）。
 
 ## 5. 普通 Component 生命周期
 
@@ -137,14 +227,21 @@ Cleanup
 
 `app`依赖`interaction` Component，因此generated reverse order会先Cleanup app loop，再Cleanup interaction terminal adapter。Cleanup等待loop时观察自己的cleanup Context；超时不得遗留Plugin-owned goroutine。Component不得调用`os.Exit`、发送进程信号、取消parent Context或使用隐藏全局channel影响进程生命周期。
 
-## 6. Loop结束与错误语义
+## 6. Loop结束与进程退出语义
 
-- `/exit`和stdin EOF正常停止当前CLI loop并记录nil result；Component保持已构造但inactive，直到进程随后执行Cleanup；
-- `/exit`不等于退出整个Runtime。CLI、TUI、Web、server等普通Component可以同时存在，任一frontend结束不能替其他Component决定process lifetime；
-- process Context取消时，pending input和Agent调用观察派生Context并结束；由generated main按正常路径执行reverse Cleanup；
-- 单条命令、Store或Agent业务错误添加command/session上下文，通过`interaction.ErrorEvent`渲染后继续下一条输入；
-- terminal adapter fatal error或无法继续的内部错误best-effort渲染后停止loop，并保存在instance中；后续Cleanup返回该错误。顶层v0.1没有后台任务错误上报Capability，因此它不会反向取消整个进程；
-- Cleanup主动取消造成的`context.Canceled`/`DeadlineExceeded`不作为loop failure重复报告；取消前已记录的独立fatal error仍返回；
+生成代码为每个 runtime 进程注入一个 `application.Process` 控制（SDK Contract，自 v0.1.2 起正式发布）：
+
+- `Arguments()` 返回 `os.Args[1:]`（`--ingot-check` 时为 nil）；`Check()` 返回是否有 `--ingot-check`；
+- `Shutdown(err)` 幂等，第一次调用决定进程结果：nil → 正常完成（退出码 0），非 nil → 记录 fatal error（generated main 退出码 1）；
+- generated main 在 `<-ctx.Done()` 后取 `process.result()` 作为最终错误返回，与 reverse Cleanup 错误 `errors.Join`。
+
+因此：
+
+- `/exit`、stdin EOF 与 TUI `Ctrl+Q` 正常停止 frontend loop 并调用 `process.Shutdown(nil)`：当前 runtime 进程退出码 0；
+- loop 内部无法继续的 fatal error（如 terminal adapter failure）：best-effort 渲染后保存，`process.Shutdown(err)`——进程以 1 退出，Cleanup 同时返回该错误；
+- 单条命令、Store、Agent 业务错误只渲染 `interaction.ErrorEvent`，不会结束进程；
+- Cleanup 主动取消造成的 `context.Canceled`/`DeadlineExceeded` 不作为 loop failure 重复上报；取消前已记录的独立 fatal error 仍返回；
+- 进程退出仍由 generated main 统一完成，Component 不调用 `os.Exit`、不发信号、不取消 parent Context——`app.cli` 只是通过 SDK `application.Process` 优雅地报告自己的结束原因；
 - current Session只保存在app instance内存中，不写Plugin State；Session数据本身由Store持久化。
 
 ## 7. Manifest
@@ -173,19 +270,25 @@ Plugin不声明State；两个Component共享root Config。
 - Render并发不交错、event格式golden、TTY/plain降级；
 - 纯文本与选项 Ask统一校验、自由输入入口及空白重试、Ask串行化与行输入互斥、等待取消；
 - input EOF、limit、invalid UTF-8；
-- terminal独占租约、Windows VT color判断、terminal mode restore和Context-aware active input join；
+- ParseArguments：`chat`→TUI、`chat --plain`→plain、其余→`ErrInvalidArguments`；
+- 校验模式不读终端、不启动TUI，Cleanup幂等；
+- TUI：响应式布局（wide sidebar/narrow overlay）、markdown 流式聚合、tool block 配对、history 重建与 mutable ownership、输入/选项响应、控制序列清理与 UTF-8 截断；
+- terminal独占租约、`ErrTerminalRequired`、Windows VT color判断、terminal mode restore和Context-aware active input join；
 - platform adapter conformance与race test。
 
 ### App
 
 - 首次普通输入时自动Create Session；
 - new/use/list/help/exit；
+- 启动与每轮结束后的 `Sync` 快照（列表 + history 加载）；
+- turn 开始/结束状态机（Completed/Canceled/Failed）、Cancel 不退出、`InterruptExit` 退出；
 - Agent input/result/error；
 - Agent运行中Ask复用Channel无deadlock；
 - `New`及时返回且每个instance只有一个owned loop；
-- `/exit`和EOF只停止当前frontend、不取消parent process Context；
+- `/exit`、EOF 请求 `Shutdown(nil)`；fatal loop error 请求 `Shutdown(err)` 且 Cleanup 返回同一错误；
+- 缺 `application.Process`、typed-nil Dependencies 拒绝构造；check 模式不启动 loop；
 - process Context cancel、Cleanup cancel/join和fatal loop error回收；
 - 多个app/frontend instance可以并存且状态隔离；
-- fake clock、Store、Agent、Channel的deterministic transcript tests。
+- fake clock、Store、Agent、History、Frontend的deterministic transcript tests。
 
-验收以顶层 `New`/`Cleanup` lifecycle conformance为准，不新增SDK application Contract或Builder root-consumer特例。
+验收以顶层 `New`/`Cleanup` lifecycle conformance为准；进程退出统一经 SDK `application.Process` 报告，Builder 无 root-consumer 特例。

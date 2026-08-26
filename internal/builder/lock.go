@@ -300,8 +300,8 @@ func (l *Lock) Validate() error {
 			return &Error{Code: "INGOT-LOCK-BUILD-TAG", Field: "build.tags", Actual: tag}
 		}
 	}
-	if len(l.Plugins) == 0 || len(l.Modules) == 0 {
-		return &Error{Code: "INGOT-LOCK-EMPTY", Field: "plugins/modules", Want: "non-empty collections"}
+	if len(l.Plugins) == 0 {
+		return &Error{Code: "INGOT-LOCK-EMPTY", Field: "plugins", Want: "non-empty collection"}
 	}
 	if err := l.validatePluginsAndGraph(); err != nil {
 		return err
@@ -381,8 +381,19 @@ func (l *Lock) validatePluginsAndGraph() error {
 		modules[item.Path] = item
 		previousModule = key
 	}
-	if sdkModule, ok := modules[l.SDK.ModulePath]; !ok || sdkModule.Version != l.SDK.Version {
-		return &Error{Code: "INGOT-LOCK-SDK-GRAPH", Field: "sdk", Want: l.SDK.ModulePath + "@" + l.SDK.Version}
+	var sdkReplacement *Replacement
+	for index := range l.Replacements {
+		if l.Replacements[index].ModulePath == l.SDK.ModulePath {
+			sdkReplacement = &l.Replacements[index]
+			break
+		}
+	}
+	if sdkReplacement == nil {
+		if sdkModule, ok := modules[l.SDK.ModulePath]; !ok || sdkModule.Version != l.SDK.Version {
+			return &Error{Code: "INGOT-LOCK-SDK-GRAPH", Field: "sdk", Want: l.SDK.ModulePath + "@" + l.SDK.Version}
+		}
+	} else if _, exists := modules[l.SDK.ModulePath]; exists || l.SDK.Version != sdkReplacement.SyntheticVersion {
+		return &Error{Code: "INGOT-LOCK-SDK-REPLACEMENT", Field: "sdk", Want: l.SDK.ModulePath + "@" + sdkReplacement.SyntheticVersion}
 	}
 	for i, plugin := range l.Plugins {
 		field := fmt.Sprintf("plugins[%d]", i)
@@ -432,10 +443,14 @@ func (l *Lock) validatePluginsAndGraph() error {
 	replacements := map[string]bool{}
 	previousReplacement := ""
 	for i, replacement := range l.Replacements {
-		if replacement.ModulePath <= previousReplacement || replacements[replacement.ModulePath] || !devPlugins[replacement.ModulePath] || !digestPattern.MatchString(replacement.ContentSHA256) || !filepath.IsAbs(replacement.DevPath) || filepath.Clean(replacement.DevPath) != replacement.DevPath {
+		allowedSource := devPlugins[replacement.ModulePath] || replacement.ModulePath == l.SDK.ModulePath
+		if replacement.ModulePath <= previousReplacement || replacements[replacement.ModulePath] || !allowedSource || !digestPattern.MatchString(replacement.ContentSHA256) || !filepath.IsAbs(replacement.DevPath) || filepath.Clean(replacement.DevPath) != replacement.DevPath {
 			return &Error{Code: "INGOT-LOCK-REPLACEMENT", Field: fmt.Sprintf("replacements[%d]", i), Actual: replacement.ModulePath}
 		}
 		expected, err := SyntheticVersion(replacement.ModulePath)
+		if replacement.ModulePath == l.SDK.ModulePath {
+			expected, err = l.SDK.Version, nil
+		}
 		if err != nil || expected != replacement.SyntheticVersion {
 			return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Want: expected, Actual: replacement.SyntheticVersion, Err: err}
 		}
