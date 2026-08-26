@@ -519,7 +519,13 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		SchemaVersion: 1, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, SDK: l.SDK,
 		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
-		Environment: l.Environment, Build: l.Build, Modules: append([]LockedModule{}, l.Modules...), Bindings: []any{},
+		Environment: l.Environment,
+		// Empty build flags are normalized to non-nil slices so the canonical
+		// JSON is identical whether the lock was just created in memory
+		// (nil) or parsed back from the TOML file (empty, non-nil). Without
+		// this, ImageID is not stable across a lock round-trip.
+		Build:   BuildLock{Trimpath: l.Build.Trimpath, BuildVCS: l.Build.BuildVCS, Tags: append([]string{}, l.Build.Tags...), LDFlags: append([]string{}, l.Build.LDFlags...), GCFlags: append([]string{}, l.Build.GCFlags...), ASMFlags: append([]string{}, l.Build.ASMFlags...)},
+		Modules: append([]LockedModule{}, l.Modules...), Bindings: []any{},
 		Plugins: make([]buildManifestPlugin, len(l.Plugins)), Replacements: make([]buildManifestReplace, len(l.Replacements)),
 	}
 	replacementByModule := map[string]Replacement{}
