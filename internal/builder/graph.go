@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -503,10 +504,28 @@ func lockedEnvironment(lock *Lock, moduleCache string) []string {
 	if goCache == "" {
 		goCache = filepath.Join(cacheRoot, "go-build")
 	}
-	replacements := map[string]string{"GOWORK": "off", "GOTOOLCHAIN": "local", "GOPROXY": "off", "CGO_ENABLED": "0", "GOOS": lock.Target.GOOS, "GOARCH": lock.Target.GOARCH, "GOEXPERIMENT": strings.Join(lock.Target.GOExperiment, ","), "GOMODCACHE": moduleCache}
+	temporary := os.TempDir()
+	replacements := map[string]string{"GOWORK": "off", "GOTOOLCHAIN": "local", "GOPROXY": "off", "CGO_ENABLED": "0", "GOOS": lock.Target.GOOS, "GOARCH": lock.Target.GOARCH, "GOEXPERIMENT": strings.Join(lock.Target.GOExperiment, ","), "GOMODCACHE": moduleCache, "GOTMPDIR": temporary}
 	for _, item := range lock.Target.Tuning {
 		replacements[item.Key] = item.Value
 	}
-	environment := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + userHome, "GOCACHE=" + goCache, "GOENV=off"}
+	environment := baseBuildEnvironment(runtime.GOOS, userHome, goCache, temporary)
 	return replaceEnvironment(environment, replacements)
+}
+
+func baseBuildEnvironment(goos, userHome, goCache, temporary string) []string {
+	environment := []string{"PATH=" + os.Getenv("PATH"), "HOME=" + userHome, "GOCACHE=" + goCache, "GOENV=off"}
+	if goos == "windows" {
+		environment = append(environment, "TEMP="+temporary, "TMP="+temporary)
+		// These variables are part of the Windows process environment contract
+		// and may be needed by the Go toolchain and programs it launches.
+		for _, key := range []string{"SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"} {
+			if value := os.Getenv(key); value != "" {
+				environment = append(environment, key+"="+value)
+			}
+		}
+	} else {
+		environment = append(environment, "TMPDIR="+temporary)
+	}
+	return environment
 }
