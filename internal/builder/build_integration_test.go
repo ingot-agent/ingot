@@ -133,6 +133,90 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	}
 }
 
+func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	proxy := filepath.Join(t.TempDir(), "proxy")
+	sdkSource := filepath.Join(t.TempDir(), "sdk")
+	depOneSource := filepath.Join(t.TempDir(), "dep-one")
+	depTwoSource := filepath.Join(t.TempDir(), "dep-two")
+	pluginSource := filepath.Join(t.TempDir(), "plugin")
+
+	// dep-two is a dependency of dep-one, which is only a transitive
+	// requirement of the SDK. Under Go 1.17+ pruned module graphs its go.mod
+	// edge is invisible until the staged root explicitly requires dep-one.
+	writeTestFile(t, filepath.Join(depTwoSource, "go.mod"), "module example.com/ingot-dep-two\n\ngo 1.24.0\n")
+	writeTestFile(t, filepath.Join(depTwoSource, "dep.go"), "package deptwo\n")
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-dep-two", "v1.0.0", depTwoSource)
+
+	writeTestFile(t, filepath.Join(depOneSource, "go.mod"), "module example.com/ingot-dep-one\n\ngo 1.24.0\n\nrequire example.com/ingot-dep-two v1.0.0\n")
+	writeTestFile(t, filepath.Join(depOneSource, "dep.go"), "package depone\n")
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-dep-one", "v1.0.0", depOneSource)
+
+	sdkGoMod := "module example.com/ingot-test-sdk\n\ngo 1.24.0\n\nrequire example.com/ingot-dep-one v1.0.0\n"
+	writeTestFile(t, filepath.Join(sdkSource, "go.mod"), sdkGoMod)
+	writeTestFile(t, filepath.Join(sdkSource, "sdk.go"), `package sdk
+import "context"
+type Cleanup func(context.Context) error
+type Optional[T any] struct { Value T; Valid bool }
+func None[T any]() Optional[T] { return Optional[T]{} }
+func Some[T any](value T) Optional[T] { return Optional[T]{Value:value, Valid:true} }
+type Named[T any] struct { Name string; Value T }
+`)
+	writeTestFile(t, filepath.Join(sdkSource, "config", "config.go"), `package config
+import (
+	"context"
+	"errors"
+)
+type PluginReference struct { ID, Name string }
+func ResolveTables(data []byte, refs []PluginReference) (map[string][]byte, error) { if string(data) == "fail\n" { return nil, errors.New("requested config failure") }; result := map[string][]byte{}; for _, ref := range refs { result[ref.ID] = []byte{} }; return result, nil }
+func Decode[T any]([]byte) (T, error) { var result T; return result, nil }
+type stateKey struct{}
+func WithStateDir(ctx context.Context, path string) context.Context { return context.WithValue(ctx, stateKey{}, path) }
+`)
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+
+	writeTestRemotePlugin(t, pluginSource)
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-plugin", "v1.0.0", pluginSource)
+
+	home := t.TempDir()
+	makeModuleCacheRemovable(t, home)
+	desiredPath := filepath.Join(home, "plugins.toml")
+	writeTestFile(t, desiredPath, "plugins_version = 1\n\n[[plugins]]\nmodule = \"example.com/ingot-test-plugin\"\nversion = \"v1.0.0\"\n")
+	writeTestFile(t, filepath.Join(home, "config.toml"), "")
+	t.Setenv("GOSUMDB", "off")
+	desired, err := ParseDesired(desiredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleCache := filepath.Join(home, "cache", "gomod")
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := map[string]string{}
+	for _, item := range lock.Modules {
+		selected[item.Path] = item.Version
+	}
+	if selected["example.com/ingot-dep-one"] != "v1.0.0" {
+		t.Fatalf("direct SDK dependency missing from lock: %#v", selected)
+	}
+	if selected["example.com/ingot-dep-two"] != "v1.0.0" {
+		t.Fatalf("pruned transitive dependency missing from lock: %#v", selected)
+	}
+	// The offline build must succeed with no network: every module of the
+	// committed graph is already in the module cache.
+	if _, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDevSourceLocationDoesNotAffectArtifact verifies that compiling the
+// same dev plugin content from two different directories yields the exact
+// same artifact (no machine-specific source paths may leak into the binary),
+// and that rebuilding the same ImageID therefore succeeds instead of failing
+// with INGOT-BUILD-REPRODUCIBILITY.
 func makeModuleCacheRemovable(t *testing.T, home string) {
 	t.Helper()
 	t.Cleanup(func() {

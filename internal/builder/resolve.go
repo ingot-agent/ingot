@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/mod/modfile"
@@ -157,21 +158,44 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
-	if err := writeResolveRoot(staging, options, sources); err != nil {
+	if err := writeResolveRoot(staging, options, sources, nil); err != nil {
 		return nil, err
 	}
 	environment := resolveEnvironment(options)
-	downloadOutput, err := runGo(ctx, staging, environment, "mod", "download", "-json", "all")
-	if err != nil {
-		return nil, err
-	}
-	listOutput, err := runGo(ctx, staging, environment, "list", "-mod=mod", "-m", "-json", "all")
-	if err != nil {
-		return nil, err
-	}
-	selected, err := decodeModuleStream(listOutput)
-	if err != nil {
-		return nil, err
+	// Go 1.17+ pruned module graphs only include the requirement edges of
+	// directly rooted edges. The staged root starts with just the direct
+	// plugins and the SDK, so the first-pass `all` misses transitive modules
+	// that a lock-rooted build would need; their go.mod files, sums and zips
+	// must already be present in the module cache for the offline build.
+	// Rewriting the staged go.mod to require every selected module and
+	// re-listing converges on exactly the graph RestoreRootModule
+	// materializes.
+	var selected []resolvedModule
+	var downloadOutput []byte
+	for pass := 0; pass < resolveGraphPasses; pass++ {
+		downloadOutput, err = runGo(ctx, staging, environment, "mod", "download", "-json", "all")
+		if err != nil {
+			return nil, err
+		}
+		listOutput, err := runGo(ctx, staging, environment, "list", "-mod=mod", "-m", "-json", "all")
+		if err != nil {
+			return nil, err
+		}
+		next, err := decodeModuleStream(listOutput)
+		if err != nil {
+			return nil, err
+		}
+		if selectedGraphEqual(selected, next) {
+			selected = next
+			break
+		}
+		selected = next
+		if err := writeResolveRoot(staging, options, sources, selected); err != nil {
+			return nil, err
+		}
+		if pass == resolveGraphPasses-1 {
+			return nil, &Error{Code: "INGOT-RESOLVE-GRAPH-UNSTABLE", Want: "stable module graph", Actual: fmt.Sprintf("%d passes did not converge", resolveGraphPasses)}
+		}
 	}
 	downloaded, err := decodeModuleStream(downloadOutput)
 	if err != nil {
@@ -314,7 +338,31 @@ func moduleIdentity(path string) (string, error) {
 // ModuleIdentity reads the canonical module path from a go.mod file.
 func ModuleIdentity(path string) (string, error) { return moduleIdentity(path) }
 
-func writeResolveRoot(directory string, options ResolveOptions, sources []directSource) error {
+const resolveGraphPasses = 32
+
+func selectedGraphEqual(previous, next []resolvedModule) bool {
+	if len(previous) != len(next) {
+		return false
+	}
+	keys := func(modules []resolvedModule) []string {
+		result := make([]string, len(modules))
+		for i, item := range modules {
+			result[i] = item.Path + "@" + item.Version + "@" + strconv.FormatBool(item.Main)
+		}
+		return result
+	}
+	previousKeys, nextKeys := keys(previous), keys(next)
+	sort.Strings(previousKeys)
+	sort.Strings(nextKeys)
+	for i := range previousKeys {
+		if previousKeys[i] != nextKeys[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func writeResolveRoot(directory string, options ResolveOptions, sources []directSource, transitive []resolvedModule) error {
 	var content strings.Builder
 	content.WriteString("module ingot.local/runtime-image\n\ngo ")
 	content.WriteString(strings.TrimPrefix(options.Toolchain, "go"))
@@ -326,6 +374,14 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 	}
 	if !seen[options.SDKModule] {
 		_, _ = fmt.Fprintf(&content, "\t%s %s\n", options.SDKModule, options.SDKVersion)
+		seen[options.SDKModule] = true
+	}
+	for _, item := range transitive {
+		if item.Main || seen[item.Path] || item.Version == "" {
+			continue
+		}
+		_, _ = fmt.Fprintf(&content, "\t%s %s // indirect\n", item.Path, item.Version)
+		seen[item.Path] = true
 	}
 	content.WriteString(")\n")
 	for _, source := range sources {
