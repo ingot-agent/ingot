@@ -1,0 +1,183 @@
+package home
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/pelletier/go-toml/v2"
+
+	"github.com/ingot-agent/ingot/internal/builder"
+)
+
+func testBundleSource(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(root, "plugins")
+}
+
+func initHome(t *testing.T) *Home {
+	t.Helper()
+	home, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func TestInitWritesDefaultProfile(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	result, err := home.Init(InitOptions{BundlePath: testBundleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.WrotePlugins || !result.WroteConfig {
+		t.Fatalf("init must write both files: %#v", result)
+	}
+	if len(result.Plugins) != 13 {
+		t.Fatalf("default profile has %d plugins, want 13: %#v", len(result.Plugins), result.Plugins)
+	}
+	desired, err := builder.ParseDesired(home.DesiredPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desired.Plugins) != 13 {
+		t.Fatalf("plugins.toml has %d plugins, want 13", len(desired.Plugins))
+	}
+	for index, plugin := range desired.Plugins {
+		if plugin.Version != "" {
+			t.Fatalf("bundled plugin %s must be a local source, not a remote version", plugin.Module)
+		}
+		absolute, err := desired.ResolvePath(plugin.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(absolute, "ingot.plugin.toml")); err != nil {
+			t.Fatalf("plugin %s materialized at %s: %v", plugin.Module, absolute, err)
+		}
+		if !strings.HasPrefix(plugin.Path, "bundled-plugins/") {
+			t.Fatalf("plugin %s path %q is not under bundled-plugins", plugin.Module, plugin.Path)
+		}
+		if entry := result.Plugins[index]; entry.Module != plugin.Module {
+			t.Fatalf("result entry %d module %s does not match plugins.toml %s", index, entry.Module, plugin.Module)
+		}
+	}
+	assertEveryPluginHasConfigTable(t, home, result.Plugins)
+}
+
+func TestInitIsIdempotentAndForceOverwrites(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t)}); err == nil || !strings.Contains(err.Error(), "already initialized") {
+		t.Fatalf("second init must fail: %v", err)
+	}
+	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t), Force: true}); err != nil {
+		t.Fatalf("forced init must succeed: %v", err)
+	}
+	if _, err := builder.ParseDesired(home.DesiredPath()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitPreservesExistingConfig(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	custom := "# my custom config\n"
+	if err := os.WriteFile(home.ConfigPath(), []byte(custom), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := home.Init(InitOptions{BundlePath: testBundleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.WroteConfig {
+		t.Fatal("init must not overwrite an existing config.toml")
+	}
+	data, err := os.ReadFile(home.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != custom {
+		t.Fatalf("config.toml was modified: %q", data)
+	}
+	// The plugin set is still initialized so apply is the only missing step.
+	if _, err := builder.ParseDesired(home.DesiredPath()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInitMinimalProfile(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	result, err := home.Init(InitOptions{Profile: "minimal", BundlePath: testBundleSource(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Plugins) != 8 {
+		t.Fatalf("minimal profile has %d plugins, want 8: %#v", len(result.Plugins), result.Plugins)
+	}
+	configData, err := os.ReadFile(home.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Plugins map[string]map[string]any `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(configData, &document); err != nil {
+		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
+	}
+	if _, ok := document.Plugins["filesystem.local"]; ok {
+		t.Fatal("minimal profile must not configure filesystem.local")
+	}
+	for _, entry := range result.Plugins {
+		if _, ok := document.Plugins[entry.Name]; !ok {
+			t.Fatalf("minimal config lacks table for %s (%s)", entry.Name, entry.Module)
+		}
+	}
+}
+
+func TestInitRejectsUnknownProfile(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	if _, err := home.Init(InitOptions{Profile: "nope", BundlePath: testBundleSource(t)}); err == nil || !strings.Contains(err.Error(), "unknown profile") {
+		t.Fatalf("unknown profile must fail: %v", err)
+	}
+}
+
+func TestInitRejectsBrokenBundle(t *testing.T) {
+	t.Parallel()
+	home := initHome(t)
+	if _, err := home.Init(InitOptions{BundlePath: t.TempDir()}); err == nil {
+		t.Fatal("init with a missing plugin bundle must fail")
+	}
+}
+
+// assertEveryPluginHasConfigTable verifies the strict runtime config
+// requirement: every locked plugin needs exactly one matching [plugins] table.
+func assertEveryPluginHasConfigTable(t *testing.T, home *Home, plugins []InitPlugin) {
+	t.Helper()
+	configData, err := os.ReadFile(home.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Plugins map[string]map[string]any `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(configData, &document); err != nil {
+		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
+	}
+	for _, entry := range plugins {
+		_, ok := document.Plugins[entry.Name]
+		if !ok {
+			t.Fatalf("config.toml lacks [plugins.%q] table for %s", entry.Name, entry.Module)
+		}
+	}
+}

@@ -45,6 +45,47 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 	}
 	command, rest := arguments[0], arguments[1:]
 	switch command {
+	case "init":
+		flags := flag.NewFlagSet("init", flag.ContinueOnError)
+		flags.SetOutput(cli.Stderr)
+		profile := flags.String("profile", "default", "bundle profile: default or minimal")
+		bundlePath := flags.String("bundle", "", "official plugins distribution directory (default: locate relative to the executable)")
+		force := flags.Bool("force", false, "overwrite an already initialized home")
+		directApply := flags.Bool("apply", false, "resolve, build and switch current immediately")
+		if err := flags.Parse(rest); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			return cli.usageError("init takes no positional arguments")
+		}
+		result, err := home.Init(ingothome.InitOptions{Profile: *profile, BundlePath: *bundlePath, Force: *force})
+		if err != nil {
+			return cli.result(err)
+		}
+		if result.WrotePlugins {
+			_, _ = fmt.Fprintf(cli.Stdout, "Initialized ingot home: %s\n", result.Home)
+			_, _ = fmt.Fprintf(cli.Stdout, "  profile: %s (%d plugins)\n", result.Profile, len(result.Plugins))
+			_, _ = fmt.Fprintf(cli.Stdout, "  sources: %s\n", result.BundledPath)
+			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.PluginsPath)
+		}
+		if result.WroteConfig {
+			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.ConfigPath)
+		}
+		if *directApply {
+			applied, err := home.Apply(ctx, builder.ResolveOptions{})
+			if err != nil {
+				_, _ = fmt.Fprintln(cli.Stderr, "init files written; apply failed:", err)
+				return 1
+			}
+			_, _ = fmt.Fprintf(cli.Stdout, "  applied image: %s\n", applied.ImageID)
+			_, _ = fmt.Fprintln(cli.Stdout, "\nYou can now run: ingot <command>  (e.g. ingot chat)")
+			return 0
+		}
+		_, _ = fmt.Fprintln(cli.Stdout, "\nNext steps:")
+		_, _ = fmt.Fprintf(cli.Stdout, "  1. Edit %s — set your model provider base_url and api_key.\n", result.ConfigPath)
+		_, _ = fmt.Fprintln(cli.Stdout, "  2. Run: ingot apply")
+		_, _ = fmt.Fprintln(cli.Stdout, "  3. Run: ingot chat")
+		return 0
 	case "resolve":
 		if len(rest) != 0 {
 			return cli.usageError("resolve takes no arguments")
@@ -349,5 +390,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <resolve|build|apply|status|inspect|rollback|gc|plugin ...|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|plugin ...|runtime command>")
 }
