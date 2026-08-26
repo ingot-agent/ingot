@@ -44,7 +44,10 @@ type chatFunction struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
-	Arguments   json.RawMessage `json:"arguments,omitempty"`
+	// OpenAI-compatible APIs represent function arguments as a JSON-encoded
+	// string on the wire. The SDK model contract keeps them as json.RawMessage,
+	// so encode/decodeMessage perform the boundary conversion explicitly.
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type chatToolCall struct {
@@ -142,7 +145,7 @@ func encodeMessage(message model.Message) (chatMessage, error) {
 		if call.ID == "" || call.Name == "" || !utf8.ValidString(call.ID) || !utf8.ValidString(call.Name) || !json.Valid(call.Arguments) {
 			return chatMessage{}, fmt.Errorf("tool_calls[%d]: %w", i, ErrInvalidRequest)
 		}
-		result.ToolCalls[i] = chatToolCall{ID: call.ID, Type: "function", Function: chatFunction{Name: call.Name, Arguments: append(json.RawMessage(nil), call.Arguments...)}}
+		result.ToolCalls[i] = chatToolCall{ID: call.ID, Type: "function", Function: chatFunction{Name: call.Name, Arguments: string(call.Arguments)}}
 	}
 	if message.Role == model.RoleTool && message.ToolCallID == "" {
 		return chatMessage{}, fmt.Errorf("tool message requires tool_call_id: %w", ErrInvalidRequest)
@@ -204,10 +207,10 @@ func decodeMessage(message chatMessage) (model.Message, error) {
 	result := model.Message{Role: role, Content: message.Content, Name: message.Name, ToolCallID: message.ToolCallID}
 	result.ToolCalls = make([]tool.Call, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
-		if call.ID == "" || call.Function.Name == "" || call.Type != "function" || !json.Valid(call.Function.Arguments) {
+		if call.ID == "" || call.Function.Name == "" || call.Type != "function" || !json.Valid([]byte(call.Function.Arguments)) {
 			return model.Message{}, protocolError("invalid tool call at index %d", i)
 		}
-		result.ToolCalls[i] = tool.Call{ID: call.ID, Name: call.Function.Name, Arguments: append(json.RawMessage(nil), call.Function.Arguments...)}
+		result.ToolCalls[i] = tool.Call{ID: call.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments)}
 	}
 	return result, nil
 }

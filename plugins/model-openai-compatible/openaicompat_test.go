@@ -88,12 +88,26 @@ func TestCompleteMapsMessagesToolsAndOptionalFields(t *testing.T) {
 	}
 	for _, fragment := range []string{
 		`"role":"system"`, `"name":"user-name"`, `"tool_calls":[{"id":"call-1","type":"function"`,
-		`"arguments":{"path":"README.md"}`, `"tool_call_id":"call-1"`, `"parameters":{"type":"object"}`,
+		`"arguments":"{\"path\":\"README.md\"}"`, `"tool_call_id":"call-1"`, `"parameters":{"type":"object"}`,
 		`"temperature":0.25`, `"max_tokens":128`, `"stop":["END"]`, `"stream":false`,
 	} {
 		if !strings.Contains(requestBody, fragment) {
 			t.Fatalf("request body %s does not contain %s", requestBody, fragment)
 		}
+	}
+}
+
+func TestCompleteDecodesStringToolArgumentsIntoSDKRawJSON(t *testing.T) {
+	client := clientFunc(func(_ context.Context, _ *http.Request) (*http.Response, error) {
+		return response(http.StatusOK, `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"fs_list","arguments":"{\"path\":\".\"}"}}]},"finish_reason":"tool_calls"}]}`), nil
+	})
+	provider := newProvider(t, openaicompat.ProviderConfig{Name: "p", BaseURL: "https://example.test"}, client)
+	result, err := provider.Complete(context.Background(), model.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Message.ToolCalls) != 1 || result.Message.ToolCalls[0].Name != "fs_list" || string(result.Message.ToolCalls[0].Arguments) != `{"path":"."}` {
+		t.Fatalf("result=%#v", result)
 	}
 }
 
