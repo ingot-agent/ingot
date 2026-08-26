@@ -72,7 +72,7 @@ Payload exact semantic shape：
   "name":"",
   "tool_call_id":"",
   "tool_calls":[
-    {"id":"call-1","name":"fs.read","arguments":{}}
+    {"id":"call-1","name":"fs_read","arguments":{}}
   ]
 }
 ```

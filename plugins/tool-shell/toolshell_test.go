@@ -39,14 +39,14 @@ func testShell(t *testing.T, cfg Config) tool.Tool {
 func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 	shell := testShell(t, Config{})
 	definition := shell.Definition()
-	if definition.Name != "shell.exec" || definition.Description != "Execute one command through the configured shell." {
+	if definition.Name != "shell_exec" || definition.Description != "Execute one command through the configured shell." {
 		t.Fatalf("definition = %#v", definition)
 	}
 	wantSchema := `{"type":"object","additionalProperties":false,"required":["command"],"properties":{"command":{"type":"string","minLength":1},"timeout_seconds":{"type":"integer","minimum":1}}}`
 	if string(definition.InputSchema) != wantSchema {
 		t.Fatalf("schema = %s, want %s", definition.InputSchema, wantSchema)
 	}
-	result, err := shell.Invoke(context.Background(), tool.Call{Name: "shell.exec", Arguments: []byte("{\"command\":\"echo hello\"}")})
+	result, err := shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: []byte("{\"command\":\"echo hello\"}")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func invokeShell(t *testing.T, shell tool.Tool, command string) (tool.Result, er
 	if err != nil {
 		t.Fatal(err)
 	}
-	return shell.Invoke(context.Background(), tool.Call{Name: "shell.exec", Arguments: arguments})
+	return shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: arguments})
 }
 
 func testShellPath() string {

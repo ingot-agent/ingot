@@ -65,7 +65,7 @@ Plugin 通过 stdin 发送一份 compact JSON，stdout 接受一份 compact JSON
   "hook": "audit",
   "target": "tool",
   "phase": "before",
-  "request": {"id":"call-1","name":"fs.read","arguments":{}}
+  "request": {"id":"call-1","name":"fs_read","arguments":{}}
 }
 ```
 
@@ -91,7 +91,7 @@ Before response只允许上述两个exact shape：`protocol_version`必须为1�
   "hook":"audit",
   "target":"tool",
   "phase":"after",
-  "request":{"id":"call-1","name":"fs.read","arguments":{}},
+  "request":{"id":"call-1","name":"fs_read","arguments":{}},
   "outcome":{"response":{"content":"..."},"error":null}
 }
 ```
@@ -122,7 +122,7 @@ model request shape：
   "provider":"default",
   "model":"gpt-example",
   "messages":[{"role":"user","content":"hello","name":"","tool_call_id":"","tool_calls":[]}],
-  "tools":[{"name":"fs.read","description":"...","input_schema":{}}],
+  "tools":[{"name":"fs_read","description":"...","input_schema":{}}],
   "temperature":null,
   "max_tokens":null,
   "stop":[]

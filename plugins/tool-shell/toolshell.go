@@ -33,7 +33,7 @@ const (
 var (
 	// ErrInvalidConfig indicates invalid tool.shell configuration.
 	ErrInvalidConfig = errors.New("invalid tool.shell config")
-	// ErrInvalidArguments indicates malformed shell.exec arguments.
+	// ErrInvalidArguments indicates malformed shell_exec arguments.
 	ErrInvalidArguments = errors.New("invalid tool.shell arguments")
 	// ErrOutputLimit is reserved for internal output collection failures.
 	ErrOutputLimit = errors.New("shell output limit exceeded")
@@ -56,7 +56,7 @@ type Config struct {
 // Dependencies is intentionally empty: approval is supplied by a runtime interceptor.
 type Dependencies struct{}
 
-// Exports contains the shell.exec tool.
+// Exports contains the shell_exec tool.
 type Exports struct{ Tools []tool.Tool }
 
 type normalizedConfig struct {
@@ -69,7 +69,7 @@ type normalizedConfig struct {
 
 type shellTool struct{ config normalizedConfig }
 
-// New validates the fixed process boundary and creates shell.exec.
+// New validates the fixed process boundary and creates shell_exec.
 func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.shell: %w", ErrInvalidConfig)
@@ -196,7 +196,7 @@ func environmentKeyIdentity(key string) string {
 
 func (t *shellTool) Definition() tool.Definition {
 	return tool.Definition{
-		Name:        "shell.exec",
+		Name:        "shell_exec",
 		Description: "Execute one command through the configured shell.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["command"],"properties":{"command":{"type":"string","minLength":1},"timeout_seconds":{"type":"integer","minimum":1}}}`),
 	}
@@ -204,12 +204,12 @@ func (t *shellTool) Definition() tool.Definition {
 
 func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error) {
 	if ctx == nil {
-		return tool.Result{}, fmt.Errorf("shell.exec: nil context")
+		return tool.Result{}, fmt.Errorf("shell_exec: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
-	if call.Name != "" && call.Name != "shell.exec" {
+	if call.Name != "" && call.Name != "shell_exec" {
 		return tool.Result{}, fmt.Errorf("call name %q: %w", call.Name, ErrInvalidArguments)
 	}
 	var args struct {
