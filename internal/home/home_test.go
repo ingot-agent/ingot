@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/ingot-agent/ingot/internal/builder"
+	"github.com/ingot-agent/ingot/internal/layout"
 )
 
 func TestCurrentSwitchRollbackAndGC(t *testing.T) {
@@ -65,7 +67,7 @@ func TestSwitchRejectsTraversalAndCorruptArtifact(t *testing.T) {
 		t.Fatal("path traversal image id was accepted")
 	}
 	imageID := writeImageFixture(t, home, `{"generation":1}`, "binary")
-	if err := os.WriteFile(filepath.Join(home.imageDirectory(imageID), "ingot-runtime"), []byte("corrupt"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(home.imageDirectory(imageID), layout.RuntimeExecutableName(runtime.GOOS)), []byte("corrupt"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := home.switchCurrent(imageID); err == nil {
@@ -165,7 +167,7 @@ func writeImageFixture(t *testing.T, home *Home, buildManifest, binary string) s
 	}
 	binaryDigest := sha256.Sum256([]byte(binary))
 	artifact := "sha256:" + hex.EncodeToString(binaryDigest[:])
-	if err := os.WriteFile(filepath.Join(directory, "ingot-runtime"), []byte(binary), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, layout.RuntimeExecutableName(runtime.GOOS)), []byte(binary), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	manifest := builder.ImageManifest{SchemaVersion: 1, ImageID: imageID, ArtifactDigest: artifact, BuildManifest: json.RawMessage(buildManifest), DirectPlugins: []string{}, ComponentCreationOrder: []string{}, ManyOrder: map[string][]string{}}

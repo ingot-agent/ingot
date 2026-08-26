@@ -12,11 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ingot-agent/ingot/internal/builder"
+	"github.com/ingot-agent/ingot/internal/layout"
 )
 
 type Home struct{ Root string }
@@ -91,7 +93,7 @@ func (home *Home) LockPath() string    { return filepath.Join(home.Root, "plugin
 func (home *Home) ConfigPath() string  { return filepath.Join(home.Root, "config.toml") }
 func (home *Home) CurrentPath() string { return filepath.Join(home.Root, "current") }
 func (home *Home) imageDirectory(imageID string) string {
-	return filepath.Join(home.Root, "images", imageID)
+	return filepath.Join(home.Root, "images", layout.ImageDirectoryName(imageID, runtime.GOOS))
 }
 
 func (home *Home) Resolve(ctx context.Context, options builder.ResolveOptions) (*builder.Lock, error) {
@@ -404,15 +406,6 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return syncDirectory(directory)
 }
 
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return directory.Sync()
-}
-
 func (home *Home) switchCurrent(imageID string) error {
 	if !validImageID(imageID) {
 		return fmt.Errorf("invalid image id %q", imageID)
@@ -538,7 +531,7 @@ func (home *Home) RunCurrent(ctx context.Context, arguments []string) error {
 	if err != nil {
 		return err
 	}
-	binary := filepath.Join(home.imageDirectory(imageID), "ingot-runtime")
+	binary := filepath.Join(home.imageDirectory(imageID), layout.RuntimeExecutableName(runtime.GOOS))
 	if _, err := os.Stat(binary); err != nil {
 		return err
 	}
@@ -603,14 +596,15 @@ func (home *Home) GC(ctx context.Context, keepRecent int) ([]string, error) {
 			}
 			continue
 		}
-		if !entry.IsDir() || !validImageID(entry.Name()) {
+		imageID := layout.ImageIDFromDirectoryName(entry.Name(), runtime.GOOS)
+		if !entry.IsDir() || !validImageID(imageID) {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil, err
 		}
-		candidates = append(candidates, candidate{id: entry.Name(), path: filepath.Join(home.Root, "images", entry.Name()), modified: info.ModTime()})
+		candidates = append(candidates, candidate{id: imageID, path: filepath.Join(home.Root, "images", entry.Name()), modified: info.ModTime()})
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].modified.After(candidates[j].modified) })
 	for i := 0; i < keepRecent && i < len(candidates); i++ {

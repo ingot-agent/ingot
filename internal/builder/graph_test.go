@@ -3,9 +3,56 @@ package builder
 import (
 	"go/token"
 	"go/types"
+	"os"
 	"strings"
 	"testing"
 )
+
+func TestBaseBuildEnvironmentUsesNativeTemporaryVariables(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		goos string
+		want map[string]string
+	}{
+		{goos: "linux", want: map[string]string{"TMPDIR": `/tmp/ingot`}},
+		{goos: "windows", want: map[string]string{"TEMP": `C:\Temp\ingot`, "TMP": `C:\Temp\ingot`}},
+	}
+	for _, test := range tests {
+		t.Run(test.goos, func(t *testing.T) {
+			t.Parallel()
+			temporary := `/tmp/ingot`
+			if test.goos == "windows" {
+				temporary = `C:\Temp\ingot`
+			}
+			environment := baseBuildEnvironment(test.goos, "home", "cache", temporary)
+			values := map[string]string{}
+			for _, item := range environment {
+				key, value, _ := strings.Cut(item, "=")
+				values[key] = value
+			}
+			for key, want := range test.want {
+				if got := values[key]; got != want {
+					t.Fatalf("%s = %q, want %q; environment = %#v", key, got, want, environment)
+				}
+			}
+		})
+	}
+}
+
+func TestLockedEnvironmentPinsGoWorkDirectoryToSystemTemp(t *testing.T) {
+	t.Parallel()
+	environment := lockedEnvironment(&Lock{Target: TargetLock{GOOS: "windows", GOARCH: "amd64"}}, t.TempDir())
+	for _, item := range environment {
+		key, value, _ := strings.Cut(item, "=")
+		if key == "GOTMPDIR" {
+			if value != os.TempDir() {
+				t.Fatalf("GOTMPDIR = %q, want %q", value, os.TempDir())
+			}
+			return
+		}
+	}
+	t.Fatalf("GOTMPDIR missing from %#v", environment)
+}
 
 func TestGraphReportsCompleteCyclePath(t *testing.T) {
 	t.Parallel()

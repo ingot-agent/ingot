@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ingot-agent/ingot/internal/layout"
 )
 
 type BuildOptions struct {
@@ -102,7 +104,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	if err := os.MkdirAll(imagesDirectory, 0o700); err != nil {
 		return nil, err
 	}
-	finalDirectory := filepath.Join(imagesDirectory, imageID)
+	finalDirectory := filepath.Join(imagesDirectory, layout.ImageDirectoryName(imageID, runtime.GOOS))
 	expectedBuildManifest, err := lock.CanonicalBuildManifest()
 	if err != nil {
 		return nil, err
@@ -167,7 +169,8 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	if err := Generate(rootDirectory, lock, graph); err != nil {
 		return nil, err
 	}
-	binaryPath := filepath.Join(imageDirectory, "ingot-runtime")
+	runtimeName := layout.RuntimeExecutableName(lock.Target.GOOS)
+	binaryPath := filepath.Join(imageDirectory, runtimeName)
 	arguments := []string{"build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-o", binaryPath}
 	if len(lock.Build.Tags) > 0 {
 		arguments = append(arguments, "-tags="+strings.Join(lock.Build.Tags, ","))
@@ -234,7 +237,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	}
 	committed = true
 	_ = syncDirectory(imagesDirectory)
-	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, "ingot-runtime"), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder}, nil
+	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, runtimeName), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder}, nil
 }
 
 func verifySelectedGraph(lock *Lock, selected []resolvedModule, devDirs map[string]string) error {
@@ -380,23 +383,6 @@ func runRuntimeCheck(ctx context.Context, binary string, environment []string) e
 	}
 	return nil
 }
-func syncFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = file.Close() }()
-	return file.Sync()
-}
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = directory.Close() }()
-	return directory.Sync()
-}
-
 func readExistingImage(directory, imageID string, expectedBuildManifest []byte) (*BuildResult, error) {
 	data, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
 	if err != nil {
@@ -419,14 +405,15 @@ func readExistingImage(directory, imageID string, expectedBuildManifest []byte) 
 	if len(expectedBuildManifest) > 0 && !bytes.Equal(canonicalStored, expectedBuildManifest) {
 		return nil, &Error{Code: "INGOT-IMAGE-BUILD-MANIFEST", Path: directory, Want: digestBytes(expectedBuildManifest), Actual: digestBytes(canonicalStored)}
 	}
-	digest, err := fileDigest(filepath.Join(directory, "ingot-runtime"))
+	runtimeName := layout.RuntimeExecutableName(runtime.GOOS)
+	digest, err := fileDigest(filepath.Join(directory, runtimeName))
 	if err != nil {
 		return nil, err
 	}
 	if digest != manifest.ArtifactDigest {
 		return nil, &Error{Code: "INGOT-IMAGE-ARTIFACT", Path: directory, Want: manifest.ArtifactDigest, Actual: digest}
 	}
-	return &BuildResult{ImageID: imageID, ArtifactDigest: digest, ImageDirectory: directory, BinaryPath: filepath.Join(directory, "ingot-runtime"), ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder}, nil
+	return &BuildResult{ImageID: imageID, ArtifactDigest: digest, ImageDirectory: directory, BinaryPath: filepath.Join(directory, runtimeName), ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder}, nil
 }
 
 // VerifyImage verifies an immutable image's identity, provenance, and binary

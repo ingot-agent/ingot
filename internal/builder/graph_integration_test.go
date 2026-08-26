@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ingot-agent/ingot/internal/layout"
 )
 
 func TestLoadGraphStableManyOrderAndGenerate(t *testing.T) {
@@ -78,7 +80,7 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err := Generate(root, lock, graph); err != nil {
 		t.Fatal(err)
 	}
-	runtimePath := filepath.Join(root, "ingot-runtime")
+	runtimePath := filepath.Join(root, layout.RuntimeExecutableName(runtime.GOOS))
 	command := exec.Command("go", "build", "-mod=readonly", "-o", runtimePath, ".")
 	command.Dir = root
 	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOPROXY=off", "CGO_ENABLED=0")
