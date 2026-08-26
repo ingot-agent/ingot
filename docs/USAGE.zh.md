@@ -293,11 +293,16 @@ ingot plugin inspect <id-or-name>
 任何非内置的 ingot 命令都会派发到当前 Runtime Image：
 
 ```sh
+# 全屏 TUI（默认，需要终端）
 ingot chat
-ingot chat --model gpt-4o
+
+# 行式纯文本输出，适用于管道与重定向
+ingot chat --plain
 ```
 
 运行时会以你的 stdin/stdout/stderr 执行，并设置 `INGOT_HOME` 指向 ingot home，因此镜像可以找到 `config.toml` 与持久化状态。运行时的退出码会被透传。
+
+`chat` 是 `app.cli` 的 runtime 命令：不带 `--plain` 时启动全屏 TUI（markdown transcript、tool 调用块、`Ctrl+O` 会话侧栏、Ask 选项面板；`Ctrl+Q` 退出，`Ctrl+C` 取消进行中的 turn，`F1` 帮助）。`chat --plain` 降级为 prompt 行输入与纯文本输出，stdin/stdout 非终端时（管道、重定向、非交互脚本）也能工作。模型 provider 与 API key 在 `config.toml` 中配置，不通过命令行传入。
 
 如果当前没有镜像（或镜像缺失），命令会失败并给出说明。
 

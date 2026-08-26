@@ -152,7 +152,13 @@ func (a *approvalInterceptor) ask(ctx context.Context, call tool.Call, next pipe
 	}
 	prompt := a.prompt(call)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		response, err := a.interaction.Value.Ask(ctx, interaction.AskRequest{Prompt: prompt})
+		response, err := a.interaction.Value.Ask(ctx, interaction.AskRequest{
+			Prompt: prompt,
+			Options: []interaction.AskOption{
+				{Label: "Yes", Description: "Allow this tool call once"},
+				{Label: "No", Description: "Deny this tool call"},
+			},
+		})
 		if err != nil {
 			return tool.Result{}, err
 		}
@@ -169,7 +175,7 @@ func (a *approvalInterceptor) ask(ctx context.Context, call tool.Call, next pipe
 func (a *approvalInterceptor) prompt(call tool.Call) string {
 	arguments := displayArguments(call.Arguments, a.display)
 	arguments = truncate(arguments, a.maxDisplay)
-	return fmt.Sprintf("Approval required for tool %q (call %q).\nArguments: %s\nApprove? [y/N]", call.Name, call.ID, arguments)
+	return fmt.Sprintf("Approval required for tool %q (call %q).\nArguments: %s\nApprove this tool call?", call.Name, call.ID, arguments)
 }
 
 func displayArguments(raw json.RawMessage, mode string) string {

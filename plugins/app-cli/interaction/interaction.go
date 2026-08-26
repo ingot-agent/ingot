@@ -18,6 +18,7 @@ import (
 
 	appcli "github.com/ingot-agent/app-cli"
 	"github.com/ingot-agent/sdk"
+	applicationruntime "github.com/ingot-agent/sdk/application"
 	"github.com/ingot-agent/sdk/interaction"
 )
 
@@ -39,8 +40,8 @@ type Dependencies struct{}
 
 // Exports contains the terminal interaction channel and CLI line input.
 type Exports struct {
-	Channel interaction.Channel
-	Lines   appcli.LineInput
+	Channel  interaction.Channel
+	Frontend appcli.Frontend
 }
 
 type inputDriver interface {
@@ -81,9 +82,29 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
+	process, err := applicationruntime.FromContext(ctx)
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct app.cli interaction: %w: %w", ErrInvalidConfig, err)
+	}
 	normalized, err := normalizeConfig(cfg.Interaction)
 	if err != nil {
 		return Exports{}, nil, err
+	}
+	if process.Check() {
+		runCtx, cancel := context.WithCancel(ctx)
+		instance := &channel{
+			runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
+			stdout: io.Discard, stderr: io.Discard, maxLine: normalized.maxLine, askPrompt: normalized.askPrompt,
+		}
+		instance.inputGate <- struct{}{}
+		return Exports{Channel: instance, Frontend: instance}, sdk.Cleanup(instance.cleanup), nil
+	}
+	mode, err := appcli.ParseArguments(process.Arguments())
+	if err != nil {
+		return Exports{}, nil, err
+	}
+	if mode != appcli.ModePlain {
+		return newTUI(ctx, cfg, process)
 	}
 	releaseLease, ok := acquireTerminalLease()
 	if !ok {
@@ -92,7 +113,7 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	runCtx, cancel := context.WithCancel(ctx)
 	instance := &channel{
 		runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
-		stdout: os.Stdout, stderr: os.Stderr, color: normalized.color,
+		stdout: os.Stdout, stderr: os.Stderr, color: false,
 		maxLine: normalized.maxLine, askPrompt: normalized.askPrompt,
 	}
 	instance.inputGate <- struct{}{}
@@ -105,7 +126,7 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	instance.driver = driver
 	instance.releaseLease = releaseLease
 	cleanup := sdk.Cleanup(instance.cleanup)
-	return Exports{Channel: instance, Lines: instance}, cleanup, nil
+	return Exports{Channel: instance, Frontend: instance}, cleanup, nil
 }
 
 func (c *channel) cleanup(ctx context.Context) error {
@@ -126,7 +147,9 @@ func (c *channel) cleanup(ctx context.Context) error {
 		}
 	}
 	c.resourceOnce.Do(func() {
-		c.resourceErr = c.driver.Close()
+		if c.driver != nil {
+			c.resourceErr = c.driver.Close()
+		}
 		if c.releaseLease != nil {
 			c.releaseLease()
 		}
@@ -371,6 +394,29 @@ func (c *channel) Render(ctx context.Context, event interaction.Event) error {
 	}
 }
 
+func (c *channel) Sync(ctx context.Context, _ appcli.SessionView) error {
+	if ctx == nil {
+		return interaction.ErrUnavailable
+	}
+	return ctx.Err()
+}
+
+func (c *channel) StartTurn(ctx context.Context, _ string) error {
+	if ctx == nil {
+		return interaction.ErrUnavailable
+	}
+	return ctx.Err()
+}
+
+func (c *channel) FinishTurn(ctx context.Context, _ appcli.TurnState) error {
+	if ctx == nil {
+		return interaction.ErrUnavailable
+	}
+	return ctx.Err()
+}
+
+func (*channel) Interrupts() <-chan appcli.Interrupt { return nil }
+
 func (c *channel) writeLine(writer io.Writer, text, color string) error {
 	if c.color {
 		_, err := fmt.Fprintf(writer, "\x1b[%sm%s\x1b[0m\n", color, text)
@@ -429,3 +475,4 @@ func isNil(value any) bool {
 
 var _ interaction.Channel = (*channel)(nil)
 var _ appcli.LineInput = (*channel)(nil)
+var _ appcli.Frontend = (*channel)(nil)

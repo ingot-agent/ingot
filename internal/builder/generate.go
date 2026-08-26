@@ -21,11 +21,12 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	}
 	mainImports := map[string]string{
 		"context": "context", "errors": "errors", "fmt": "fmt", "os": "os", "os/signal": "signal",
-		"path/filepath": "filepath", "reflect": "reflect", "strings": "strings", "time": "time", lock.SDK.ModulePath: "sdk",
+		"path/filepath": "filepath", "reflect": "reflect", "strings": "strings", "sync": "sync", "time": "time",
+		lock.SDK.ModulePath: "sdk", lock.SDK.ModulePath + "/application": "sdkapplication",
 	}
 	wiringImports := map[string]string{
 		"context": "context", "fmt": "fmt", "os": "os", "path/filepath": "filepath", "reflect": "reflect",
-		lock.SDK.ModulePath: "sdk", lock.SDK.ModulePath + "/config": "sdkconfig",
+		lock.SDK.ModulePath: "sdk", lock.SDK.ModulePath + "/application": "sdkapplication", lock.SDK.ModulePath + "/config": "sdkconfig",
 	}
 	hasDependencies := false
 	for _, component := range graph.Components {
@@ -107,6 +108,44 @@ func writeRuntimeSupport(source *bytes.Buffer, sdkModule string) {
 	_, _ = fmt.Fprintf(source, "const ingotSDKModule = %q\n\n", sdkModule)
 	source.WriteString(`
 const defaultCleanupTimeout = 10 * time.Second
+
+type processControl struct {
+	arguments []string
+	check bool
+	cancel context.CancelFunc
+	once sync.Once
+	mu sync.Mutex
+	requested bool
+	err error
+}
+
+func newProcessControl(arguments []string, check bool, cancel context.CancelFunc) *processControl {
+	return &processControl{arguments: append([]string(nil), arguments...), check: check, cancel: cancel}
+}
+
+func (p *processControl) Arguments() []string {
+	return append([]string(nil), p.arguments...)
+}
+
+func (p *processControl) Check() bool { return p.check }
+
+func (p *processControl) Shutdown(err error) {
+	p.once.Do(func() {
+		p.mu.Lock()
+		p.requested = true
+		p.err = err
+		p.mu.Unlock()
+		p.cancel()
+	})
+}
+
+func (p *processControl) result() (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.requested, p.err
+}
+
+var _ sdkapplication.Process = (*processControl)(nil)
 
 func validateRequired(value reflect.Value, path string) error {
 	if !value.IsValid() {
@@ -222,7 +261,12 @@ func main() {
 	if stateRoot == "" { stateRoot = filepath.Join(home, "state") }
 	processContext, stop := signal.NotifyContext(context.Background(), processSignals()...)
 	defer stop()
-	if err := run(processContext, configPath, stateRoot, check); err != nil {
+	runtimeContext, cancelRuntime := context.WithCancel(processContext)
+	defer cancelRuntime()
+	arguments := append([]string(nil), os.Args[1:]...)
+	if check { arguments = nil }
+	process := newProcessControl(arguments, check, cancelRuntime)
+	if err := run(runtimeContext, configPath, stateRoot, check, process); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -256,7 +300,7 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 	for i, plugin := range lock.Plugins {
 		pluginNumber[plugin.ID] = i
 	}
-	source.WriteString("func run(ctx context.Context, configPath, stateRoot string, check bool) error {\n\tconfigs, err := decodeConfigs(configPath)\n\tif err != nil { return err }\n\tcleanups := []sdk.Cleanup{}\n")
+	source.WriteString("func run(ctx context.Context, configPath, stateRoot string, check bool, process *processControl) error {\n\tctx = sdkapplication.WithProcess(ctx, process)\n\tconfigs, err := decodeConfigs(configPath)\n\tif err != nil { return err }\n\tcleanups := []sdk.Cleanup{}\n")
 	for _, component := range graph.CreationOrder {
 		number := componentNumber[component]
 		alias := aliases[component.ImportPath]
@@ -280,7 +324,7 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 		source.WriteString("\tif cleanup != nil { cleanups = append(cleanups, cleanup) }\n")
 		_, _ = fmt.Fprintf(source, "\tif constructErr != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(%q, constructErr)) }\n", "construct "+component.ID+": %w")
 	}
-	source.WriteString("\tif check { return cleanupAll(ctx, cleanups, nil) }\n\t<-ctx.Done()\n\treturn cleanupAll(ctx, cleanups, nil)\n}\n")
+	source.WriteString("\tif check { return cleanupAll(ctx, cleanups, nil) }\n\t<-ctx.Done()\n\t_, shutdownErr := process.result()\n\treturn cleanupAll(ctx, cleanups, shutdownErr)\n}\n")
 }
 
 func dependencyExpression(dependency *Dependency, componentNumber map[*Component]int, aliases map[string]string) string {

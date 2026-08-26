@@ -64,6 +64,7 @@ type Dependencies struct {
 // Exports contains the agent runtime.
 type Exports struct {
 	Runtime agent.Runtime
+	History agent.History
 }
 
 type runtime struct {
@@ -142,7 +143,29 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
 		maxToolRounds: maxRounds, streamEnabled: cfg.Streaming, toolErrorMode: mode,
 	}
-	return Exports{Runtime: instance}, nil, nil
+	return Exports{Runtime: instance, History: instance}, nil, nil
+}
+
+// Load returns a validated, caller-owned snapshot of one session's persisted
+// model messages without performing interrupted-round recovery or other
+// writes.
+func (r *runtime) Load(ctx context.Context, sessionID session.ID) ([]model.Message, error) {
+	if ctx == nil || sessionID == "" || !utf8.ValidString(string(sessionID)) {
+		return nil, ErrInvalidTurn
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	release, err := r.gates.acquire(ctx, string(sessionID))
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	messages, err := r.loadHistory(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return cloneMessages(messages), nil
 }
 
 func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error) {
@@ -328,6 +351,9 @@ func safeToolError(err error) string {
 		return "tool error [execution_failed]: tool execution failed"
 	}
 }
+
+var _ agent.Runtime = (*runtime)(nil)
+var _ agent.History = (*runtime)(nil)
 
 func copyFloat(value *float64) *float64 {
 	if value == nil {

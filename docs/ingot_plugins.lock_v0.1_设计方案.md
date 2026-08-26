@@ -131,7 +131,7 @@ modules
 replacements
 ```
 
-空集合使用空 TOML array。`plugins` 与 `modules` 至少包含一个条目；`modules` 至少包含 selected SDK module。
+空集合使用空 TOML array。`plugins` 与 `modules` 至少包含一个条目；`modules` 至少包含 selected SDK module（SDK 为本地开发源码时除外，见4.2）。
 
 ### 4.1 Version
 
@@ -145,7 +145,7 @@ replacements
 
 ### 4.2 SDK 与 Toolchain
 
-`[sdk]` 保存 generated wiring 直接使用的 SDK module path 与 exact selected version；对应 module 同时出现在 `[[modules]]`。
+`[sdk]` 保存 generated wiring 直接使用的 SDK module path 与 exact selected version。默认情况下对应 module 同时出现在 `[[modules]]`；若 SDK 来自本地开发源码（`ResolveOptions.SDKPath` 或最近 go.work 的等价 `replace`），SDK 不出现在 `[[modules]]`，改由 `[[replacements]]` 中的 SDK 条目表示：`module_path` 为 SDK path、`synthetic_version` 等于 `sdk.version`（selected exact version，而不是从 path 推导的 synthetic version）、`content_sha256` 为 ModuleSourceDigest。
 
 `[toolchain].version` 使用带 `go` 前缀的 exact version，例如 `go1.21.13`。
 
@@ -263,7 +263,7 @@ go_mod_sum
 
 ### 6.2 Replacements
 
-v0.1 replacement 仅表示 direct Local Dev Plugin：
+v0.1 replacement 表示两类本地开发源码：direct Local Dev Plugin 与本地开发 SDK。
 
 ```text
 module_path
@@ -272,12 +272,13 @@ dev_path
 content_sha256
 ```
 
-`dev_path` 是 absolute、clean 的机器 locator。`synthetic_version` 从 module path 推导：
+`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从 module path 推导；SDK 条目使用 `sdk.version`（selected exact version）。
 
 | Module path | Synthetic version |
 |---|---|
 | 无 `/vN`，`N >= 2` | `v0.0.0` |
 | 以 `/vN` 结束，`N >= 2` | `vN.0.0` |
+| SDK 本地开发条目 | `sdk.version`（selected exact version） |
 
 条目按 `module_path` 排序。
 
@@ -296,6 +297,8 @@ content_sha256
 9. directory 不产生 record，空目录不影响摘要。
 
 Canonical record stream：
+
+同算法应用于非 Plugin module（如本地开发 SDK）时使用 ModuleSourceDigest：root 只需包含 `go.mod`（不要求 `ingot.plugin.toml`），其余步骤相同。
 
 ```text
 ASCII "INGOT-DEV-SOURCE-DIGEST-V1\n"
@@ -496,8 +499,9 @@ Root `go.mod` materialization：
 |---|---|
 | remote direct Plugin | `require <plugin.id> <exact version>` |
 | Local Dev direct Plugin | `require <plugin.id> <synthetic version>` |
-| SDK/generated wiring direct import | `require <module path> <selected exact version>` |
-| Local Dev replacement | `replace <module path> => <dev_path>` |
+| SDK/generated wiring direct import（远程） | `require <module path> <selected exact version>` |
+| 本地开发 SDK | `require <module path> <sdk.version>` |
+| Local Dev replacement（Plugin/SDK） | `replace <module path> => <dev_path>` |
 
 Root `go.sum` 仅由 `[[modules]]` 中非空 `sum` 与 `go_mod_sum` 生成。
 

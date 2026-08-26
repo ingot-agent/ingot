@@ -326,13 +326,24 @@ Any command that is not a built-in ingot command is dispatched to the current
 runtime image:
 
 ```sh
+# full-screen TUI (default, requires a terminal)
 ingot chat
-ingot chat --model gpt-4o
+
+# line-oriented plain output, for pipes and redirection
+ingot chat --plain
 ```
 
 The runtime binary is executed with your stdin/stdout/stderr attached and
 `INGOT_HOME` set to the ingot home, so the image can find `config.toml` and
 its persistent state. The runtime's exit code is propagated.
+
+`chat` is the `app.cli` runtime command: without `--plain` it starts the
+full-screen TUI (markdown transcript, tool call blocks, session sidebar via
+`Ctrl+O`, Ask option panels; `Ctrl+Q` exits, `Ctrl+C` cancels the running
+turn, `F1` shows help). `chat --plain` degrades to prompt-based line input
+and plain text, so it works when stdin/stdout are not a terminal (pipes,
+redirection, non-interactive scripts). Model provider and API keys are
+configured in `config.toml`, not on the command line.
 
 If there is no current image (or it is missing), the command fails with an
 error explaining the problem.

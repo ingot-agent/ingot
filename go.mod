@@ -1,13 +1,12 @@
 module github.com/ingot-agent/ingot
 
-go 1.24.0
+go 1.24.2
 
 require (
 	github.com/pelletier/go-toml/v2 v2.2.4
 	golang.org/x/mod v0.27.0
-	golang.org/x/sys v0.34.0
+	golang.org/x/sys v0.41.0
 	golang.org/x/tools v0.35.0
 )
 
-require golang.org/x/sync v0.16.0 // indirect
-
+require golang.org/x/sync v0.19.0 // indirect

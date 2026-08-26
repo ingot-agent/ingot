@@ -395,6 +395,82 @@ func TestAgentSerializesSameSession(t *testing.T) {
 	}
 }
 
+func TestHistoryReturnsDeepOwnedMessages(t *testing.T) {
+	assistant := model.Message{Role: model.RoleAssistant, Content: "done", ToolCalls: []tool.Call{{
+		ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"value":1}`),
+	}}}
+	payload, err := encodePersistedMessage(assistant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {{
+		Kind: agentMessageKind, Version: agentMessageVersion, Payload: payload,
+	}}}}
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
+		Model: &sequenceModel{}, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages, err := exports.History.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].Content != "done" || len(messages[0].ToolCalls) != 1 {
+		t.Fatalf("messages=%#v", messages)
+	}
+	messages[0].Content = "changed"
+	messages[0].ToolCalls[0].Arguments[0] = '['
+	again, err := exports.History.Load(context.Background(), "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].Content != "done" || string(again[0].ToolCalls[0].Arguments) != `{"value":1}` {
+		t.Fatalf("second load retained caller mutation: %#v", again)
+	}
+	if _, err := exports.History.Load(context.Background(), ""); !errors.Is(err, ErrInvalidTurn) {
+		t.Fatalf("empty session error=%v", err)
+	}
+}
+
+func TestHistoryWaitsForSameSessionTurn(t *testing.T) {
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	models := &blockingModel{entered: make(chan struct{}), release: make(chan struct{})}
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
+		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDone := make(chan error, 1)
+	go func() {
+		_, runErr := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
+		runDone <- runErr
+	}()
+	<-models.entered
+	historyDone := make(chan []model.Message, 1)
+	go func() {
+		messages, loadErr := exports.History.Load(context.Background(), "s")
+		if loadErr != nil {
+			t.Errorf("Load() error=%v", loadErr)
+		}
+		historyDone <- messages
+	}()
+	select {
+	case <-historyDone:
+		t.Fatal("History.Load completed during the active same-session turn")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(models.release)
+	if err := <-runDone; err != nil {
+		t.Fatal(err)
+	}
+	messages := <-historyDone
+	if len(messages) != 2 || messages[0].Role != model.RoleUser || messages[1].Role != model.RoleAssistant {
+		t.Fatalf("messages=%#v", messages)
+	}
+}
+
 func TestAgentRejectsInterceptorSessionIDRewriteBeforeTerminal(t *testing.T) {
 	t.Parallel()
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"original": {}, "rewritten": {}}}

@@ -15,10 +15,12 @@ import (
 type queueChannel struct {
 	responses []string
 	prompts   []string
+	requests  []interaction.AskRequest
 }
 
 func (c *queueChannel) Ask(_ context.Context, request interaction.AskRequest) (interaction.AskResponse, error) {
 	c.prompts = append(c.prompts, request.Prompt)
+	c.requests = append(c.requests, request)
 	if len(c.responses) == 0 {
 		return interaction.AskResponse{}, nil
 	}
@@ -26,7 +28,7 @@ func (c *queueChannel) Ask(_ context.Context, request interaction.AskRequest) (i
 	c.responses = c.responses[1:]
 	return interaction.AskResponse{Text: response}, nil
 }
-func (*queueChannel) Render(context.Context, interaction.Event) error  { return nil }
+func (*queueChannel) Render(context.Context, interaction.Event) error { return nil }
 
 func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {
 	return func(_ context.Context, _ tool.Call) (tool.Result, error) {
@@ -57,6 +59,9 @@ func TestApprovalActionsAndRules(t *testing.T) {
 	}
 	if !strings.Contains(channel.prompts[0], "danger") || !strings.Contains(channel.prompts[0], "c1") || !strings.Contains(channel.prompts[0], "{\"path\":\"x\"}") {
 		t.Fatalf("prompt=%q", channel.prompts[0])
+	}
+	if len(channel.requests[0].Options) != 2 || channel.requests[0].Options[0].Label != "Yes" || channel.requests[0].Options[1].Label != "No" {
+		t.Fatalf("options=%#v", channel.requests[0].Options)
 	}
 }
 

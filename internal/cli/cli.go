@@ -167,17 +167,26 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return cli.result(err)
 	case "plugin":
 		return cli.runPlugin(ctx, home, rest)
+	case "chat":
+		if len(rest) > 1 || (len(rest) == 1 && rest[0] != "--plain") {
+			return cli.usageError("usage: ingot chat [--plain]")
+		}
+		return cli.runCurrent(ctx, home, arguments)
 	case "help", "--help", "-h":
 		cli.usage()
 		return 0
 	default:
-		err := home.RunCurrent(ctx, arguments)
-		var exitErr *ingothome.ExitError
-		if errors.As(err, &exitErr) {
-			return exitErr.Code
-		}
-		return cli.result(err)
+		return cli.runCurrent(ctx, home, arguments)
 	}
+}
+
+func (cli CLI) runCurrent(ctx context.Context, home *ingothome.Home, arguments []string) int {
+	err := home.RunCurrent(ctx, arguments)
+	var exitErr *ingothome.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.Code
+	}
+	return cli.result(err)
 }
 
 func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []string) int {
@@ -390,5 +399,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|plugin ...|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|plugin ...|chat [--plain]|runtime command>")
 }

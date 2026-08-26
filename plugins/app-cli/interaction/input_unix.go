@@ -70,7 +70,10 @@ func (d *terminalInput) ReadLine(ctx context.Context, maxBytes int) (string, err
 		if err != nil && err != syscall.EAGAIN && err != syscall.EWOULDBLOCK {
 			return "", err
 		}
-		if n == 0 && poll[0].Revents&unix.POLLHUP != 0 {
+		if n == 0 && err == nil {
+			// read returning 0 without error means end of stream. Pipes and
+			// TTYs also surface POLLHUP, but regular files and /dev/null do
+			// not, so the stream state itself is the reliable EOF signal.
 			if discarding || len(d.pending) > maxBytes {
 				d.pending = nil
 				return "", ErrInputLimit
