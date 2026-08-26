@@ -19,7 +19,6 @@ func (c *fakeChannel) Ask(_ context.Context, request interaction.AskRequest) (in
 	c.request = request
 	return interaction.AskResponse{Text: c.response}, c.err
 }
-func (*fakeChannel) ReadLine(context.Context, string) (string, error) { return "", nil }
 func (*fakeChannel) Render(context.Context, interaction.Event) error  { return nil }
 
 func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {

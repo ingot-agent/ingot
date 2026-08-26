@@ -26,7 +26,6 @@ func (c *queueChannel) Ask(_ context.Context, request interaction.AskRequest) (i
 	c.responses = c.responses[1:]
 	return interaction.AskResponse{Text: response}, nil
 }
-func (*queueChannel) ReadLine(context.Context, string) (string, error) { return "", nil }
 func (*queueChannel) Render(context.Context, interaction.Event) error  { return nil }
 
 func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {

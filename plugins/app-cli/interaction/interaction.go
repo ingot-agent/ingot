@@ -37,9 +37,10 @@ var (
 // Dependencies contains no consumed capabilities.
 type Dependencies struct{}
 
-// Exports contains the terminal interaction channel.
+// Exports contains the terminal interaction channel and CLI line input.
 type Exports struct {
 	Channel interaction.Channel
+	Lines   appcli.LineInput
 }
 
 type inputDriver interface {
@@ -104,7 +105,7 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	instance.driver = driver
 	instance.releaseLease = releaseLease
 	cleanup := sdk.Cleanup(instance.cleanup)
-	return Exports{Channel: instance}, cleanup, nil
+	return Exports{Channel: instance, Lines: instance}, cleanup, nil
 }
 
 func (c *channel) cleanup(ctx context.Context) error {
@@ -427,3 +428,4 @@ func isNil(value any) bool {
 }
 
 var _ interaction.Channel = (*channel)(nil)
+var _ appcli.LineInput = (*channel)(nil)

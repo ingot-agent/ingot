@@ -844,7 +844,6 @@ package interaction
 
 type Channel interface {
     Ask(context.Context, AskRequest) (AskResponse, error)
-    ReadLine(context.Context, string) (string, error)
     Render(context.Context, Event) error
 }
 
@@ -867,7 +866,12 @@ type AskResponse struct {
 `Options` 非空时，frontend 按声明顺序展示选项。选择预设项时，
 `AskResponse.Text` 返回对应 `Label`；`AllowTextInput` 为 true 时，frontend
 还必须展示一项自由输入入口，并原样返回用户输入。`Options` 为空时保持普通文本
-询问语义。aggregate input 的 ownership 规则同样适用于 `Options` slice。
+询问语义（自由文本输入的唯一入口），用户输入原样返回。aggregate input 的
+ownership 规则同样适用于 `Options` slice。
+
+行式读取（`ReadLine`）不是 SDK 契约的一部分：它是终端传输原语，只属于具体
+frontend 内部（如 `app.cli` 的 `appcli.LineInput`），不应由插件或非行式
+frontend 实现。
 
 Event 使用 SDK 封闭类型集合：
 
@@ -890,12 +894,12 @@ var ErrUnavailable = errors.New("interaction unavailable")
 
 ### 17.2 调用与并发
 
-`Ask` 与 `ReadLine` 以同步 typed call 表达交互，并继承调用栈、错误与 Context。Web/GUI adapter 可通过 queue/channel 将异步 frontend 转换为该调用模型。
+`Ask` 以同步 typed call 表达交互，并继承调用栈、错误与 Context。Web/GUI adapter 可通过 queue/channel 将异步 frontend 转换为该调用模型。
 
 同一 Channel：
 
 - `Render` concurrent-safe；
-- `Ask` 与 `ReadLine` 作为 interactive operation 串行化；
+- `Ask` 作为 interactive operation 串行化；
 - 等待队列、锁或用户输入时观察 Context。
 
 v0.1 Channel 对应单一 logical interaction scope。Multi-user Web 与 request-scoped routing 使用未来的 scoped capability。
@@ -1025,7 +1029,7 @@ SDK Capability 默认 concurrent-safe；领域顺序如下：
 | Model | 不同 request 可并发 |
 | Session | 不同 Session 可并发；同 Session Append total order |
 | Context Window | 不同 Session 可并发；同 Session 的持久化压缩状态有序 |
-| Interaction | Render 可并发；Ask/ReadLine 串行 |
+| Interaction | Render 可并发；Ask 串行 |
 | Agent | 不同 Session 可并发；同 Session turn 串行 |
 
 ### 21.2 Public Value Ownership

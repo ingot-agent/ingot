@@ -113,9 +113,6 @@ func (f agentInterceptorFunc) Invoke(ctx context.Context, turn agent.Turn, next 
 func (r *recordingInteraction) Ask(context.Context, interaction.AskRequest) (interaction.AskResponse, error) {
 	return interaction.AskResponse{}, errors.New("unused")
 }
-func (r *recordingInteraction) ReadLine(context.Context, string) (string, error) {
-	return "", errors.New("unused")
-}
 func (r *recordingInteraction) Render(_ context.Context, event interaction.Event) error {
 	r.events = append(r.events, event)
 	return nil
