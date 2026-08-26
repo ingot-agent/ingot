@@ -217,6 +217,54 @@ func WithStateDir(ctx context.Context, path string) context.Context { return con
 // same artifact (no machine-specific source paths may leak into the binary),
 // and that rebuilding the same ImageID therefore succeeds instead of failing
 // with INGOT-BUILD-REPRODUCIBILITY.
+func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	proxy := filepath.Join(t.TempDir(), "proxy")
+	sdkSource := filepath.Join(t.TempDir(), "sdk")
+	writeTestSDKModule(t, sdkSource)
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+
+	pluginA := filepath.Join(t.TempDir(), "plugin a")
+	pluginB := filepath.Join(t.TempDir(), "plugin b")
+	writeTestRemotePlugin(t, pluginA)
+	writeTestRemotePlugin(t, pluginB)
+
+	build := func(pluginSource string) *BuildResult {
+		home := t.TempDir()
+		makeModuleCacheRemovable(t, home)
+		desiredPath := filepath.Join(home, "plugins.toml")
+		writeTestFile(t, desiredPath, fmt.Sprintf("plugins_version=1\n[[plugins]]\nmodule=%q\npath=%q\n", "example.com/ingot-test-plugin", filepath.ToSlash(pluginSource)))
+		configPath := filepath.Join(home, "config.toml")
+		writeTestFile(t, configPath, "")
+		t.Setenv("GOSUMDB", "off")
+		desired, err := ParseDesired(desiredPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moduleCache := filepath.Join(home, "cache", "gomod")
+		lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+
+	first := build(pluginA)
+	second := build(pluginB)
+	if first.ImageID != second.ImageID {
+		t.Fatalf("identical dev content must lock the same ImageID: %s != %s", first.ImageID, second.ImageID)
+	}
+	if first.ArtifactDigest != second.ArtifactDigest {
+		t.Fatalf("identical dev content from different directories must produce one artifact: %s != %s", first.ArtifactDigest, second.ArtifactDigest)
+	}
+}
+
 func makeModuleCacheRemovable(t *testing.T, home string) {
 	t.Helper()
 	t.Cleanup(func() {

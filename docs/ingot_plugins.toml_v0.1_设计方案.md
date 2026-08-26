@@ -193,6 +193,8 @@ plugins[*].module
 
 `path` 是 source locator；DevSourceDigest 是 Build Identity。相同源码位于不同机器路径时可生成相同 ImageID。
 
+构建期 Builder 会将 local dev 源码逐字节复制到构建 staging 内，并通过相对路径 `replace` 编译，因此**产物二进制同样与源码所在目录无关**：相同源码（相同 DevSourceDigest）在任何目录、任何机器上构建都得到一致的 `ArtifactDigest`（build-info 中不泄露绝对路径）。
+
 ### 5.3 Synthetic Version
 
 Local Dev root module require 使用确定性 synthetic version：

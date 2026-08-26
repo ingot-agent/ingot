@@ -18,7 +18,7 @@ import (
 
 const (
 	DefaultIngotVersion   = "0.3.0"
-	DefaultBuilderVersion = "0.3.0"
+	DefaultBuilderVersion = "0.3.1"
 	DefaultSDKModule      = "github.com/ingot-agent/sdk"
 	DefaultSDKVersion     = "v0.1.0"
 )

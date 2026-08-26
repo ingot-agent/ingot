@@ -553,7 +553,13 @@ func (l *Lock) ImageID() (string, error) {
 }
 
 // RestoreRootModule writes the Builder-owned root go.mod and go.sum.
-func (l *Lock) RestoreRootModule(directory string) error {
+//
+// devTargets optionally maps a replaced module path to the locator written
+// into its replace directive (an absolute path, or a relative path into the
+// build staging area). Modules absent from the map keep their locked
+// DevPath. Relative locators keep the compiled artifact free of
+// machine-specific absolute paths.
+func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string) error {
 	if err := l.Validate(); err != nil {
 		return err
 	}
@@ -589,7 +595,11 @@ func (l *Lock) RestoreRootModule(directory string) error {
 	}
 	goMod.WriteString(")\n")
 	for _, replacement := range l.Replacements {
-		_, _ = fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(filepath.ToSlash(replacement.DevPath)))
+		locator := filepath.ToSlash(replacement.DevPath)
+		if relative, ok := devTargets[replacement.ModulePath]; ok {
+			locator = relative
+		}
+		_, _ = fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(locator))
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(goMod.String()), nil)
 	if err != nil {

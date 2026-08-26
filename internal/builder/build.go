@@ -127,7 +127,16 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	if err := os.MkdirAll(imageDirectory, 0o700); err != nil {
 		return nil, err
 	}
-	if err := lock.RestoreRootModule(rootDirectory); err != nil {
+	// Faithful copies of every dev plugin are compiled from inside the
+	// staging area through relative replace locators. This keeps the
+	// artifact free of machine-specific absolute source paths, so identical
+	// content yields identical binaries regardless of where the dev sources
+	// live (or whether two homes share the same plugin set).
+	devLocators, devDirs, err := copyDevSources(lock, rootDirectory, staging)
+	if err != nil {
+		return nil, err
+	}
+	if err := lock.RestoreRootModule(rootDirectory, devLocators); err != nil {
 		return nil, err
 	}
 	environment := lockedEnvironment(lock, options.GOMODCACHE)
@@ -145,7 +154,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	if err != nil {
 		return nil, err
 	}
-	if err := verifySelectedGraph(lock, selected); err != nil {
+	if err := verifySelectedGraph(lock, selected, devDirs); err != nil {
 		return nil, err
 	}
 	if err := verifyLockedSources(lock, selected); err != nil {
@@ -228,7 +237,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, "ingot-runtime"), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder}, nil
 }
 
-func verifySelectedGraph(lock *Lock, selected []resolvedModule) error {
+func verifySelectedGraph(lock *Lock, selected []resolvedModule, devDirs map[string]string) error {
 	expected := map[string]LockedModule{}
 	for _, item := range lock.Modules {
 		expected[item.Path] = item
@@ -248,8 +257,12 @@ func verifySelectedGraph(lock *Lock, selected []resolvedModule) error {
 		}
 		if item.Replace != nil {
 			replacement, ok := replacements[item.Path]
-			if !ok || item.Version != replacement.SyntheticVersion || filepath.Clean(item.Replace.Dir) != replacement.DevPath {
-				return &Error{Code: "INGOT-BUILD-REPLACEMENT-GRAPH", Plugin: item.Path, Want: replacement.SyntheticVersion + " => " + replacement.DevPath, Actual: item.Version + " => " + item.Replace.Dir}
+			wantDirectory := replacement.DevPath
+			if staged, ok := devDirs[item.Path]; ok {
+				wantDirectory = staged
+			}
+			if !ok || item.Version != replacement.SyntheticVersion || filepath.Clean(item.Replace.Dir) != wantDirectory {
+				return &Error{Code: "INGOT-BUILD-REPLACEMENT-GRAPH", Plugin: item.Path, Want: replacement.SyntheticVersion + " => " + wantDirectory, Actual: item.Version + " => " + item.Replace.Dir}
 			}
 			seenReplacements[item.Path] = true
 			continue
