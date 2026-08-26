@@ -199,7 +199,7 @@ func (r *runtime) selectProvider(request model.Request) (model.Provider, error) 
 		return nil, fmt.Errorf("provider %q: %w", request.Provider, model.ErrProviderNotFound)
 	}
 	if request.Model == "" {
-		return nil, fmt.Errorf("empty model for provider %q: %w", request.Provider, model.ErrModelNotFound)
+		return nil, fmt.Errorf("empty model for provider %q: set default_model in [plugins.model.runtime] or model in [plugins.agent.default]: %w", request.Provider, model.ErrModelNotFound)
 	}
 	return provider, nil
 }
