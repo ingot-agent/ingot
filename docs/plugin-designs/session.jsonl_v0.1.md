@@ -2,18 +2,18 @@
 
 > 状态：Implemented v0.1  
 > Component：`default`  
-> Exports：`session.Store`  
+> Exports：`session.MutableStore`
 > Persistent State schema：1
 
 ## 1. 定位
 
-`session.jsonl` 使用 Plugin-scoped 本地目录持久化 Agent Session。它实现 append-oriented `session.Store`，以每个 Session 独立 JSONL 文件提供 same-session total order，并允许不同 Session 并发访问。
+`session.jsonl` 使用 Plugin-scoped 本地目录持久化 Agent Session。它实现 append-oriented `session.MutableStore`，以每个 Session 独立 JSONL 文件提供 same-session total order，并允许不同 Session 并发访问；Title 通过原子 metadata replacement 更新，不进入消息序列。
 
 典型连接关系：
 
 ```text
-session.jsonl --session.Store--> agent.default
-session.jsonl --session.Store--> app.cli/app
+session.jsonl --session.Store--------> agent.default
+session.jsonl --session.MutableStore-> app.cli/app
 ```
 
 ## 2. 目标与非目标
@@ -27,14 +27,15 @@ session.jsonl --session.Store--> app.cli/app
 - 使用 `config.StateDir(ctx)`，不读写 workspace 或任意全局路径；
 - 磁盘格式带独立版本并按 reader window fail-closed；
 - 检测中间损坏，并安全处理未提交的尾部残片；
-- `Create`、`Append`、`Load`、`List` 均支持 Context cancellation；
+- `Create`、`Append`、`Load`、`List`、`Rename` 均支持 Context cancellation；
+- Rename只更新展示Title，不改变Session identity、消息顺序或会话时间；
 - 返回值与输入值遵守 aggregate ownership 规则。
 
 非目标：
 
 - 分布式 Session Store；
 - Entry 更新、删除或随机位置插入；
-- Session 删除、标题更新、全文检索；
+- Session 删除、任意metadata patch、全文检索；
 - 对 Entry payload 的领域 schema 做解释；
 - 跨多个 Session 的事务。
 
@@ -55,7 +56,7 @@ import (
 type Dependencies struct{}
 
 type Exports struct {
-    Store session.Store
+    Store session.MutableStore
 }
 
 func New(
@@ -164,6 +165,8 @@ Exact shape：
 
 - 时间编码为 UTC RFC3339Nano；
 - `Create` 原样保存 `Metadata.Title`；
+- `Rename` 在持有session gate时以同目录临时文件原子替换metadata，只修改`title`；
+- Rename不修改`created_at`，也不影响由entries计算的`UpdatedAt`；
 - `Metadata.CreatedAt` 必须非 zero，Plugin 不自行替换调用者时间；
 - unknown field、ID mismatch、invalid time 或 unsupported record version 视为 corrupt state；
 - metadata 使用同目录临时文件写入并原子提交。
@@ -273,6 +276,18 @@ List 扫描 Session metadata，并读取每个 entries 文件的最后一个完�
 
 若任一已发布 Session 存在中间 corruption，List 返回 `ErrCorruptState`，不静默隐藏该 Session。
 
+### 8.5 `Rename`
+
+1. 校验Session ID、Context和非空valid UTF-8 Title；
+2. 以可取消方式获取与Append/Load相同的session gate；
+3. strict读取并验证现有metadata；
+4. 只替换Title，保留ID、record version和CreatedAt；
+5. 将完整metadata写入同目录临时文件，按durability policy Sync；
+6. 原子替换`metadata.json`并在sync模式同步目录；
+7. 成功返回后后续List必须看到新Title。
+
+Session不存在时保留`session.ErrNotFound`。Rename不追加`entries.jsonl`，因此不会改变对话`UpdatedAt`或Agent history。Windows使用replace-existing且write-through的原子文件替换，Unix使用同文件系统rename replacement。
+
 ## 9. Tail recovery 与 corruption
 
 Writer 总是以 newline 结束 committed record。打开 Session 时：
@@ -294,7 +309,7 @@ Store 持有 keyed session gate registry：
 - registry 使用短期 mutex 保护创建和引用计数；
 - operation 完成后释放引用，无活动 operation 的 gate 可以回收，避免无限增长；
 - Create 和 State 初始化使用独立的短期 coordination；
-- 不同 Session 的 Append/Load 不共用全局 I/O 锁。
+- 不同 Session 的 Append/Load/Rename 不共用全局 I/O 锁。
 
 本实现使用 StateDir owner lock 检测第二个 writer 并 fail-fast；锁实现按平台提供，无法提供可靠锁的平台在 `New` 阶段返回 `ErrOwnerLockUnsupported`。锁由 Cleanup 释放。进程内仍使用 keyed session gate 保证同一 Session 的顺序。
 
@@ -338,6 +353,8 @@ min_reader_version = 1
 - Create/Load empty Session；
 - Append/Load round trip；
 - Title、CreatedAt、UpdatedAt；
+- Rename持久化、非法/空Title、missing ID、Context取消；
+- Rename不改变CreatedAt、UpdatedAt和Entry sequence；
 - missing和非法 ID；
 - invalid Entry kind/version/payload；
 - caller 在 Append 返回后修改 RawMessage 不影响结果；
@@ -373,7 +390,7 @@ min_reader_version = 1
 
 ## 14. 验收标准
 
-1. 完整实现 `session.Store` 并通过外部 package compile assertion；
+1. 完整实现 `session.MutableStore` 并通过外部 package compile assertion；
 2. same-session total order 和 cross-session concurrency 有确定性测试；
 3. 等待内部 serialization 时 Context 可取消；
 4. State schema、record envelope 和 Entry schema 三层版本明确；
@@ -392,3 +409,4 @@ min_reader_version = 1
 - `Metadata.CreatedAt == zero` 拒绝，不由 Store 隐式补值；
 - `List` 遇到单个 corrupt Session 时整体 fail-closed；
 - 首版使用目录扫描，不维护独立 index。
+- `Rename`复用same-session gate并原子替换metadata，不写Entry sequence。

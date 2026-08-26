@@ -29,4 +29,6 @@ type InteractionConfig struct {
 type AppConfig struct {
 	InitialSessionTitle string `toml:"initial_session_title"`
 	ShowBanner          bool   `toml:"show_banner"`
+	TitleProvider       string `toml:"title_provider"`
+	TitleModel          string `toml:"title_model"`
 }

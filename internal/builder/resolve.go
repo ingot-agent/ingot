@@ -20,7 +20,7 @@ const (
 	DefaultIngotVersion   = "0.3.0"
 	DefaultBuilderVersion = "0.3.1"
 	DefaultSDKModule      = "github.com/ingot-agent/sdk"
-	DefaultSDKVersion     = "v0.1.2"
+	DefaultSDKVersion     = "v0.1.3"
 )
 
 type ResolveOptions struct {

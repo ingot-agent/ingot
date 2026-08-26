@@ -308,6 +308,33 @@ func (s *store) Load(ctx context.Context, id session.ID) ([]session.Entry, error
 	return entries, nil
 }
 
+func (s *store) Rename(ctx context.Context, id session.ID, title string) error {
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+	if title == "" || strings.TrimSpace(title) == "" || !utf8.ValidString(title) {
+		return fmt.Errorf("title must be valid UTF-8 and non-empty: %w", ErrInvalidEntry)
+	}
+	release, err := s.gates.acquire(ctx, string(id))
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := checkStoreContext(ctx); err != nil {
+		return err
+	}
+
+	metadata, err := s.loadMetadata(id)
+	if err != nil {
+		return err
+	}
+	metadata.Title = title
+	if err := replaceJSON(filepath.Join(s.sessionDirectory(id), "metadata.json"), metadata, s.syncWrites); err != nil {
+		return fmt.Errorf("rename session %s: %w", id, err)
+	}
+	return nil
+}
+
 func (s *store) List(ctx context.Context, query session.Query) ([]session.Summary, error) {
 	if query.Limit < 0 || query.Offset < 0 {
 		return nil, fmt.Errorf("limit and offset must be non-negative: %w", ErrInvalidQuery)
@@ -495,6 +522,14 @@ func validateEntry(entry session.Entry) error {
 }
 
 func writeNewJSON(path string, value any, syncWrites bool) error {
+	return writeJSON(path, value, syncWrites, false)
+}
+
+func replaceJSON(path string, value any, syncWrites bool) error {
+	return writeJSON(path, value, syncWrites, true)
+}
+
+func writeJSON(path string, value any, syncWrites, replace bool) error {
 	data, err := json.Marshal(value)
 	if err != nil {
 		return err
@@ -527,12 +562,14 @@ func writeNewJSON(path string, value any, syncWrites bool) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(path); err == nil {
-		return fmt.Errorf("destination already exists: %w", fs.ErrExist)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
+	if !replace {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("destination already exists: %w", fs.ErrExist)
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
+	if err := atomicReplace(temporaryPath, path); err != nil {
 		return err
 	}
 	committed = true
@@ -582,4 +619,4 @@ func checkStoreContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-var _ session.Store = (*store)(nil)
+var _ session.MutableStore = (*store)(nil)

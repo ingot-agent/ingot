@@ -16,7 +16,8 @@ app.cli/interaction --interaction.Channel----> app.cli/app
 
 agent.default ------agent.Runtime---------> app.cli/app
 agent.default ------agent.History----------> app.cli/app
-session.jsonl ------session.Store----------> app.cli/app
+model.runtime ------model.Runtime----------> app.cli/app
+session.jsonl ------session.MutableStore----> app.cli/app
 ```
 
 process 级调用元数据（`application.Process`）由 generated main 通过 Context 注入，不经过 Component Graph。
@@ -39,10 +40,12 @@ type InteractionConfig struct {
 type AppConfig struct {
     InitialSessionTitle string `toml:"initial_session_title"`
     ShowBanner          bool   `toml:"show_banner"`
+    TitleProvider       string `toml:"title_provider"`
+    TitleModel          string `toml:"title_model"`
 }
 ```
 
-默认prompt为`"> "`和`"? "`，color为`auto|always|never`中的`auto`，line limit 64KiB。Config不保存当前Session或其他runtime mutable state。
+默认prompt为`"> "`和`"? "`，color为`auto|always|never`中的`auto`，line limit 64KiB。`title_provider`和`title_model`为空时复用`model.runtime`的默认选择；可显式指向更便宜的标题模型。Config不保存当前Session或其他runtime mutable state。
 
 ## 3. `interaction` Component
 
@@ -157,9 +160,10 @@ Cleanup先关闭新调用入口并取消pending input，再以cleanup Context等
 type Dependencies struct {
     Agent       agent.Runtime
     History     agent.History
+    Model       model.Runtime
     Interaction interaction.Channel
     Frontend    appcli.Frontend
-    Store       session.Store
+    Store       session.MutableStore
 }
 
 type Exports struct{}
@@ -177,25 +181,41 @@ CLI commands首版固定为：
 
 | Command | 行为 |
 |---|---|
-| `/new [title]` | Create并切换Session，随后 `syncSession` |
+| `/new <title>` | 立即Create并切换人工命名Session，不触发AI改名 |
+| `/new` | 回到无current Session状态；下一条普通消息创建Session |
+| `/rename <title>` | 原子修改当前Session标题，随后 `syncSession` |
 | `/use <id>` | 通过 `History.Load` 验证后切换Session并 `syncSession` |
 | `/list` | List并渲染Session摘要 |
 | `/help` | 展示命令 |
 | `/exit` | 请求正常进程退出（`process.Shutdown(nil)`） |
 
-非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。`Result.Output`只用于无Interaction的其他Agent consumer。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
+非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。App仅在首轮成功后将`Result.Output`与首条用户输入交给标题模型。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
 
-### 4.1 会话同步
+### 4.1 Session标题生命周期
 
-`syncSession` 在每个关键点被调用（启动、`/new`、`/use`、每个 turn 结束、turn 取消后）：`store.List(limit 100)` 取摘要 + `history.Load(current)` 取已持久化 model 消息，打包为 `SessionView` 交给 `Frontend.Sync`。TUI 用它重建 transcript 与侧栏；plain 模式无操作。
+自动创建Session采用稳定的一次性标题策略：
 
-### 4.2 Turn 生命周期
+1. 收到首条普通消息后，合并空白、移除简单Markdown前缀并截断到48个rune，立即作为临时Title创建Session和`syncSession`；清理后为空才回退`initial_session_title`或`New Session`；
+2. 首个Agent turn成功后，以第一条用户消息和`agent.Result.Output`组成JSON请求，调用同一个`model.Runtime`生成正式标题；请求不携带Tools，temperature=0.2、max_tokens=1024、超时10秒，user/assistant文本各截断到4KiB；较高生成预算用于兼容默认先输出reasoning tokens的模型，最终展示标题仍受32-rune边界约束；
+3. 返回值必须是assistant单行文本、无tool call、清理后非空且不超过32个rune；合法时调用`MutableStore.Rename`并再次同步Session；
+4. 无论标题Model调用、返回校验或Rename成功与否，每个自动Session最多尝试一次。失败静默保留临时标题，不改变已成功的Agent turn；
+5. `/new <title>`与`/rename <title>`是人工标题，规范化空白后最多80个rune，永不被自动覆盖；`/use`切换已有Session也不触发自动命名；
+6. 标题在首次自动替换后保持稳定，后续turn不再自动重写。
+
+标题模型直接使用标准Model chokepoint，因此Provider选择、model interceptor、Context和错误链语义保持一致；标题请求不写Agent Session history。Title本身只用于展示，Session ID仍是持久化identity。
+
+### 4.2 会话同步
+
+`syncSession` 在每个关键点被调用（启动、`/new`、`/rename`、`/use`、自动标题替换、每个 turn 结束、turn 取消后）：`store.List(limit 100)` 取摘要 + `history.Load(current)` 取已持久化 model 消息，打包为 `SessionView` 交给 `Frontend.Sync`。TUI 用它重建 transcript 与侧栏；plain 模式无操作。
+
+### 4.3 Turn 生命周期
 
 ```text
 Frontend.StartTurn(input)
 → agent.Run 在 instance-owned goroutine 执行（turnCtx 可取消）
 → 等待: done | interrupt | ctx.Done
 → Frontend.FinishTurn(TurnCompleted | TurnCanceled | TurnFailed)
+→ 首个自动命名turn成功: best-effort生成并Rename标题
 → syncSession
 → turn 出错: interaction.ErrorEvent（"session %q: %w"）后继续下一条输入
 ```
@@ -278,8 +298,9 @@ Plugin不声明State；两个Component共享root Config。
 
 ### App
 
-- 首次普通输入时自动Create Session；
-- new/use/list/help/exit；
+- 首次普通输入以规范化输入立即Create Session，首轮成功后最多一次AI Rename；
+- 自动标题model request、输入边界、输出校验和失败保留临时标题；
+- new/rename/use/list/help/exit，人工标题不自动覆盖；
 - 启动与每轮结束后的 `Sync` 快照（列表 + history 加载）；
 - turn 开始/结束状态机（Completed/Canceled/Failed）、Cancel 不退出、`InterruptExit` 退出；
 - Agent input/result/error；
@@ -289,6 +310,6 @@ Plugin不声明State；两个Component共享root Config。
 - 缺 `application.Process`、typed-nil Dependencies 拒绝构造；check 模式不启动 loop；
 - process Context cancel、Cleanup cancel/join和fatal loop error回收；
 - 多个app/frontend instance可以并存且状态隔离；
-- fake clock、Store、Agent、History、Frontend的deterministic transcript tests。
+- fake clock、Store、Model、Agent、History、Frontend的deterministic transcript tests。
 
 验收以顶层 `New`/`Cleanup` lifecycle conformance为准；进程退出统一经 SDK `application.Process` 报告，Builder 无 root-consumer 特例。

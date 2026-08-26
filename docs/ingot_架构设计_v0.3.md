@@ -449,7 +449,7 @@ SDK 提供：
 
 - `sdk.Cleanup`、`sdk.Optional[T]`、`sdk.Named[T]`；
 - typed pipeline Interceptor；
-- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract（含 `agent.History`）与 `application.Process`（SDK v0.1.2 起正式发布，工作区 Plugin 模块统一依赖该版本）；
+- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract（含 `agent.History`）与 `application.Process`（SDK v0.1.2 起正式发布）；`session.MutableStore` 自 SDK v0.1.3 起提供，消费该能力的 Plugin 依赖 v0.1.3；
 - Context、错误、并发与 ownership 语义。
 
 Runtime 的主要 chokepoint：
@@ -475,7 +475,7 @@ SDK 详细 API 与语义见《ingot SDK v0.1 设计方案》。
 | `tool.runtime` | tool lookup、校验与 interceptor chain | Consume tools/interceptors; export `tool.Runtime` |
 | `interceptor.approval` | tool approval | Consume optional interaction; export `[]tool.Interceptor` |
 | `interceptor.script` | runtime-configured executable hook | Export typed interceptors |
-| `session.jsonl` | append-oriented session store | Export `session.Store`; own persistent State |
+| `session.jsonl` | append-oriented session store与标题metadata更新 | Export `session.MutableStore`（可赋值给`session.Store`）；own persistent State |
 | `prompt.default` | prompt rendering | Consume contributors; export `prompt.Renderer` |
 | `context.compact` | non-destructive invocation context compaction | Consume `model.Runtime`与`session.Store`; export `contextwindow.Compactor` |
 | `agent.default` | default agent turn | Consume model/tool/session/prompt/optional context compactor/interaction/interceptors; export `agent.Runtime` |
@@ -497,6 +497,7 @@ flowchart LR
 
     ModelRuntime -->|model.Runtime| Compactor["context.compact"]
     ModelRuntime -->|model.Runtime| Agent["agent.default"]
+    ModelRuntime -->|model.Runtime| CLIApp["app.cli/app"]
     ToolRuntime -->|tool.Runtime| Agent
     Session["session.jsonl"] -->|session.Store| Agent
     Session -->|session.Store| Compactor
@@ -504,9 +505,9 @@ flowchart LR
     Compactor -->|contextwindow.Compactor| Agent
     CLIChannel -->|interaction.Channel| Agent
 
-    Agent -->|agent.Runtime| CLIApp["app.cli/app"]
+    Agent -->|agent.Runtime| CLIApp
     CLIChannel -->|interaction.Channel| CLIApp
-    Session -->|session.Store| CLIApp
+    Session -->|session.MutableStore| CLIApp
 ```
 
 ## 12. 实施顺序
