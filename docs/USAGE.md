@@ -12,6 +12,7 @@ examples, and the details of the build/apply workflow.
 - [Workflow overview](#workflow-overview)
 - [Command reference](#command-reference)
   - [Global options](#global-options)
+  - [`init`](#init)
   - [`resolve`](#resolve)
   - [`build`](#build)
   - [`apply`](#apply)
@@ -33,8 +34,22 @@ Requires Go 1.24+.
 go build ./cmd/ingot
 ```
 
-This produces the `ingot` binary in the current directory. Move it onto your
-`PATH` if you like:
+This produces the `ingot` binary in the current directory. Alternatively,
+use the official install script, which installs both the CLI and the official
+plugin set (into `<prefix>/share/ingot/plugins`, discovered by `ingot init`):
+
+```sh
+./scripts/install.sh                          # install into /usr/local
+./scripts/install.sh --prefix ~/.local        # custom prefix
+```
+
+Windows:
+
+```powershell
+.\scripts\install.ps1
+```
+
+Or move the binary onto your `PATH` manually:
 
 ```sh
 install ./ingot ~/bin/ingot   # or wherever your PATH points
@@ -54,6 +69,7 @@ ingot --home /path/to/home status
 ├── plugins.toml        # desired plugin set (maintained by you or the CLI)
 ├── plugins.lock        # exact resolution: module graph, digests, build flags
 ├── config.toml         # runtime configuration values (read by the image)
+├── bundled-plugins/    # materialized official plugin sources (written by `ingot init`)
 ├── current             # atomic pointer to the active image ID
 ├── current.previous    # previous image ID (used by rollback/GC safety)
 ├── cache/gomod/        # Go module cache used for builds
@@ -67,21 +83,18 @@ ingot --home /path/to/home status
   transaction file (`.plugins.transaction`) enables crash recovery.
 - `current` is switched atomically only after a successful build and
   `--ingot-check` validation.
+- `bundled-plugins/` is managed by ingot: `ingot init` writes or refreshes it,
+  and the official plugins in `plugins.toml` point at it as local dev sources.
 - Images are immutable: never edit anything under `images/`.
 
 ## Workflow overview
 
 ```text
-plugins.toml  --resolve-->  plugins.lock  --build-->  images/<ImageID>  --switch-->  current
-     (desired)                  (facts)                    (artifact)                 (active)
-```
-
-The normal cycle:
-
-```sh
-ingot plugin add github.com/example/plugin@v1.2.3   # edit desired state
-ingot apply                                          # resolve + build + switch
-ingot chat                                           # run the current image
+install ingot
+  -> ingot init           official plugin set + plugins.toml + config template
+  -> edit config.toml     set your model provider
+  -> ingot apply          resolve + build + switch
+  -> ingot chat           run the agent
 ```
 
 `apply` is a shortcut for `resolve` + `build` + switching `current`.
@@ -98,6 +111,35 @@ to stderr.
 | Option | Meaning |
 |---|---|
 | `--home PATH` | Use `PATH` as the ingot home instead of `~/.ingot`. Must appear before the command: `ingot --home /tmp/h status`. |
+
+### `init`
+
+```text
+ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
+```
+
+Initializes a working ingot home:
+
+1. locates the official plugin set (`--bundle` points at it explicitly;
+   otherwise the executable's location is probed — `<prefix>/share/ingot/plugins`
+   after an install-script run, or the repository-root `plugins/` in a dev
+   checkout);
+2. materializes it under `~/.ingot/bundled-plugins/` (idempotent: unchanged
+   content is not rewritten);
+3. writes a default `plugins.toml` (every profile plugin is a local dev
+   source);
+4. writes a default `config.toml` template.
+
+| Option | Meaning |
+|---|---|
+| `--profile` | `default` (skeleton + common adapters, 13 plugins) or `minimal` (minimum runnable set, 8 plugins); default `default`. |
+| `--bundle` | Directory of the official plugin set (default: auto-detected relative to the executable). |
+| `--force` | Overwrite an already initialized home (refuses to touch an existing `plugins.toml` otherwise). |
+| `--apply` | Run `apply` (resolve + build + switch current) right after init. |
+
+`init` is idempotent: an existing `plugins.toml` blocks re-initialization
+(unless `--force`) and an existing `config.toml` is preserved. It prints the
+next steps: edit `config.toml`, run `ingot apply`, run `ingot chat`.
 
 ### `resolve`
 
@@ -345,11 +387,15 @@ artifact. Rebuilding the same `ImageID` is expected to reproduce the same
 
 ## Examples
 
-Add two plugins (one remote, one local) and run the agent:
+Full flow from scratch:
 
 ```sh
-ingot plugin add github.com/example/http-default@v1.2.3
-ingot plugin add --path ../my-local-plugin
+./scripts/install.sh
+```
+
+```sh
+ingot init
+# edit ~/.ingot/config.toml: model provider base_url / api_key
 ingot apply
 ingot chat
 ```

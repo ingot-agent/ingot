@@ -11,6 +11,7 @@
 - [工作流概览](#工作流概览)
 - [命令参考](#命令参考)
   - [全局选项](#全局选项)
+  - [`init`](#init)
   - [`resolve`](#resolve)
   - [`build`](#build)
   - [`apply`](#apply)
@@ -32,7 +33,20 @@
 go build ./cmd/ingot
 ```
 
-这会在当前目录生成 `ingot` 二进制。可以把它放到 `PATH` 中：
+这会在当前目录生成 `ingot` 二进制。也可以使用官方安装脚本，它会同时安装 CLI 与官方插件集（存放于 `<prefix>/share/ingot/plugins`，供 `ingot init` 定位）：
+
+```sh
+./scripts/install.sh                          # 安装到 /usr/local
+./scripts/install.sh --prefix ~/.local        # 自定义前缀
+```
+
+Windows：
+
+```powershell
+.\scripts\install.ps1
+```
+
+也可以把二进制放入 `PATH`：
 
 ```sh
 install ./ingot ~/bin/ingot   # 或 PATH 中的任意目录
@@ -51,6 +65,7 @@ ingot --home /path/to/home status
 ├── plugins.toml        # 期望的插件集合（由你或 CLI 维护）
 ├── plugins.lock        # 精确解析结果：模块图、摘要、构建参数
 ├── config.toml         # 运行时配置值（由镜像读取）
+├── bundled-plugins/    # 物化后的官方插件源码（由 ingot init 写入）
 ├── current             # 指向当前激活镜像 ID 的原子指针
 ├── current.previous    # 上一个镜像 ID（回滚/GC 安全使用）
 ├── cache/gomod/        # 构建使用的 Go 模块缓存
@@ -62,21 +77,17 @@ ingot --home /path/to/home status
 
 - `plugins.toml` 与 `plugins.lock` 一起原子写入；事务文件（`.plugins.transaction`）支持崩溃恢复。
 - `current` 只在构建成功且通过 `--ingot-check` 校验后才会原子切换。
+- `bundled-plugins/` 由 ingot 管理：`ingot init` 写入或刷新；`plugins.toml` 中的官方插件均作为本地开发源码指向这里。
 - 镜像是不可变的：不要修改 `images/` 下的任何内容。
 
 ## 工作流概览
 
 ```text
-plugins.toml  --resolve-->  plugins.lock  --build-->  images/<ImageID>  --switch-->  current
-     （期望）                    （事实）                    （产物）                 （激活）
-```
-
-常规循环：
-
-```sh
-ingot plugin add github.com/example/plugin@v1.2.3   # 修改期望状态
-ingot apply                                          # 解析 + 构建 + 切换
-ingot chat                                           # 运行当前镜像
+安装 ingot
+  -> ingot init          写官方插件集 + plugins.toml + 配置模板
+  -> 编辑 config.toml    设置模型提供商
+  -> ingot apply         解析 + 构建 + 切换
+  -> ingot chat          运行智能体
 ```
 
 `apply` 是 `resolve` + `build` + 切换 `current` 的快捷方式。如果希望分步执行，也可以单独运行 `resolve` 和 `build`，检查结果后再切换。
@@ -90,6 +101,28 @@ ingot chat                                           # 运行当前镜像
 | 选项 | 含义 |
 |---|---|
 | `--home PATH` | 使用 `PATH` 作为 ingot home，而不是 `~/.ingot`。必须放在命令之前：`ingot --home /tmp/h status`。 |
+
+### `init`
+
+```text
+ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
+```
+
+初始化一个可用的 ingot home：
+
+1. 定位官方插件集（`--bundle` 显式指定，否则按可执行文件相对位置探测：安装脚本的 `<prefix>/share/ingot/plugins` 或仓库根目录的 `plugins/`）；
+2. 将其物化到 `~/.ingot/bundled-plugins/`（幂等：内容未变化时不重写）；
+3. 写入默认 `plugins.toml`（profile 内所有插件均为本地开发源码）；
+4. 写入默认 `config.toml` 模板。
+
+| 选项 | 含义 |
+|---|---|
+| `--profile` | `default`（骨架 + 常用适配器，13 个插件）或 `minimal`（最小可运行集，8 个插件），默认 `default`。 |
+| `--bundle` | 指向官方插件集目录（默认按可执行文件位置自动定位）。 |
+| `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
+| `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
+
+`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot chat`。
 
 ### `resolve`
 
@@ -313,16 +346,20 @@ ArtifactDigest = SHA256(最终二进制内容)
 
 ## 示例
 
-添加两个插件（一个远程、一个本地）并运行 Agent：
+从零开始的完整流程：
 
 ```sh
-ingot plugin add github.com/example/http-default@v1.2.3
-ingot plugin add --path ../my-local-plugin
+./scripts/install.sh
+```
+
+```sh
+ingot init
+# 编辑 ~/.ingot/config.toml：填写模型提供商 base_url / api_key
 ingot apply
 ingot chat
 ```
 
-检查 home 是否一致：
+验证 home 是否一致：
 
 ```sh
 ingot status | jq .current      # true

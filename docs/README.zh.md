@@ -40,19 +40,20 @@ flowchart LR
 ## 快速开始
 
 ```sh
-# 1. 构建 CLI
+# 1. 构建 CLI（或使用 ./scripts/install.sh 安装）
 go build ./cmd/ingot
 
-# 2. 添加插件（远程模块或本地开发源码）
-./ingot plugin add github.com/example/plugin@v1.2.3
-./ingot plugin add --path ../local-plugin
+# 2. 初始化一个可用 home：官方插件集 + 配置模板
+./ingot init
 
-# 3. 解析、构建并原子切换 Runtime Image
+# 3. 编辑 ~/.ingot/config.toml 设置模型提供商，然后 apply
 ./ingot apply
 
 # 4. 运行——未知命令会派发到当前镜像
 ./ingot chat
 ```
+
+`ingot init` 会写入官方默认插件集（作为 `bundled-plugins/` 下的本地开发源码）、`plugins.toml` 与 `config.toml` 模板；`--apply` 会立即解析、构建并切换首个镜像。详见[使用说明](./USAGE.zh.md)。
 
 所有状态都保存在 ingot home 中（默认为 `~/.ingot`，可用 `--home PATH` 指定其他路径）：
 
@@ -61,6 +62,7 @@ go build ./cmd/ingot
 | `plugins.toml` | 期望的插件集合（由你或 CLI 维护）。 |
 | `plugins.lock` | 精确解析结果：完整 Module 图、摘要、构建参数。 |
 | `config.toml` | 运行时配置值。 |
+| `bundled-plugins/` | 物化后的官方插件源码（由 `ingot init` 写入）。 |
 | `current` | 指向当前激活镜像的原子指针。 |
 | `images/<ImageID>/` | 不可变的已构建镜像（二进制 + `manifest.json`）。 |
 
@@ -69,6 +71,7 @@ go build ./cmd/ingot
 ```text
 ingot [--home PATH] <command>
 
+init       初始化 home：官方插件集 + 配置模板
 resolve     解析 plugins.toml 并刷新 plugins.lock
 build       按锁定解析结果构建新镜像
 apply       解析 + 构建 + 原子切换 current
@@ -98,15 +101,19 @@ plugin      add | remove | update | reorder | list | inspect
 
 - `cmd/ingot`：CLI 入口。
 - `internal/cli`：命令行解析与面向用户的输出。
-- `internal/home`：ingot home 状态、插件变更、镜像切换、回滚、GC、事务与运行时派发。
+- `internal/home`：ingot home 状态、插件变更、镜像切换、回滚、GC、事务、运行时派发与 `init`。
+- `internal/bundle`：官方插件 Bundle——profile、定位与 `bundled-plugins/` 物化。
 - `internal/builder`：解析、组件图、代码生成与不可变镜像构建。
+- `plugins/`：官方插件集（每个目录都是独立的 Plugin Go Module）。
+- `scripts/`：`install.sh` / `install.ps1` 构建 CLI 并安装二进制与插件树。
 
 插件 SDK 位于独立仓库：<https://github.com/ingot-agent/sdk>。
 本地开发时，可将 SDK 放在同级目录，通过 `go.work` 或临时 `replace` 指令引入。
 
 ## 路线图
 
-- [ ] `ingot init` —— 生成默认 `plugins.toml` 与 `config.toml`，让用户从安装到可用智能体一步到位（设计：[`docs/ingot_init_设计方案_v0.1.md`](./ingot_init_设计方案_v0.1.md)）。
+- [x] `ingot init` —— 生成默认 `plugins.toml` 与 `config.toml`，让用户从安装到可用智能体一步到位（设计：[`docs/ingot_init_设计方案_v0.1.md`](./ingot_init_设计方案_v0.1.md)）。
+- [ ] `ingot doctor` —— 检查默认插件是否完整、配置是否有效以及当前镜像是否可运行。
 
 ## 开发
 
