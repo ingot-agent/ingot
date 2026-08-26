@@ -11,7 +11,8 @@
 app.cli/interaction --interaction.Channel--> tool.ask
 app.cli/interaction --interaction.Channel--> interceptor.approval
 app.cli/interaction --interaction.Channel--> agent.default
-app.cli/interaction --interaction.Channel--> app.cli/app
+app.cli/interaction --appcli.LineInput----> app.cli/app
+app.cli/interaction --interaction.Channel----> app.cli/app
 
 agent.default ------agent.Runtime---------> app.cli/app
 session.jsonl ------session.Store----------> app.cli/app
@@ -49,6 +50,7 @@ type Dependencies struct{}
 
 type Exports struct {
     Channel interaction.Channel
+    Lines   appcli.LineInput
 }
 
 func New(
@@ -61,7 +63,7 @@ func New(
 ### 3.1 Channel semantics
 
 - `Render` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
-- `Ask`和`ReadLine`共享一个Context-aware input gate，严格串行；
+- `Ask`严格串行，通过Context-aware input gate；行输入是frontend-local的`appcli.LineInput`能力，由同一实现层gate与`Ask`串行，但不属于SDK `interaction.Channel`契约；
 - 所有`AskRequest`（包括无Options的纯文本提问）在输出前验证Prompt、Options和UTF-8；`AskRequest.Options` 非空时按顺序显示编号、label 和可选 description；`AllowTextInput` 为 true 时追加“Other”入口，选择该入口后的第二次读取仍属于同一次持锁的 Ask，空白自由输入继续提示而不作为有效回答返回；
 - 选择预设项返回其 label，自由输入返回原文；没有 options 时保持普通文本询问；
 - 等gate和等用户输入都观察Context；
@@ -87,6 +89,7 @@ Cleanup先关闭新调用入口并取消pending input，再以cleanup Context等
 type Dependencies struct {
     Agent       agent.Runtime
     Interaction interaction.Channel
+    Input       appcli.LineInput
     Store       session.Store
 }
 
@@ -168,7 +171,7 @@ Plugin不声明State；两个Component共享root Config。
 ### Interaction
 
 - Render并发不交错、event格式golden、TTY/plain降级；
-- 纯文本与选项 Ask统一校验、自由输入入口及空白重试、Ask/ReadLine serialization和等待取消；
+- 纯文本与选项 Ask统一校验、自由输入入口及空白重试、Ask串行化与行输入互斥、等待取消；
 - input EOF、limit、invalid UTF-8；
 - terminal独占租约、Windows VT color判断、terminal mode restore和Context-aware active input join；
 - platform adapter conformance与race test。

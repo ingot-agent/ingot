@@ -53,6 +53,8 @@ func (f *fakeChannel) Render(_ context.Context, event interaction.Event) error {
 	return nil
 }
 
+var _ appcli.LineInput = (*fakeChannel)(nil)
+
 type fakeAgent struct {
 	turns []agent.Turn
 	err   error
@@ -97,7 +99,7 @@ func TestLoopCreatesSessionRunsAgentAndExitIsLocal(t *testing.T) {
 	agentRuntime := &fakeAgent{}
 	store := &fakeStore{}
 	instance := &application{
-		agent: agentRuntime, interaction: channel, store: store, inputPrompt: "> ",
+		agent: agentRuntime, interaction: channel, input: channel, store: store, inputPrompt: "> ",
 		initialTitle: "Initial", now: func() time.Time { return time.Unix(10, 0) },
 	}
 	if err := instance.loop(context.Background()); err != nil {
@@ -113,7 +115,7 @@ func TestNewReturnsPromptlyAndCleanupCancelsOnlyOwnedLoop(t *testing.T) {
 	defer parentCancel()
 	channel := &fakeChannel{block: true}
 	start := time.Now()
-	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: &fakeAgent{}, Interaction: channel, Store: &fakeStore{}})
+	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: &fakeAgent{}, Interaction: channel, Input: channel, Store: &fakeStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +136,7 @@ func TestLoopCommandsProduceDeterministicTranscript(t *testing.T) {
 	channel := &fakeChannel{lines: []string{"/new Work", "/list", "/use s2", "/help", "/exit"}}
 	store := &fakeStore{createID: "s1", summaries: []session.Summary{{ID: "s1", Title: "Work"}, {ID: "s2", Title: "Other"}}}
 	instance := &application{
-		agent: &fakeAgent{}, interaction: channel, store: store, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
+		agent: &fakeAgent{}, interaction: channel, input: channel, store: store, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
 	}
 	if err := instance.loop(context.Background()); err != nil {
 		t.Fatal(err)
@@ -165,7 +167,7 @@ func TestLoopRendersAgentErrorAndContinues(t *testing.T) {
 	channel := &fakeChannel{lines: []string{"hello", "/exit"}}
 	agentRuntime := &fakeAgent{err: wantErr}
 	instance := &application{
-		agent: agentRuntime, interaction: channel, store: &fakeStore{}, inputPrompt: "> ", now: time.Now,
+		agent: agentRuntime, interaction: channel, input: channel, store: &fakeStore{}, inputPrompt: "> ", now: time.Now,
 	}
 	if err := instance.loop(context.Background()); err != nil {
 		t.Fatal(err)
@@ -184,9 +186,10 @@ func TestNewRejectsTypedNilDependencies(t *testing.T) {
 	var nilChannel *fakeChannel
 	var nilStore *fakeStore
 	tests := []Dependencies{
-		{Agent: nilAgent, Interaction: &fakeChannel{}, Store: &fakeStore{}},
-		{Agent: &fakeAgent{}, Interaction: nilChannel, Store: &fakeStore{}},
-		{Agent: &fakeAgent{}, Interaction: &fakeChannel{}, Store: nilStore},
+		{Agent: nilAgent, Interaction: &fakeChannel{}, Input: &fakeChannel{}, Store: &fakeStore{}},
+		{Agent: &fakeAgent{}, Interaction: nilChannel, Input: &fakeChannel{}, Store: &fakeStore{}},
+		{Agent: &fakeAgent{}, Interaction: &fakeChannel{}, Input: nilChannel, Store: &fakeStore{}},
+		{Agent: &fakeAgent{}, Interaction: &fakeChannel{}, Input: &fakeChannel{}, Store: nilStore},
 	}
 	for i, deps := range tests {
 		if _, _, err := New(context.Background(), appcli.Config{}, deps); !errors.Is(err, ErrInvalidConfig) {
@@ -199,7 +202,7 @@ func TestCleanupReturnsFatalLoopError(t *testing.T) {
 	wantErr := errors.New("terminal failed")
 	channel := &fakeChannel{readErr: wantErr}
 	_, cleanup, err := New(context.Background(), appcli.Config{}, Dependencies{
-		Agent: &fakeAgent{}, Interaction: channel, Store: &fakeStore{},
+		Agent: &fakeAgent{}, Interaction: channel, Input: channel, Store: &fakeStore{},
 	})
 	if err != nil {
 		t.Fatal(err)

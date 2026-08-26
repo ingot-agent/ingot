@@ -26,6 +26,7 @@ var ErrInvalidConfig = errors.New("invalid app.cli app config")
 type Dependencies struct {
 	Agent       agent.Runtime
 	Interaction interaction.Channel
+	Input       appcli.LineInput
 	Store       session.Store
 }
 
@@ -35,6 +36,7 @@ type Exports struct{}
 type application struct {
 	agent        agent.Runtime
 	interaction  interaction.Channel
+	input        appcli.LineInput
 	store        session.Store
 	inputPrompt  string
 	initialTitle string
@@ -45,7 +47,7 @@ type application struct {
 
 // New starts one instance-owned CLI loop and returns promptly.
 func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
-	if ctx == nil || isNil(deps.Agent) || isNil(deps.Interaction) || isNil(deps.Store) {
+	if ctx == nil || isNil(deps.Agent) || isNil(deps.Interaction) || isNil(deps.Input) || isNil(deps.Store) {
 		return Exports{}, nil, fmt.Errorf("construct app.cli app: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
@@ -61,7 +63,7 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sd
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	instance := &application{
-		agent: deps.Agent, interaction: deps.Interaction, store: deps.Store,
+		agent: deps.Agent, interaction: deps.Interaction, input: deps.Input, store: deps.Store,
 		inputPrompt: inputPrompt, initialTitle: cfg.App.InitialSessionTitle,
 		showBanner: cfg.App.ShowBanner, now: time.Now,
 	}
@@ -91,7 +93,7 @@ func (a *application) loop(ctx context.Context) error {
 		}
 	}
 	for {
-		line, err := a.interaction.ReadLine(ctx, a.inputPrompt)
+		line, err := a.input.ReadLine(ctx, a.inputPrompt)
 		if err != nil {
 			switch {
 			case errors.Is(err, io.EOF):
