@@ -77,7 +77,7 @@ func TestNewExportsStableDefinitionsAndOperations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantNames := []string{"fs.read", "fs.write", "fs.list", "fs.stat", "fs.mkdir", "fs.remove", "fs.rename"}
+	wantNames := []string{"fs_read", "fs_write", "fs_list", "fs_stat", "fs_mkdir", "fs_remove", "fs_rename"}
 	for i, candidate := range exports.Tools {
 		definition := candidate.Definition()
 		if definition.Name != wantNames[i] {
@@ -88,22 +88,22 @@ func TestNewExportsStableDefinitionsAndOperations(t *testing.T) {
 		}
 	}
 	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
-	result, err := exports.Tools[0].Invoke(ctx, tool.Call{Name: "fs.read", Arguments: []byte("{\"path\":\"hello.txt\"}")})
+	result, err := exports.Tools[0].Invoke(ctx, tool.Call{Name: "fs_read", Arguments: []byte("{\"path\":\"hello.txt\"}")})
 	if err != nil || result.Content != "hello" {
 		t.Fatalf("read = %#v, %v", result, err)
 	}
 	if fake.lastCtx != ctx {
 		t.Fatal("filesystem did not receive the original context")
 	}
-	result, err = exports.Tools[1].Invoke(ctx, tool.Call{Name: "fs.write", Arguments: []byte("{\"path\":\"out.txt\",\"content\":\"世界\"}")})
+	result, err = exports.Tools[1].Invoke(ctx, tool.Call{Name: "fs_write", Arguments: []byte("{\"path\":\"out.txt\",\"content\":\"世界\"}")})
 	if err != nil || result.Content != "wrote \"out.txt\"" || fake.written != "世界" || fake.mode != 0o644 {
 		t.Fatalf("write = %#v, %v, data=%q mode=%v", result, err, fake.written, fake.mode)
 	}
-	result, err = exports.Tools[2].Invoke(ctx, tool.Call{Name: "fs.list", Arguments: []byte("{\"path\":\".\"}")})
+	result, err = exports.Tools[2].Invoke(ctx, tool.Call{Name: "fs_list", Arguments: []byte("{\"path\":\".\"}")})
 	if err != nil || result.Content != "[{\"name\":\"a\",\"type\":\"directory\"},{\"name\":\"link\",\"type\":\"symlink\"},{\"name\":\"z.go\",\"type\":\"file\"}]" {
 		t.Fatalf("list = %q, %v", result.Content, err)
 	}
-	result, err = exports.Tools[3].Invoke(ctx, tool.Call{Name: "fs.stat", Arguments: []byte("{\"path\":\"hello.txt\"}")})
+	result, err = exports.Tools[3].Invoke(ctx, tool.Call{Name: "fs_stat", Arguments: []byte("{\"path\":\"hello.txt\"}")})
 	if err != nil || result.Content != "{\"name\":\"hello.txt\",\"size\":5,\"mode\":420,\"modified_at\":\"2025-01-02T02:04:05.000000006Z\",\"type\":\"file\"}" {
 		t.Fatalf("stat = %q, %v", result.Content, err)
 	}

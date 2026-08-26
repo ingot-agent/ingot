@@ -43,19 +43,23 @@ Three concepts to know:
 ## Quick start
 
 ```sh
-# 1. Build the CLI
+# 1. Build the CLI (or install with ./scripts/install.sh)
 go build ./cmd/ingot
 
-# 2. Add plugins (remote module or local dev source)
-./ingot plugin add github.com/example/plugin@v1.2.3
-./ingot plugin add --path ../local-plugin
+# 2. Initialize a working home: official plugin set + config template
+./ingot init
 
-# 3. Resolve, build and activate the runtime image
+# 3. Edit ~/.ingot/config.toml — set your model provider, then apply
 ./ingot apply
 
 # 4. Run it — any unknown command is dispatched to the current image
 ./ingot chat
 ```
+
+`ingot init` writes the official default plugin set (as local dev sources under
+`bundled-plugins/`), a `plugins.toml`, and a `config.toml` template; `--apply`
+also resolves, builds and switches the first image immediately. See the
+[Usage Guide](./docs/USAGE.md) for details.
 
 Everything lives in the ingot home (`~/.ingot` by default; choose another with
 `--home PATH`). From there:
@@ -65,6 +69,7 @@ Everything lives in the ingot home (`~/.ingot` by default; choose another with
 | `plugins.toml` | Your desired plugin set (you or the CLI maintain this). |
 | `plugins.lock` | The exact resolution: full module graph, digests, build flags. |
 | `config.toml` | Runtime configuration values. |
+| `bundled-plugins/` | Materialized official plugin sources (written by `ingot init`). |
 | `current` | Atomic pointer to the active image. |
 | `images/<ImageID>/` | Immutable built images (binary + `manifest.json`). |
 
@@ -73,6 +78,7 @@ Everything lives in the ingot home (`~/.ingot` by default; choose another with
 ```text
 ingot [--home PATH] <command>
 
+init        Initialize a home: official plugin set + config template
 resolve     Resolve plugins.toml and refresh plugins.lock
 build       Build the locked resolution into a new image
 apply       Resolve + build + switch current atomically
@@ -103,8 +109,11 @@ examples, and [使用说明](./docs/USAGE.zh.md) for the Chinese version.
 
 - `cmd/ingot`: CLI entry point.
 - `internal/cli`: command-line parsing and user-facing output.
-- `internal/home`: ingot home state, plugin mutation, image switching, rollback, GC, transactions, and runtime dispatch.
+- `internal/home`: ingot home state, plugin mutation, image switching, rollback, GC, transactions, runtime dispatch, and `init`.
+- `internal/bundle`: the official plugin bundle — profiles, lookup and `bundled-plugins/` materialization.
 - `internal/builder`: resolution, component graph, code generation, and immutable image build.
+- `plugins/`: the official plugin set (each directory is an independent Plugin Go module).
+- `scripts/`: `install.sh` / `install.ps1` build the CLI and install binary + plugin tree.
 
 The plugin SDK lives in a separate repository: <https://github.com/ingot-agent/sdk>.
 For local development, place it as a sibling checkout and select it with
@@ -112,7 +121,8 @@ For local development, place it as a sibling checkout and select it with
 
 ## Roadmap
 
-- [ ] `ingot init` — write a default `plugins.toml` and `config.toml` so users go from installation to a working agent in one step (design: [`docs/ingot_init_设计方案_v0.1.md`](./docs/ingot_init_设计方案_v0.1.md)).
+- [x] `ingot init` — write a default `plugins.toml` and `config.toml` so users go from installation to a working agent in one step (design: [`docs/ingot_init_设计方案_v0.1.md`](./docs/ingot_init_设计方案_v0.1.md)).
+- [ ] `ingot doctor` — check that the default plugins are complete, config is valid, and the current image runs.
 
 ## Development
 

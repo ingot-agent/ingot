@@ -519,7 +519,13 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		SchemaVersion: 1, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, SDK: l.SDK,
 		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
-		Environment: l.Environment, Build: l.Build, Modules: append([]LockedModule{}, l.Modules...), Bindings: []any{},
+		Environment: l.Environment,
+		// Empty build flags are normalized to non-nil slices so the canonical
+		// JSON is identical whether the lock was just created in memory
+		// (nil) or parsed back from the TOML file (empty, non-nil). Without
+		// this, ImageID is not stable across a lock round-trip.
+		Build:   BuildLock{Trimpath: l.Build.Trimpath, BuildVCS: l.Build.BuildVCS, Tags: append([]string{}, l.Build.Tags...), LDFlags: append([]string{}, l.Build.LDFlags...), GCFlags: append([]string{}, l.Build.GCFlags...), ASMFlags: append([]string{}, l.Build.ASMFlags...)},
+		Modules: append([]LockedModule{}, l.Modules...), Bindings: []any{},
 		Plugins: make([]buildManifestPlugin, len(l.Plugins)), Replacements: make([]buildManifestReplace, len(l.Replacements)),
 	}
 	replacementByModule := map[string]Replacement{}
@@ -547,7 +553,13 @@ func (l *Lock) ImageID() (string, error) {
 }
 
 // RestoreRootModule writes the Builder-owned root go.mod and go.sum.
-func (l *Lock) RestoreRootModule(directory string) error {
+//
+// devTargets optionally maps a replaced module path to the locator written
+// into its replace directive (an absolute path, or a relative path into the
+// build staging area). Modules absent from the map keep their locked
+// DevPath. Relative locators keep the compiled artifact free of
+// machine-specific absolute paths.
+func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string) error {
 	if err := l.Validate(); err != nil {
 		return err
 	}
@@ -583,7 +595,11 @@ func (l *Lock) RestoreRootModule(directory string) error {
 	}
 	goMod.WriteString(")\n")
 	for _, replacement := range l.Replacements {
-		_, _ = fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(filepath.ToSlash(replacement.DevPath)))
+		locator := filepath.ToSlash(replacement.DevPath)
+		if relative, ok := devTargets[replacement.ModulePath]; ok {
+			locator = relative
+		}
+		_, _ = fmt.Fprintf(&goMod, "\nreplace %s => %s\n", replacement.ModulePath, goModQuote(locator))
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(goMod.String()), nil)
 	if err != nil {

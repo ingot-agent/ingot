@@ -38,6 +38,15 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	for _, component := range graph.Components {
 		paths = append(paths, component.ImportPath, component.ConfigImport)
 		for _, dependency := range component.DependencyList {
+			// ONE assignments never spell the capability type: the composite
+			// literal field is assigned directly from a provider export. Only
+			// OPTIONAL (sdk.None/sdk.Some type argument) and MANY (slice type)
+			// expressions reference the target package, so only those imports
+			// are collected. Importing an unreferenced package breaks the
+			// generated build.
+			if dependency.Cardinality == CardinalityOne {
+				continue
+			}
 			_ = types.TypeString(dependency.Target, func(pkg *types.Package) string {
 				paths = append(paths, pkg.Path())
 				return pkg.Name()

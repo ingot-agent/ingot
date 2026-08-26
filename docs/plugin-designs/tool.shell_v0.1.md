@@ -26,7 +26,7 @@ func New(
 ) (Exports, sdk.Cleanup, error)
 ```
 
-v0.1 导出一个 tool，稳定名称为 `shell.exec`。
+v0.1 导出一个 tool，稳定名称为 `shell_exec`。
 
 ## 3. Config
 

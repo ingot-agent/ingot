@@ -24,13 +24,13 @@ const (
 	defaultMaxListEntries = 1000
 	defaultFileMode       = 0o644
 	defaultDirectoryMode  = 0o755
-	toolRead              = "fs.read"
-	toolWrite             = "fs.write"
-	toolList              = "fs.list"
-	toolStat              = "fs.stat"
-	toolMkdir             = "fs.mkdir"
-	toolRemove            = "fs.remove"
-	toolRename            = "fs.rename"
+	toolRead              = "fs_read"
+	toolWrite             = "fs_write"
+	toolList              = "fs_list"
+	toolStat              = "fs_stat"
+	toolMkdir             = "fs_mkdir"
+	toolRemove            = "fs_remove"
+	toolRename            = "fs_rename"
 )
 
 var (

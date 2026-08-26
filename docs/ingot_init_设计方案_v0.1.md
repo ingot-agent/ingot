@@ -1,6 +1,6 @@
 # ingot `init` 与默认发行集设计方案 v0.1
 
-> 状态：Draft  
+> 状态：Draft；实现说明见文末「9. 实现说明（v0.1 落地）」——落地时与本文档的差异（官方插件随主仓库分发、物化到 home）已在第 9 节记录。
 > 目标：让用户安装 ingot 后，不需要先理解 Plugin / Component / Capability，也不需要手动寻找和组装插件，就能得到一个可运行的开箱即用环境。
 
 ## 1. 背景与目标
@@ -161,3 +161,54 @@ ingot init --no-build
 4. SDK 独立仓库，插件作者面向 SDK 开发。
 5. 用户修改过的 `plugins.toml` 是最高优先级。
 6. `init` 幂等、可审查、可回滚。
+
+## 9. 实现说明（v0.1 落地）
+
+落地时与本文档的主要差异与决策如下：
+
+### 9.1 官方插件随主仓库分发（与第 4 节不同）
+
+官方插件作为独立 Go Module 位于主仓库 `plugins/` 下（每个目录一个插件），但**不作为单独 module 版本发布**，而是随 ingot 二进制一起分发：
+
+- `scripts/install.sh` / `scripts/install.ps1` 将 CLI 安装到 `<prefix>/bin/ingot`，将插件源码树安装到 `<prefix>/share/ingot/plugins`；
+- 仓库内开发构建时，二进制位于仓库根目录，`plugins/` 即为其邻近分发目录。
+
+### 9.2 插件集定位
+
+`ingot init` 通过以下顺序定位官方插件集目录：
+
+1. `--bundle PATH` 显式指定；
+2. 可执行文件相对位置探测（`<bin>/plugins`、`<bin>/share/ingot/plugins`、`<bin>/../plugins`、`<bin>/../share/ingot/plugins`）。
+
+定位成功的判据：目录包含全部官方插件目录（每个都有 `go.mod` 与 `ingot.plugin.toml`）。
+
+### 9.3 物化到 home
+
+`init` 将官方插件集**复制**到 `~/.ingot/bundled-plugins/`（幂等）：
+
+- 目录内容摘要写入 `bundled-plugins/.ingot-bundle-digest`；摘要与全部插件目录都存在时跳过重写；
+- 插件集发生变化（例如升级 ingot 二进制）时整体重写；
+- `plugins.toml` 中每个官方插件声明为本地开发源码（`module` + `path = "bundled-plugins/<name>"`），因此 build identity 由物化后的源码内容决定，home 在初始化后不依赖安装位置。
+
+### 9.4 Profile
+
+已实现两个 profile：
+
+| Profile | 插件数 | 内容 |
+|---|---|---|
+| `default` | 13 | 骨架（`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.jsonl`、`agent.default`、`app.cli`） |
+| `minimal` | 8 | 最小可运行集：骨架 + 一个模型 Provider + 其 HTTP 依赖 |
+
+### 9.5 默认配置模板
+
+生成的 `config.toml` 为每个插件写一个 `[plugins."<short-name>"]` 表（运行时要求每个锁定插件恰好一个表），并为需要机器相关值的插件提供可用默认值：
+
+- `model.openai-compatible`：示例 Provider（占位 `base_url`/`api_key`，格式校验可通过，真实调用需用户填写）；
+- `filesystem.local`：`root = "."`（以启动 `ingot chat` 的工作目录为工作区）；
+- `tool.shell`：`working_directory` 与 `shell` 使用 init 时的本机值（绝对路径，保证 `--ingot-check` 通过）。
+
+### 9.6 幂等与覆盖
+
+- 已存在 `plugins.toml` 时拒绝重新初始化（除非 `--force`）；
+- 已存在 `config.toml` 时保留用户配置（除非 `--force`）；
+- `init` 默认不构建；`--apply` 会立即执行 resolve + build + switch。
