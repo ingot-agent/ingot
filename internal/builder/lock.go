@@ -45,7 +45,7 @@ type Lock struct {
 	IngotVersion   string          `toml:"ingot_version"`
 	BuilderVersion string          `toml:"builder_version"`
 	Replacements   []Replacement   `toml:"replacements"`
-	SDK            SDKLock         `toml:"sdk"`
+	SDKs           []SDKLock       `toml:"sdks"`
 	Toolchain      ToolchainLock   `toml:"toolchain"`
 	Target         TargetLock      `toml:"target"`
 	Environment    EnvironmentLock `toml:"environment"`
@@ -156,13 +156,13 @@ func validateLockPresence(data []byte) error {
 	if err := toml.Unmarshal(data, &document); err != nil {
 		return err
 	}
-	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "sdk", "toolchain", "target", "environment", "build", "plugins", "modules"} {
+	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "sdks", "toolchain", "target", "environment", "build", "plugins", "modules"} {
 		if _, ok := document[key]; !ok {
 			return fmt.Errorf("missing required field %s", key)
 		}
 	}
 	for table, keys := range map[string][]string{
-		"sdk": {"module_path", "version"}, "toolchain": {"version"},
+		"toolchain":   {"version"},
 		"target":      {"goos", "goarch", "cgo_enabled", "goexperiment", "tuning"},
 		"environment": {"gowork", "gotoolchain", "goproxy", "mod"},
 		"build":       {"trimpath", "buildvcs", "tags", "ldflags", "gcflags", "asmflags"},
@@ -174,6 +174,17 @@ func validateLockPresence(data []byte) error {
 		for _, key := range keys {
 			if _, ok := values[key]; !ok {
 				return fmt.Errorf("missing required field %s.%s", table, key)
+			}
+		}
+	}
+	sdkTables, ok := tomlTableArray(document["sdks"])
+	if !ok {
+		return fmt.Errorf("sdks must be an array of tables")
+	}
+	for index, sdk := range sdkTables {
+		for _, key := range []string{"module_path", "version"} {
+			if _, exists := sdk[key]; !exists {
+				return fmt.Errorf("missing required field sdks[%d].%s", index, key)
 			}
 		}
 	}
@@ -249,8 +260,8 @@ func tomlTableArray(value any) ([]map[string]any, bool) {
 }
 
 func (l *Lock) Validate() error {
-	if l.LockVersion != 1 {
-		return &Error{Code: "INGOT-LOCK-UNSUPPORTED-VERSION", Field: "lock_version", Want: "1", Actual: strconv.Itoa(l.LockVersion)}
+	if l.LockVersion != 2 {
+		return &Error{Code: "INGOT-LOCK-UNSUPPORTED-VERSION", Field: "lock_version", Want: "2", Actual: strconv.Itoa(l.LockVersion)}
 	}
 	if !digestPattern.MatchString(l.PluginsDigest) {
 		return &Error{Code: "INGOT-LOCK-PLUGINS-DIGEST", Field: "plugins_digest", Actual: l.PluginsDigest}
@@ -260,11 +271,22 @@ func (l *Lock) Validate() error {
 			return &Error{Code: "INGOT-LOCK-VERSION", Field: field, Actual: version, Want: "canonical SemVer without v prefix"}
 		}
 	}
-	if err := module.CheckPath(l.SDK.ModulePath); err != nil {
-		return &Error{Code: "INGOT-LOCK-SDK-MODULE", Field: "sdk.module_path", Actual: l.SDK.ModulePath, Err: err}
+	if len(l.SDKs) == 0 {
+		return &Error{Code: "INGOT-LOCK-SDKS", Field: "sdks", Want: "at least one SDK"}
 	}
-	if module.CanonicalVersion(l.SDK.Version) != l.SDK.Version || module.Check(l.SDK.ModulePath, l.SDK.Version) != nil {
-		return &Error{Code: "INGOT-LOCK-SDK-VERSION", Field: "sdk.version", Actual: l.SDK.Version, Want: "canonical version matching sdk.module_path"}
+	seenSDKs := make(map[string]int, len(l.SDKs))
+	for index, sdk := range l.SDKs {
+		field := fmt.Sprintf("sdks[%d]", index)
+		if err := module.CheckPath(sdk.ModulePath); err != nil {
+			return &Error{Code: "INGOT-LOCK-SDK-MODULE", Field: field + ".module_path", Actual: sdk.ModulePath, Err: err}
+		}
+		if previous, ok := seenSDKs[sdk.ModulePath]; ok {
+			return &Error{Code: "INGOT-LOCK-DUPLICATE-SDK", Field: field + ".module_path", Actual: sdk.ModulePath, Want: fmt.Sprintf("unique (first at sdks[%d])", previous)}
+		}
+		seenSDKs[sdk.ModulePath] = index
+		if module.CanonicalVersion(sdk.Version) != sdk.Version || module.Check(sdk.ModulePath, sdk.Version) != nil {
+			return &Error{Code: "INGOT-LOCK-SDK-VERSION", Field: field + ".version", Actual: sdk.Version, Want: "canonical version matching SDK module path"}
+		}
 	}
 	if !toolchainPattern.MatchString(l.Toolchain.Version) {
 		return &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "toolchain.version", Actual: l.Toolchain.Version, Want: "go1.x.y"}
@@ -381,22 +403,29 @@ func (l *Lock) validatePluginsAndGraph() error {
 		modules[item.Path] = item
 		previousModule = key
 	}
-	var sdkReplacement *Replacement
-	for index := range l.Replacements {
-		if l.Replacements[index].ModulePath == l.SDK.ModulePath {
-			sdkReplacement = &l.Replacements[index]
-			break
-		}
+	sdkByModule := make(map[string]SDKLock, len(l.SDKs))
+	for _, sdk := range l.SDKs {
+		sdkByModule[sdk.ModulePath] = sdk
 	}
-	if sdkReplacement == nil {
-		if sdkModule, ok := modules[l.SDK.ModulePath]; !ok || sdkModule.Version != l.SDK.Version {
-			return &Error{Code: "INGOT-LOCK-SDK-GRAPH", Field: "sdk", Want: l.SDK.ModulePath + "@" + l.SDK.Version}
+	replacementByModule := make(map[string]Replacement, len(l.Replacements))
+	for _, replacement := range l.Replacements {
+		replacementByModule[replacement.ModulePath] = replacement
+	}
+	for index, sdk := range l.SDKs {
+		sdkReplacement, replaced := replacementByModule[sdk.ModulePath]
+		if !replaced {
+			if sdkModule, ok := modules[sdk.ModulePath]; !ok || sdkModule.Version != sdk.Version {
+				return &Error{Code: "INGOT-LOCK-SDK-GRAPH", Field: fmt.Sprintf("sdks[%d]", index), Want: sdk.ModulePath + "@" + sdk.Version}
+			}
+		} else if _, exists := modules[sdk.ModulePath]; exists || sdk.Version != sdkReplacement.SyntheticVersion {
+			return &Error{Code: "INGOT-LOCK-SDK-REPLACEMENT", Field: fmt.Sprintf("sdks[%d]", index), Want: sdk.ModulePath + "@" + sdkReplacement.SyntheticVersion}
 		}
-	} else if _, exists := modules[l.SDK.ModulePath]; exists || l.SDK.Version != sdkReplacement.SyntheticVersion {
-		return &Error{Code: "INGOT-LOCK-SDK-REPLACEMENT", Field: "sdk", Want: l.SDK.ModulePath + "@" + sdkReplacement.SyntheticVersion}
 	}
 	for i, plugin := range l.Plugins {
 		field := fmt.Sprintf("plugins[%d]", i)
+		if _, isSDK := sdkByModule[plugin.ID]; isSDK {
+			return &Error{Code: "INGOT-LOCK-PLUGIN-SDK-CONFLICT", Field: field + ".id", Actual: plugin.ID, Want: "plugin and SDK module paths must be distinct"}
+		}
 		if err := module.CheckPath(plugin.ID); err != nil {
 			return &Error{Code: "INGOT-LOCK-PLUGIN-ID", Field: field + ".id", Actual: plugin.ID, Err: err}
 		}
@@ -443,13 +472,14 @@ func (l *Lock) validatePluginsAndGraph() error {
 	replacements := map[string]bool{}
 	previousReplacement := ""
 	for i, replacement := range l.Replacements {
-		allowedSource := devPlugins[replacement.ModulePath] || replacement.ModulePath == l.SDK.ModulePath
+		_, sdkSource := sdkByModule[replacement.ModulePath]
+		allowedSource := devPlugins[replacement.ModulePath] || sdkSource
 		if replacement.ModulePath <= previousReplacement || replacements[replacement.ModulePath] || !allowedSource || !digestPattern.MatchString(replacement.ContentSHA256) || !filepath.IsAbs(replacement.DevPath) || filepath.Clean(replacement.DevPath) != replacement.DevPath {
 			return &Error{Code: "INGOT-LOCK-REPLACEMENT", Field: fmt.Sprintf("replacements[%d]", i), Actual: replacement.ModulePath}
 		}
 		expected, err := SyntheticVersion(replacement.ModulePath)
-		if replacement.ModulePath == l.SDK.ModulePath {
-			expected, err = l.SDK.Version, nil
+		if sdk, ok := sdkByModule[replacement.ModulePath]; ok {
+			expected, err = sdk.Version, nil
 		}
 		if err != nil || expected != replacement.SyntheticVersion {
 			return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Want: expected, Actual: replacement.SyntheticVersion, Err: err}
@@ -480,7 +510,7 @@ type buildManifest struct {
 	SchemaVersion  int                    `json:"schema_version"`
 	IngotVersion   string                 `json:"ingot_version"`
 	BuilderVersion string                 `json:"builder_version"`
-	SDK            SDKLock                `json:"sdk"`
+	SDKs           []SDKLock              `json:"sdks"`
 	Toolchain      buildManifestToolchain `json:"toolchain"`
 	Target         buildManifestTarget    `json:"target"`
 	Environment    EnvironmentLock        `json:"environment"`
@@ -531,7 +561,7 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		tuning[item.Key] = item.Value
 	}
 	manifest := buildManifest{
-		SchemaVersion: 1, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, SDK: l.SDK,
+		SchemaVersion: 2, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, SDKs: append([]SDKLock(nil), l.SDKs...),
 		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
 		Environment: l.Environment,
@@ -595,9 +625,11 @@ func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string)
 		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", plugin.ID, version)
 		seen[plugin.ID] = true
 	}
-	if !seen[l.SDK.ModulePath] {
-		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", l.SDK.ModulePath, l.SDK.Version)
-		seen[l.SDK.ModulePath] = true
+	for _, sdk := range l.SDKs {
+		if !seen[sdk.ModulePath] {
+			_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", sdk.ModulePath, sdk.Version)
+			seen[sdk.ModulePath] = true
+		}
 	}
 	// Go's pruned module graph requires the root to retain selected transitive
 	// modules explicitly. Materializing every immutable locked node also makes

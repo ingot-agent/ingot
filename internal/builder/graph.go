@@ -49,6 +49,7 @@ type Dependency struct {
 	TypeString  string
 	Cardinality Cardinality
 	Target      types.Type
+	WrapperSDK  string
 	Providers   []Provider
 }
 
@@ -74,7 +75,12 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	if err := lock.Validate(); err != nil {
 		return nil, err
 	}
-	imports := []string{lock.SDK.ModulePath, "context"}
+	imports := []string{"context"}
+	sdkModules := make(map[string]bool, len(lock.SDKs))
+	for _, sdk := range lock.SDKs {
+		imports = append(imports, sdk.ModulePath)
+		sdkModules[sdk.ModulePath] = true
+	}
 	type componentLocation struct {
 		plugin        LockedPlugin
 		component     LockedComponent
@@ -112,13 +118,27 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	if len(loadErrors) > 0 {
 		return nil, &Error{Code: "INGOT-PACKAGES-ERROR", Path: rootDirectory, Err: fmt.Errorf("%s", strings.Join(loadErrors, "\n"))}
 	}
-	sdkPackage, contextPackage := byPath[lock.SDK.ModulePath], byPath["context"]
-	if sdkPackage == nil || contextPackage == nil {
-		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: lock.SDK.ModulePath + " and context"}
+	contextPackage := byPath["context"]
+	if contextPackage == nil {
+		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: "context and all configured SDK modules"}
 	}
-	cleanupType, err := namedType(sdkPackage, "Cleanup")
-	if err != nil {
-		return nil, err
+	cleanupTypes := make(map[string]*types.Named, len(lock.SDKs))
+	for _, sdk := range lock.SDKs {
+		sdkPackage := byPath[sdk.ModulePath]
+		if sdkPackage == nil {
+			return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: sdk.ModulePath}
+		}
+		cleanupType, typeErr := namedType(sdkPackage, "Cleanup")
+		if typeErr != nil {
+			return nil, typeErr
+		}
+		cleanupTypes[sdk.ModulePath] = cleanupType
+	}
+	primaryCleanup := cleanupTypes[lock.SDKs[0].ModulePath]
+	for index, sdk := range lock.SDKs[1:] {
+		if !types.ConvertibleTo(cleanupTypes[sdk.ModulePath], primaryCleanup) {
+			return nil, &Error{Code: "INGOT-SDK-CLEANUP-INCOMPATIBLE", Field: fmt.Sprintf("sdks[%d]", index+1), Actual: types.TypeString(cleanupTypes[sdk.ModulePath], packageQualifier), Want: "Cleanup convertible to the primary SDK Cleanup"}
+		}
 	}
 	contextType, err := namedType(contextPackage, "Context")
 	if err != nil {
@@ -149,13 +169,13 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 		}
 		component := &Component{ID: location.plugin.ID + "/" + location.component.Name, PluginID: location.plugin.ID, PluginName: location.plugin.Name, DirectIndex: location.direct, ComponentIndex: location.index,
 			ImportPath: location.importPath, PackageName: componentPackage.Name, ConfigImport: configPackage.PkgPath, Package: componentPackage, ConfigType: configType, Dependencies: dependencies, Exports: exports}
-		if err := validateFields(component, dependencies, true, implementationPackages, lock.SDK.ModulePath); err != nil {
+		if err := validateFields(component, dependencies, true, implementationPackages, sdkModules); err != nil {
 			return nil, err
 		}
-		if err := validateFields(component, exports, false, implementationPackages, lock.SDK.ModulePath); err != nil {
+		if err := validateFields(component, exports, false, implementationPackages, sdkModules); err != nil {
 			return nil, err
 		}
-		if err := validateNew(component, contextType, configType, dependencies, exports, cleanupType); err != nil {
+		if err := validateNew(component, contextType, configType, dependencies, exports, cleanupTypes); err != nil {
 			return nil, err
 		}
 		graph.Components[i] = component
@@ -208,7 +228,7 @@ func namedStruct(pkg *packages.Package, name, code string) (*types.Named, error)
 	return named, nil
 }
 
-func validateFields(component *Component, named *types.Named, dependencies bool, implementationPackages map[string]bool, sdkModule string) error {
+func validateFields(component *Component, named *types.Named, dependencies bool, implementationPackages, sdkModules map[string]bool) error {
 	structure := named.Underlying().(*types.Struct)
 	for i := 0; i < structure.NumFields(); i++ {
 		field := structure.Field(i)
@@ -221,15 +241,15 @@ func validateFields(component *Component, named *types.Named, dependencies bool,
 		}
 		typeString := types.TypeString(field.Type(), packageQualifier)
 		if dependencies {
-			cardinality, target, err := classifyDependency(field.Type(), sdkModule)
+			cardinality, target, wrapperSDK, err := classifyDependency(field.Type(), sdkModules)
 			if err != nil {
 				return &Error{Code: "INGOT-CAPABILITY-TYPE", Plugin: component.ID, Field: "Dependencies." + field.Name(), Actual: typeString, Err: err}
 			}
-			base := capabilityBase(target, sdkModule)
+			base := capabilityBase(target, sdkModules)
 			if err := validateCapabilityBase(base, implementationPackages); err != nil {
 				return &Error{Code: "INGOT-CAPABILITY-TYPE", Plugin: component.ID, Field: "Dependencies." + field.Name(), Actual: typeString, Err: err}
 			}
-			component.DependencyList = append(component.DependencyList, &Dependency{Name: field.Name(), Type: field.Type(), TypeString: typeString, Cardinality: cardinality, Target: target})
+			component.DependencyList = append(component.DependencyList, &Dependency{Name: field.Name(), Type: field.Type(), TypeString: typeString, Cardinality: cardinality, Target: target, WrapperSDK: wrapperSDK})
 		} else {
 			component.ExportList = append(component.ExportList, &Export{Name: field.Name(), Type: field.Type(), TypeString: typeString, Index: i})
 		}
@@ -244,52 +264,52 @@ func packageQualifier(pkg *types.Package) string {
 	return pkg.Path()
 }
 
-func classifyDependency(value types.Type, sdkModule string) (Cardinality, types.Type, error) {
+func classifyDependency(value types.Type, sdkModules map[string]bool) (Cardinality, types.Type, string, error) {
 	value = types.Unalias(value)
-	if argument, ok := sdkWrapper(value, sdkModule, "Optional"); ok {
-		return CardinalityOptional, argument, nil
+	if argument, sdkModule, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
+		return CardinalityOptional, argument, sdkModule, nil
 	}
 	if slice, ok := value.(*types.Slice); ok {
-		return CardinalityMany, slice.Elem(), nil
+		return CardinalityMany, slice.Elem(), "", nil
 	}
-	if err := validateExpression(value, sdkModule); err != nil {
-		return "", nil, err
+	if err := validateExpression(value, sdkModules); err != nil {
+		return "", nil, "", err
 	}
-	return CardinalityOne, value, nil
+	return CardinalityOne, value, "", nil
 }
 
-func validateExpression(value types.Type, sdkModule string) error {
+func validateExpression(value types.Type, sdkModules map[string]bool) error {
 	value = types.Unalias(value)
-	if argument, ok := sdkWrapper(value, sdkModule, "Optional"); ok {
-		return validateExpression(argument, sdkModule)
+	if argument, _, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
+		return validateExpression(argument, sdkModules)
 	}
-	if argument, ok := sdkWrapper(value, sdkModule, "Named"); ok {
-		return validateExpression(argument, sdkModule)
+	if argument, _, ok := sdkWrapper(value, sdkModules, "Named"); ok {
+		return validateExpression(argument, sdkModules)
 	}
 	if slice, ok := value.(*types.Slice); ok {
-		return validateExpression(slice.Elem(), sdkModule)
+		return validateExpression(slice.Elem(), sdkModules)
 	}
 	return nil
 }
 
-func sdkWrapper(value types.Type, sdkModule, name string) (types.Type, bool) {
+func sdkWrapper(value types.Type, sdkModules map[string]bool, name string) (types.Type, string, bool) {
 	named, ok := types.Unalias(value).(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != sdkModule || named.Obj().Name() != name || named.TypeArgs() == nil || named.TypeArgs().Len() != 1 {
-		return nil, false
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || !sdkModules[named.Obj().Pkg().Path()] || named.Obj().Name() != name || named.TypeArgs() == nil || named.TypeArgs().Len() != 1 {
+		return nil, "", false
 	}
-	return named.TypeArgs().At(0), true
+	return named.TypeArgs().At(0), named.Obj().Pkg().Path(), true
 }
 
-func capabilityBase(value types.Type, sdkModule string) types.Type {
+func capabilityBase(value types.Type, sdkModules map[string]bool) types.Type {
 	value = types.Unalias(value)
-	if argument, ok := sdkWrapper(value, sdkModule, "Optional"); ok {
-		return capabilityBase(argument, sdkModule)
+	if argument, _, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
+		return capabilityBase(argument, sdkModules)
 	}
-	if argument, ok := sdkWrapper(value, sdkModule, "Named"); ok {
-		return capabilityBase(argument, sdkModule)
+	if argument, _, ok := sdkWrapper(value, sdkModules, "Named"); ok {
+		return capabilityBase(argument, sdkModules)
 	}
 	if slice, ok := value.(*types.Slice); ok {
-		return capabilityBase(slice.Elem(), sdkModule)
+		return capabilityBase(slice.Elem(), sdkModules)
 	}
 	return types.Unalias(value)
 }
@@ -311,7 +331,7 @@ func validateCapabilityBase(value types.Type, implementationPackages map[string]
 	return nil
 }
 
-func validateNew(component *Component, contextType, configType, dependencies, exports, cleanupType *types.Named) error {
+func validateNew(component *Component, contextType, configType, dependencies, exports *types.Named, cleanupTypes map[string]*types.Named) error {
 	object := component.Package.Types.Scope().Lookup("New")
 	function, ok := object.(*types.Func)
 	if !ok || !object.Exported() {
@@ -321,9 +341,22 @@ func validateNew(component *Component, contextType, configType, dependencies, ex
 	if !ok || signature.Variadic() || signature.Params().Len() != 3 || signature.Results().Len() != 3 {
 		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "func(context.Context, Config, Dependencies) (Exports, sdk.Cleanup, error)", Actual: types.TypeString(function.Type(), packageQualifier)}
 	}
-	wants := []types.Type{contextType, configType, dependencies, exports, cleanupType, types.Universe.Lookup("error").Type()}
+	wants := []types.Type{contextType, configType, dependencies, exports, nil, types.Universe.Lookup("error").Type()}
 	actual := []types.Type{signature.Params().At(0).Type(), signature.Params().At(1).Type(), signature.Params().At(2).Type(), signature.Results().At(0).Type(), signature.Results().At(1).Type(), signature.Results().At(2).Type()}
 	for i := range wants {
+		if i == 4 {
+			validCleanup := false
+			for _, cleanupType := range cleanupTypes {
+				if types.Identical(actual[i], cleanupType) {
+					validCleanup = true
+					break
+				}
+			}
+			if validCleanup {
+				continue
+			}
+			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "Cleanup from one configured SDK", Actual: types.TypeString(function.Type(), packageQualifier)}
+		}
 		if !types.Identical(actual[i], wants[i]) {
 			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "exact Component constructor signature", Actual: types.TypeString(function.Type(), packageQualifier)}
 		}

@@ -427,7 +427,7 @@ Resolve/fetch 流程负责联网与 lock 更新；normal locked build 使用已�
 Canonical BuildManifest 包含：
 
 - `ingot_version` 与 `builder_version`；
-- SDK module identity；
+- 有序 SDK module identity 与 selected version 列表（第一项为 primary SDK）；
 - bundled Go toolchain exact version；
 - GOOS、GOARCH、target tuning、GOEXPERIMENT、CGO；
 - allowlisted Go environment 与 build flags；

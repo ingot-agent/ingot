@@ -36,12 +36,13 @@ ingot 的核心是 Plugin/Component 组合系统，但最终产品不应只是�
 `ingot init` 建议负责以下事情：
 
 1. 创建 standard ingot home 目录结构；
-2. 生成一份可用的 `plugins.toml`，内容为官方默认插件集合；
-3. 生成一份默认 `config.toml`，包含运行所需配置的占位或默认值；
-4. 可选：自动执行一次 `resolve`，生成 `plugins.lock`；
-5. 可选：自动执行一次 `build` 或 `apply`，生成初始 Runtime Image；
-6. 向用户显示下一步操作，例如“请填写 API key 后运行 `ingot chat`”；
-7. 幂等：重复执行不破坏用户已有配置。
+2. 生成一份默认 `builder.toml`，声明 Builder 使用的有序 SDK 列表；
+3. 生成一份可用的 `plugins.toml`，内容为官方默认插件集合；
+4. 生成一份默认 `config.toml`，包含运行所需配置的占位或默认值；
+5. 可选：自动执行一次 `resolve`，生成 `plugins.lock`；
+6. 可选：自动执行一次 `build` 或 `apply`，生成初始 Runtime Image；
+7. 向用户显示下一步操作，例如“请填写 API key 后运行 `ingot chat`”；
+8. 幂等：重复执行不破坏用户已有配置。
 
 `init` 应当保持“可审查、可修改”。生成的 `plugins.toml` 是普通用户文件，用户可以增删插件、调整顺序、替换实现。
 
@@ -125,6 +126,7 @@ ingot init --no-build
 
 | 文件 | init 的行为 |
 |---|---|
+| `~/.ingot/builder.toml` | 写入默认有序 SDK 配置 |
 | `~/.ingot/plugins.toml` | 写入默认 Direct Plugin Set |
 | `~/.ingot/plugins.lock` | 由 resolve/build 生成 |
 | `~/.ingot/config.toml` | 写入默认运行配置模板 |
@@ -210,5 +212,6 @@ ingot init --no-build
 ### 9.6 幂等与覆盖
 
 - 已存在 `plugins.toml` 时拒绝重新初始化（除非 `--force`）；
+- 已存在 `builder.toml` 时保留 Builder 配置（除非 `--force`）；
 - 已存在 `config.toml` 时保留用户配置（除非 `--force`）；
 - `init` 默认不构建；`--apply` 会立即执行 resolve + build + switch。

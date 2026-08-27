@@ -51,7 +51,7 @@ version = "v1.0.0"
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
 	lock, err := Resolve(context.Background(), desired, ResolveOptions{
-		SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(),
+		SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(),
 		GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache,
 	})
 	if err != nil {
@@ -112,11 +112,11 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", SDKPath: sdkSource, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0", Path: sdkSource}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 2 || lock.SDK.Version != "v0.1.0" {
+	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 2 || lock.SDKs[0].Version != "v0.1.0" {
 		t.Fatalf("local lock materialization = %#v / %#v", lock.Plugins[0], lock.Replacements)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
@@ -139,6 +139,117 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
 	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-DEV-DIGEST") {
 		t.Fatalf("source drift error = %v", err)
+	}
+}
+
+func TestResolveAndBuildWithMultipleSDKs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	primarySDK := filepath.Join(t.TempDir(), "primary-sdk")
+	secondarySDK := filepath.Join(t.TempDir(), "secondary-sdk")
+	providerSource := filepath.Join(t.TempDir(), "provider")
+	consumerSource := filepath.Join(t.TempDir(), "consumer")
+	writeTestSDKModuleNamed(t, primarySDK, "example.com/primary-sdk")
+	writeTestSDKModuleNamed(t, secondarySDK, "example.com/secondary-sdk")
+	writeTestFile(t, filepath.Join(secondarySDK, "capability", "capability.go"), "package capability\ntype Value struct{}\n")
+
+	writeTestFile(t, filepath.Join(providerSource, "go.mod"), `module example.com/provider
+
+go 1.24.0
+
+require (
+	example.com/primary-sdk v0.1.0
+	example.com/secondary-sdk v0.1.0
+)
+`)
+	writeTestFile(t, filepath.Join(providerSource, "ingot.plugin.toml"), `manifest_version=1
+name="provider"
+ingot="0.3.0"
+config_package="."
+[[components]]
+name="default"
+package="."
+`)
+	writeTestFile(t, filepath.Join(providerSource, "component.go"), `package provider
+import (
+	"context"
+	primary "example.com/primary-sdk"
+	"example.com/secondary-sdk/capability"
+)
+type Config struct{}
+type Dependencies struct{}
+type Exports struct { Value capability.Value }
+func New(context.Context, Config, Dependencies) (Exports, primary.Cleanup, error) { return Exports{}, nil, nil }
+`)
+
+	writeTestFile(t, filepath.Join(consumerSource, "go.mod"), `module example.com/consumer
+
+go 1.24.0
+
+require example.com/secondary-sdk v0.1.0
+`)
+	writeTestFile(t, filepath.Join(consumerSource, "ingot.plugin.toml"), `manifest_version=1
+name="consumer"
+ingot="0.3.0"
+config_package="."
+[[components]]
+name="default"
+package="."
+`)
+	writeTestFile(t, filepath.Join(consumerSource, "component.go"), `package consumer
+import (
+	"context"
+	secondary "example.com/secondary-sdk"
+	"example.com/secondary-sdk/capability"
+)
+type Config struct{}
+type Dependencies struct { Value secondary.Optional[capability.Value] }
+type Exports struct{}
+func New(context.Context, Config, Dependencies) (Exports, secondary.Cleanup, error) { return Exports{}, nil, nil }
+`)
+
+	home := t.TempDir()
+	makeModuleCacheRemovable(t, home)
+	desiredPath := filepath.Join(home, "plugins.toml")
+	writeTestFile(t, desiredPath, fmt.Sprintf(`plugins_version=1
+[[plugins]]
+module="example.com/provider"
+path=%q
+[[plugins]]
+module="example.com/consumer"
+path=%q
+`, filepath.ToSlash(providerSource), filepath.ToSlash(consumerSource)))
+	configPath := filepath.Join(home, "config.toml")
+	writeTestFile(t, configPath, "")
+	desired, err := ParseDesired(desiredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleCache := filepath.Join(home, "cache", "gomod")
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{
+		SDKs: []SDKConfig{
+			{Module: "example.com/primary-sdk", Version: "v0.1.0", Path: primarySDK},
+			{Module: "example.com/secondary-sdk", Version: "v0.1.0", Path: secondarySDK},
+		},
+		Toolchain: runtime.Version(), GOPROXY: "off", GOMODCACHE: moduleCache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lock.SDKs) != 2 || lock.SDKs[0].ModulePath != "example.com/primary-sdk" || lock.SDKs[1].ModulePath != "example.com/secondary-sdk" {
+		t.Fatalf("locked SDKs = %#v", lock.SDKs)
+	}
+	if len(lock.Replacements) != 4 {
+		t.Fatalf("replacements = %#v", lock.Replacements)
+	}
+	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOrder := []string{"example.com/provider/default", "example.com/consumer/default"}
+	if fmt.Sprint(result.ComponentCreationOrder) != fmt.Sprint(wantOrder) {
+		t.Fatalf("creation order = %#v, want %#v", result.ComponentCreationOrder, wantOrder)
 	}
 }
 
@@ -201,7 +312,7 @@ func WithStateDir(ctx context.Context, path string) context.Context { return con
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +365,7 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 			t.Fatal(err)
 		}
 		moduleCache := filepath.Join(home, "cache", "gomod")
-		lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKModule: "example.com/ingot-test-sdk", SDKVersion: "v0.1.0", Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+		lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -293,7 +404,12 @@ func makeModuleCacheRemovable(t *testing.T, home string) {
 
 func writeTestSDKModule(t *testing.T, root string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/ingot-test-sdk\n\ngo 1.24.0\n")
+	writeTestSDKModuleNamed(t, root, "example.com/ingot-test-sdk")
+}
+
+func writeTestSDKModuleNamed(t *testing.T, root, modulePath string) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo 1.24.0\n")
 	writeTestFile(t, filepath.Join(root, "sdk.go"), `package sdk
 import "context"
 type Cleanup func(context.Context) error

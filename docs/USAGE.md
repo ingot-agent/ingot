@@ -9,6 +9,7 @@ examples, and the details of the build/apply workflow.
 
 - [Installation](#installation)
 - [The ingot home](#the-ingot-home)
+  - [Builder SDK configuration](#builder-sdk-configuration)
 - [Workflow overview](#workflow-overview)
 - [Command reference](#command-reference)
   - [Global options](#global-options)
@@ -66,6 +67,7 @@ ingot --home /path/to/home status
 
 ```
 ~/.ingot/
+├── builder.toml        # ordered SDK modules used by resolve/build
 ├── plugins.toml        # desired plugin set (maintained by you or the CLI)
 ├── plugins.lock        # exact resolution: module graph, digests, build flags
 ├── config.toml         # runtime configuration values (read by the image)
@@ -86,6 +88,38 @@ ingot --home /path/to/home status
 - `bundled-plugins/` is managed by ingot: `ingot init` writes or refreshes it,
   and the official plugins in `plugins.toml` point at it as local dev sources.
 - Images are immutable: never edit anything under `images/`.
+
+### Builder SDK configuration
+
+`builder.toml` selects one or more SDK modules in declaration order. The first
+entry is the primary SDK used by generated runtime support; components may use
+`Cleanup`, `Optional`, and `Named` from any configured SDK.
+
+```toml
+builder_config_version = 1
+
+[[sdks]]
+module = "github.com/ingot-agent/sdk"
+version = "v0.1.4"
+
+[[sdks]]
+module = "example.com/acme-sdk/v2"
+version = "v2.3.0"
+# path = "../acme-sdk" # optional local checkout, relative to builder.toml
+```
+
+Environment variables are applied after the file:
+
+| Variable | Meaning |
+|---|---|
+| `INGOT_BUILDER_SDKS` | Replace the complete list with comma-separated `module@version` entries. |
+| `INGOT_BUILDER_SDK_MODULE` | Override the first SDK module. |
+| `INGOT_BUILDER_SDK_VERSION` | Override the first SDK version. |
+
+`INGOT_BUILDER_SDKS` cannot be combined with either first-entry override. For
+example: `INGOT_BUILDER_SDKS='example.com/sdk@v1.2.0,example.com/sdk-extra/v2@v2.0.1'`.
+SDK module paths must be unique; parallel incompatible majors use distinct Go
+semantic import paths such as `example.com/sdk` and `example.com/sdk/v2`.
 
 ## Workflow overview
 
@@ -128,7 +162,8 @@ Initializes a working ingot home:
    content is not rewritten);
 3. writes a default `plugins.toml` (every profile plugin is a local dev
    source);
-4. writes a default `config.toml` template.
+4. writes the default `builder.toml` SDK configuration;
+5. writes a default `config.toml` template.
 
 | Option | Meaning |
 |---|---|

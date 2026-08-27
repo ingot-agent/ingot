@@ -90,6 +90,9 @@ func (home *Home) ensure() error {
 
 func (home *Home) DesiredPath() string { return filepath.Join(home.Root, "plugins.toml") }
 func (home *Home) LockPath() string    { return filepath.Join(home.Root, "plugins.lock") }
+func (home *Home) BuilderConfigPath() string {
+	return filepath.Join(home.Root, "builder.toml")
+}
 func (home *Home) ConfigPath() string  { return filepath.Join(home.Root, "config.toml") }
 func (home *Home) CurrentPath() string { return filepath.Join(home.Root, "current") }
 func (home *Home) imageDirectory(imageID string) string {
@@ -123,6 +126,13 @@ func (home *Home) Resolve(ctx context.Context, options builder.ResolveOptions) (
 func (home *Home) resolveCandidate(ctx context.Context, desired *builder.DesiredPlugins, options builder.ResolveOptions) (*builder.Lock, error) {
 	if options.GOMODCACHE == "" {
 		options.GOMODCACHE = filepath.Join(home.Root, "cache", "gomod")
+	}
+	if len(options.SDKs) == 0 {
+		config, err := builder.LoadBuilderConfig(home.BuilderConfigPath())
+		if err != nil {
+			return nil, err
+		}
+		options.SDKs = append([]builder.SDKConfig(nil), config.SDKs...)
 	}
 	return builder.Resolve(ctx, desired, options)
 }
@@ -471,8 +481,15 @@ func (home *Home) Status() (Status, error) {
 		status.LockedDigest = lock.PluginsDigest
 		status.LockedImageID, _ = lock.ImageID()
 		status.LockedSources = true
+		sdkModules := make(map[string]bool, len(lock.SDKs))
+		for _, sdk := range lock.SDKs {
+			sdkModules[sdk.ModulePath] = true
+		}
 		for _, replacement := range lock.Replacements {
 			digest, digestErr := builder.DevSourceDigest(replacement.DevPath)
+			if sdkModules[replacement.ModulePath] {
+				digest, digestErr = builder.ModuleSourceDigest(replacement.DevPath)
+			}
 			if digestErr != nil || digest != replacement.ContentSHA256 {
 				status.LockedSources = false
 				break

@@ -165,14 +165,14 @@ func TestLockRequiresMaterializedFalseFields(t *testing.T) {
 	t.Parallel()
 	file := filepath.Join(t.TempDir(), "plugins.lock")
 	writeTestFile(t, file, strings.TrimSpace(`
-lock_version=1
+lock_version=2
 plugins_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
 ingot_version="0.3.0"
 builder_version="0.3.0"
 replacements=[]
 plugins=[]
 modules=[]
-[sdk]
+[[sdks]]
 module_path="github.com/ingot-agent/sdk"
 version="v0.1.0"
 [toolchain]
@@ -239,5 +239,26 @@ func TestImageIDUsesContentIdentityAndDirectOrder(t *testing.T) {
 	roundTripID, _ := roundTrip.ImageID()
 	if roundTripID != firstID {
 		t.Fatalf("lock round trip changed ImageID: %s != %s", roundTripID, firstID)
+	}
+}
+
+func TestImageIDIncludesOrderedSDKList(t *testing.T) {
+	t.Parallel()
+	first := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
+	first.SDKs = append(first.SDKs, SDKLock{ModulePath: "example.com/extra-sdk", Version: "v1.2.3"})
+	first.Modules = append([]LockedModule{{Path: "example.com/extra-sdk", Version: "v1.2.3", Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}, first.Modules...)
+	second := *first
+	second.SDKs = append([]SDKLock(nil), first.SDKs...)
+	second.SDKs[0], second.SDKs[1] = second.SDKs[1], second.SDKs[0]
+	firstID, err := first.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := second.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == secondID {
+		t.Fatal("primary SDK order did not enter ImageID")
 	}
 }

@@ -36,8 +36,8 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.WrotePlugins || !result.WroteConfig {
-		t.Fatalf("init must write both files: %#v", result)
+	if !result.WrotePlugins || !result.WroteBuilderConfig || !result.WroteConfig {
+		t.Fatalf("init must write plugins, builder, and runtime config files: %#v", result)
 	}
 	if len(result.Plugins) != 13 {
 		t.Fatalf("default profile has %d plugins, want 13: %#v", len(result.Plugins), result.Plugins)
@@ -48,6 +48,20 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	}
 	if len(desired.Plugins) != 13 {
 		t.Fatalf("plugins.toml has %d plugins, want 13", len(desired.Plugins))
+	}
+	builderData, err := os.ReadFile(home.BuilderConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var builderConfig builder.BuilderConfig
+	if err := toml.Unmarshal(builderData, &builderConfig); err != nil {
+		t.Fatal(err)
+	}
+	if err := builderConfig.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if len(builderConfig.SDKs) != 1 || builderConfig.SDKs[0].Module != "github.com/ingot-agent/sdk" || builderConfig.SDKs[0].Version != "v0.1.4" {
+		t.Fatalf("default builder config = %#v", builderConfig)
 	}
 	for index, plugin := range desired.Plugins {
 		if plugin.Version != "" {

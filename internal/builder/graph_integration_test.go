@@ -226,8 +226,8 @@ func fixtureGraphLock(providerA, providerB, consumer string) *Lock {
 		return LockedPlugin{ID: id, Name: name, SourceKind: "dev", ManifestDigest: digest, RootPackage: ".", Components: []LockedComponent{{Name: "default", Package: "."}}}
 	}
 	return &Lock{
-		LockVersion: 1, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
-		SDK: SDKLock{ModulePath: "github.com/ingot-agent/sdk", Version: "v0.1.0"}, Toolchain: ToolchainLock{Version: runtime.Version()},
+		LockVersion: 2, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
+		SDKs: []SDKLock{{ModulePath: "github.com/ingot-agent/sdk", Version: "v0.1.0"}}, Toolchain: ToolchainLock{Version: runtime.Version()},
 		Target:      TargetLock{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: defaultTuning(runtime.GOARCH)},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"}, Build: BuildLock{Trimpath: true, BuildVCS: false, Tags: []string{}, LDFlags: []string{}, GCFlags: []string{}, ASMFlags: []string{}},
 		Plugins: []LockedPlugin{plugin("example.com/provider-b", "provider-b", providerB), plugin("example.com/provider-a", "provider-a", providerA), plugin("example.com/consumer", "consumer", consumer)},

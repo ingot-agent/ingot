@@ -327,25 +327,27 @@ func verifyLockedSources(lock *Lock, selected []resolvedModule) error {
 			return &Error{Code: "INGOT-BUILD-MANIFEST-DRIFT", Plugin: plugin.ID, Want: plugin.ManifestDigest, Actual: digest}
 		}
 	}
-	if replacement, ok := replacementByPath[lock.SDK.ModulePath]; ok {
-		item, exists := selectedByPath[lock.SDK.ModulePath]
-		if !exists || item.Replace == nil {
-			return &Error{Code: "INGOT-BUILD-SDK-REPLACEMENT", Plugin: lock.SDK.ModulePath}
-		}
-		root := item.Replace.Dir
-		digest, err := ModuleSourceDigest(root)
-		if err != nil {
-			return err
-		}
-		if digest != replacement.ContentSHA256 {
-			return &Error{Code: "INGOT-BUILD-DEV-DIGEST", Plugin: lock.SDK.ModulePath, Want: replacement.ContentSHA256, Actual: digest}
-		}
-		identity, err := moduleIdentity(filepath.Join(root, "go.mod"))
-		if err != nil {
-			return err
-		}
-		if identity != lock.SDK.ModulePath {
-			return &Error{Code: "INGOT-BUILD-MODULE-IDENTITY", Plugin: lock.SDK.ModulePath, Want: lock.SDK.ModulePath, Actual: identity}
+	for _, sdk := range lock.SDKs {
+		if replacement, ok := replacementByPath[sdk.ModulePath]; ok {
+			item, exists := selectedByPath[sdk.ModulePath]
+			if !exists || item.Replace == nil {
+				return &Error{Code: "INGOT-BUILD-SDK-REPLACEMENT", Plugin: sdk.ModulePath}
+			}
+			root := item.Replace.Dir
+			digest, err := ModuleSourceDigest(root)
+			if err != nil {
+				return err
+			}
+			if digest != replacement.ContentSHA256 {
+				return &Error{Code: "INGOT-BUILD-DEV-DIGEST", Plugin: sdk.ModulePath, Want: replacement.ContentSHA256, Actual: digest}
+			}
+			identity, err := moduleIdentity(filepath.Join(root, "go.mod"))
+			if err != nil {
+				return err
+			}
+			if identity != sdk.ModulePath {
+				return &Error{Code: "INGOT-BUILD-MODULE-IDENTITY", Plugin: sdk.ModulePath, Want: sdk.ModulePath, Actual: identity}
+			}
 		}
 	}
 	return nil

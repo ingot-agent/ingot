@@ -1,0 +1,5 @@
+builder_config_version = 1
+
+[[sdks]]
+module = "github.com/ingot-agent/sdk"
+version = "v0.1.4"
