@@ -194,6 +194,49 @@ func TestDefaultModelMayBeSuppliedPerRequest(t *testing.T) {
 	}
 }
 
+func TestResolverMaterializesDefaultsWithoutInvocation(t *testing.T) {
+	provider := &fakeProvider{}
+	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "default-model"}, modelruntime.Dependencies{
+		Providers: []sdk.Named[model.Provider]{{Name: "provider", Value: provider}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var _ model.RequestResolver = exports.Resolver
+
+	arguments := json.RawMessage(`{"value":true}`)
+	request := model.Request{
+		Messages: []model.Message{{Role: model.RoleUser, ToolCalls: []tool.Call{{ID: "call", Name: "tool", Arguments: arguments}}}},
+	}
+	resolved, err := exports.Resolver.ResolveRequest(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Provider != "provider" || resolved.Model != "default-model" {
+		t.Fatalf("resolved selection = (%q, %q)", resolved.Provider, resolved.Model)
+	}
+	resolved.Messages[0].ToolCalls[0].Arguments[0] = 'X'
+	if string(arguments) != `{"value":true}` {
+		t.Fatalf("resolver returned aliases to caller input: %s", arguments)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("resolver invoked provider %d times", provider.calls)
+	}
+
+	if _, err := exports.Resolver.ResolveRequest(context.Background(), model.Request{Provider: "missing", Model: "m"}); !errors.Is(err, model.ErrProviderNotFound) {
+		t.Fatalf("unknown provider error = %v", err)
+	}
+	withoutDefault, _, err := modelruntime.New(context.Background(), modelruntime.Config{}, modelruntime.Dependencies{
+		Providers: []sdk.Named[model.Provider]{{Name: "provider", Value: provider}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := withoutDefault.Resolver.ResolveRequest(context.Background(), model.Request{Provider: "provider"}); !errors.Is(err, model.ErrModelNotFound) {
+		t.Fatalf("missing model error = %v", err)
+	}
+}
+
 func TestShortCircuitIsNotSourceNormalizedAndCallerIsOwned(t *testing.T) {
 	provider := &fakeProvider{}
 	shortArguments := json.RawMessage(`{"cached":true}`)

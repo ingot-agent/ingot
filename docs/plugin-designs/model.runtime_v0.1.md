@@ -1,7 +1,7 @@
 # `model.runtime` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`model.Runtime`、`model.StreamingRuntime`
+> Exports：`model.Runtime`、`model.StreamingRuntime`、`model.RequestResolver`
 
 ## 1. 定位与 Contract
 
@@ -17,6 +17,7 @@ type Dependencies struct {
 type Exports struct {
     Runtime   model.Runtime
     Streaming model.StreamingRuntime
+    Resolver  model.RequestResolver
 }
 ```
 
@@ -34,6 +35,11 @@ type Config struct {
 - 显式 default 必须存在；
 - default model 可以为空，此时每个 Request 必须显式提供 Model；
 - default 只填充空字段，不覆盖 caller 显式值。
+
+`Resolver` 提供调用前的只读默认值物化：它 deep-copy 请求，只填充空的
+Provider/Model，并验证最终选择；不会调用 Provider 或执行 Model
+Interceptor。它与 Complete/Stream 共用同一份 immutable provider/default
+registry，供 `usage.default` 等调用前能力使用。
 
 ## 3. Startup
 
@@ -87,6 +93,6 @@ name = "default"
 package = "."
 ```
 
-测试覆盖 Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Interceptor改写后不二次补默认值、unknown provider/model、request/response deep copy与 presence保留、错误路径 partial response ownership、terminal响应校验、complete/stream interceptor完整 trace、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发 Provider选择和 race test。
+测试覆盖 Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Resolver 默认值物化/校验/不调用 Provider、Interceptor改写后不二次补默认值、unknown provider/model、request/response deep copy与 presence保留、错误路径 partial response ownership、terminal响应校验、complete/stream interceptor完整 trace、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发 Provider选择和 race test。
 
 验收要求 Complete 与 Stream 行为对称但 chain独立；Runtime 不包含任何 OpenAI-specific logic。

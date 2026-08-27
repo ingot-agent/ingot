@@ -17,4 +17,7 @@ use (
 	./plugins/tool-fs
 	./plugins/tool-runtime
 	./plugins/tool-shell
+	./plugins/usage-default
 )
+
+replace github.com/ingot-agent/sdk => ../sdk

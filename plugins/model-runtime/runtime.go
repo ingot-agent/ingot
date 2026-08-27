@@ -36,10 +36,13 @@ type Dependencies struct {
 	StreamInterceptors []model.StreamInterceptor
 }
 
-// Exports contains the complete and streaming runtimes.
+// Exports contains the complete and streaming runtimes, plus the read-only
+// request resolver used by components that need the materialized provider and
+// model selection before invocation.
 type Exports struct {
 	Runtime   model.Runtime
 	Streaming model.StreamingRuntime
+	Resolver  model.RequestResolver
 }
 
 type runtime struct {
@@ -100,7 +103,25 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 		providers: providers, defaultProvider: defaultProvider, defaultModel: cfg.DefaultModel,
 		interceptors: interceptors, streamInterceptors: streamInterceptors,
 	}
-	return Exports{Runtime: instance, Streaming: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, Resolver: instance}, nil, nil
+}
+
+// ResolveRequest returns a caller-owned request with provider and model
+// defaults materialized. It validates the final selection without invoking a
+// provider or running model interceptors.
+func (r *runtime) ResolveRequest(ctx context.Context, request model.Request) (model.Request, error) {
+	if ctx == nil {
+		return model.Request{}, errors.New("model request resolver: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Request{}, err
+	}
+	owned := cloneRequest(request)
+	r.applyDefaults(&owned)
+	if _, err := r.selectProvider(owned); err != nil {
+		return model.Request{}, err
+	}
+	return owned, nil
 }
 
 func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Response, error) {
@@ -304,4 +325,5 @@ func isNil(value any) bool {
 var (
 	_ model.Runtime          = (*runtime)(nil)
 	_ model.StreamingRuntime = (*runtime)(nil)
+	_ model.RequestResolver  = (*runtime)(nil)
 )

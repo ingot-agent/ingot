@@ -27,24 +27,25 @@ Plugin 设计必须遵循：
 | [`interceptor.script`](./interceptor.script_v0.1.md) | Implemented v0.1 | typed Interceptors | 外部策略/审计hook协议与进程回收 |
 | [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Implemented v0.1 | `[]sdk.Named[model.Provider]` | Chat Completions和SSE协议适配 |
 | [`model.runtime`](./model.runtime_v0.1.md) | Implemented v0.1 | complete/stream runtimes | Named Provider选择与独立拦截链 |
+| [`usage.default`](./usage.default_v0.1.md) | Implemented v0.1 | `usage.Counter` | model-aware input token计数、Profile路由、有界缓存 |
 | [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
 | [`context.compact`](./context.compact_v0.1.md) | Implemented v0.1 | `contextwindow.Compactor` | 非破坏式增量摘要、事实Delta与checkpoint复用 |
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
 | [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel` + `appcli.Frontend`（app Component无导出） | TUI/plain双前端、一次性AI会话标题、turn取消与受控进程退出 |
 
-共15个Plugin、16个Component；`app.cli`包含`interaction`和`app`两个Component。
+共16个Plugin、17个Component；`app.cli`包含`interaction`和`app`两个Component。
 
 ## 依赖与建议实施批次
 
 ```text
 Batch 1  http.default / filesystem.local / session.jsonl
 Batch 2  tool.shell / tool.fs / tool.ask / approval / tool.runtime
-Batch 3  model.openai-compatible / model.runtime
+Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.cli / interceptor.script hardening
 ```
 
-`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend结束通过SDK `application.Process.Shutdown` 向generated main优雅报告进程结果（nil=退出0，err=退出1），不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。`application.Process`与`agent.History`自 SDK v0.1.2 起正式发布（`sdk`/`application` + `agent.History`）；会话标题更新能力`session.MutableStore`自 SDK v0.1.3 起提供。消费新能力的 Plugin 依赖 v0.1.3。
+`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend结束通过SDK `application.Process.Shutdown` 向generated main优雅报告进程结果（nil=退出0，err=退出1），不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。`application.Process`与`agent.History`自 SDK v0.1.2 起正式发布（`sdk`/`application` + `agent.History`）；会话标题更新能力`session.MutableStore`自 SDK v0.1.3 起提供。消费新能力的 Plugin 依赖 v0.1.3。`usage.default` 依赖 SDK v0.1.4 提供的 `usage` 与 `model.RequestResolver` Contract；workspace 开发时可使用本地 SDK replacement，发布用模块依赖保持为 v0.1.4。
 
 `app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
 
@@ -62,4 +63,4 @@ Batch 5  app.cli / interceptor.script hardening
 
 ## 文档状态
 
-15个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。
+16个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。
