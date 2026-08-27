@@ -1,0 +1,8 @@
+manifest_version = 1
+name = "usage.default"
+ingot = ">=0.3.0 <0.4.0"
+config_package = "."
+
+[[components]]
+name = "default"
+package = "."
