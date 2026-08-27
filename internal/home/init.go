@@ -33,14 +33,16 @@ type InitPlugin struct {
 
 // InitResult describes the home state established by init.
 type InitResult struct {
-	Home         string       `json:"home"`
-	Profile      string       `json:"profile"`
-	PluginsPath  string       `json:"plugins_path"`
-	ConfigPath   string       `json:"config_path"`
-	BundledPath  string       `json:"bundled_path"`
-	WrotePlugins bool         `json:"wrote_plugins"`
-	WroteConfig  bool         `json:"wrote_config"`
-	Plugins      []InitPlugin `json:"plugins"`
+	Home               string       `json:"home"`
+	Profile            string       `json:"profile"`
+	PluginsPath        string       `json:"plugins_path"`
+	BuilderConfigPath  string       `json:"builder_config_path"`
+	ConfigPath         string       `json:"config_path"`
+	BundledPath        string       `json:"bundled_path"`
+	WrotePlugins       bool         `json:"wrote_plugins"`
+	WroteBuilderConfig bool         `json:"wrote_builder_config"`
+	WroteConfig        bool         `json:"wrote_config"`
+	Plugins            []InitPlugin `json:"plugins"`
 }
 
 // Init establishes the initial usable state of an ingot home:
@@ -49,21 +51,24 @@ type InitResult struct {
 //     the executable) and materializes it under <home>/bundled-plugins/
 //     (idempotent);
 //  2. it writes a default plugins.toml for the selected profile;
-//  3. it writes a default config.toml template.
+//  3. it writes the default builder.toml SDK configuration;
+//  4. it writes a default config.toml template.
 //
-// Init never modifies an existing plugins.toml or config.toml unless Force is
-// set. Init does not resolve or build; the caller decides whether to apply.
+// Init never modifies an existing plugins.toml, builder.toml, or config.toml
+// unless Force is set. Init does not resolve or build; the caller decides
+// whether to apply.
 func (home *Home) Init(options InitOptions) (InitResult, error) {
 	profile, err := bundle.LookupProfile(options.Profile)
 	if err != nil {
 		return InitResult{}, err
 	}
 	result := InitResult{
-		Home:        home.Root,
-		Profile:     profile.Name,
-		PluginsPath: home.DesiredPath(),
-		ConfigPath:  home.ConfigPath(),
-		BundledPath: filepath.Join(home.Root, bundle.BundledDirectory),
+		Home:              home.Root,
+		Profile:           profile.Name,
+		PluginsPath:       home.DesiredPath(),
+		BuilderConfigPath: home.BuilderConfigPath(),
+		ConfigPath:        home.ConfigPath(),
+		BundledPath:       filepath.Join(home.Root, bundle.BundledDirectory),
 	}
 	if !options.Force {
 		if _, err := os.Stat(home.DesiredPath()); err == nil {
@@ -106,17 +111,34 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 	if err != nil {
 		return InitResult{}, err
 	}
+	builderConfig, err := builder.DefaultBuilderConfig()
+	if err != nil {
+		return InitResult{}, err
+	}
+	builderConfigData, err := builderConfig.MarshalTOML()
+	if err != nil {
+		return InitResult{}, err
+	}
 	if err := atomicWrite(home.DesiredPath(), desiredData, 0o600); err != nil {
 		return InitResult{}, err
 	}
 	result.WrotePlugins = true
 	if options.Force {
+		if err := atomicWrite(home.BuilderConfigPath(), builderConfigData, 0o600); err != nil {
+			return InitResult{}, err
+		}
+		result.WroteBuilderConfig = true
 		if err := atomicWrite(home.ConfigPath(), configData, 0o600); err != nil {
 			return InitResult{}, err
 		}
 		result.WroteConfig = true
 	} else {
-		wrote, err := writeIfMissing(home.ConfigPath(), configData)
+		wrote, err := writeIfMissing(home.BuilderConfigPath(), builderConfigData)
+		if err != nil {
+			return InitResult{}, err
+		}
+		result.WroteBuilderConfig = wrote
+		wrote, err = writeIfMissing(home.ConfigPath(), configData)
 		if err != nil {
 			return InitResult{}, err
 		}

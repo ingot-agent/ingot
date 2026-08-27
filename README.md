@@ -17,6 +17,7 @@ The result: fast startup, low memory, verifiable builds, and safe rollbacks.
 flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Builder["ingot Builder"]
     Desired["plugins.toml<br/>(your desired plugin set)"] --> Builder
+    BuilderConfig["builder.toml<br/>(ordered SDK modules)"] --> Builder
     Builder -->|resolve| Lock["plugins.lock<br/>(exact build facts)"]
     Lock -->|build + check| Image["Immutable Runtime Image"]
     Image --> Runtime["Native binary<br/>(instant startup)"]
@@ -33,7 +34,8 @@ Three concepts to know:
 
 ## Highlights
 
-- **Strict, canonical file formats** — `plugins.toml`, `plugins.lock`, and `ingot.plugin.toml` are parsed strictly, with canonical digests.
+- **Strict, canonical file formats** — `builder.toml`, `plugins.toml`, `plugins.lock`, and `ingot.plugin.toml` are parsed strictly, with canonical digests.
+- **Multiple SDKs per image** — the builder resolves and locks an ordered SDK list, recognizes contract wrappers from every configured SDK, and composes components using different SDK modules in one runtime image.
 - **Exact, reproducible builds** — the full Go module graph and local dev sources are hashed and verified; every image carries a SHA-256 `ImageID` (build inputs) and `ArtifactDigest` (binary bytes). Rebuilding the same inputs yields the same artifact.
 - **Compile-time correctness** — component contracts, ONE/OPTIONAL/MANY resolution, self-loops, cycles and stable topological ordering are all validated before anything runs.
 - **Generated wiring, no reflection** — `main.go` and `wiring_gen.go` are generated, compiled natively, and startup-validated with `--ingot-check` before the image is committed.
@@ -57,7 +59,7 @@ go build ./cmd/ingot
 ```
 
 `ingot init` writes the official default plugin set (as local dev sources under
-`bundled-plugins/`), a `plugins.toml`, and a `config.toml` template; `--apply`
+`bundled-plugins/`), a `builder.toml`, a `plugins.toml`, and a `config.toml` template; `--apply`
 also resolves, builds and switches the first image immediately. See the
 [Usage Guide](./docs/USAGE.md) for details.
 
@@ -66,6 +68,7 @@ Everything lives in the ingot home (`~/.ingot` by default; choose another with
 
 | File | Role |
 |---|---|
+| `builder.toml` | Ordered SDK modules and exact requested versions used by the builder. |
 | `plugins.toml` | Your desired plugin set (you or the CLI maintain this). |
 | `plugins.lock` | The exact resolution: full module graph, digests, build flags. |
 | `config.toml` | Runtime configuration values. |
@@ -100,6 +103,7 @@ examples, and [使用说明](./docs/USAGE.zh.md) for the Chinese version.
 - Design documents (Chinese) in [`docs/`](./docs/):
   - [ingot 架构设计 v0.3](./docs/ingot_架构设计_v0.3.md)
   - [`plugins.toml` v0.1](./docs/ingot_plugins.toml_v0.1_设计方案.md)
+  - [`builder.toml` v0.1](./docs/ingot_builder.toml_v0.1_设计方案.md)
   - [`plugins.lock` v0.1](./docs/ingot_plugins.lock_v0.1_设计方案.md)
   - [`ingot.plugin.toml` v0.1](./docs/ingot.plugin.toml_设计方案_v0.1.md)
   - [SDK v0.1](./docs/ingot_SDK_v0.1_设计方案.md)
@@ -121,7 +125,7 @@ For local development, place it as a sibling checkout and select it with
 
 ## Roadmap
 
-- [x] `ingot init` — write a default `plugins.toml` and `config.toml` so users go from installation to a working agent in one step (design: [`docs/ingot_init_设计方案_v0.1.md`](./docs/ingot_init_设计方案_v0.1.md)).
+- [x] `ingot init` — write default `builder.toml`, `plugins.toml`, and `config.toml` files so users go from installation to a working agent in one step (design: [`docs/ingot_init_设计方案_v0.1.md`](./docs/ingot_init_设计方案_v0.1.md)).
 - [ ] `ingot doctor` — check that the default plugins are complete, config is valid, and the current image runs.
 
 ## Development

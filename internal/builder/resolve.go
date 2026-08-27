@@ -19,46 +19,37 @@ import (
 const (
 	DefaultIngotVersion   = "0.3.0"
 	DefaultBuilderVersion = "0.3.1"
-	DefaultSDKModule      = "github.com/ingot-agent/sdk"
-	DefaultSDKVersion     = "v0.1.4"
 )
 
 type ResolveOptions struct {
 	IngotVersion   string
 	BuilderVersion string
-	SDKModule      string
-	SDKVersion     string
-	// SDKPath replaces SDKModule with a local development checkout. When it
-	// is empty, Resolve discovers an unversioned local replacement from the
-	// nearest go.work file. The replacement is content-locked and copied into
-	// the build staging area like a development plugin.
-	SDKPath      string
-	Toolchain    string
-	GOOS         string
-	GOARCH       string
-	GOExperiment []string
-	Tuning       []TargetKey
-	Tags         []string
-	LDFlags      []string
-	GCFlags      []string
-	ASMFlags     []string
-	GOMODCACHE   string
-	GOPROXY      string
+	SDKs           []SDKConfig
+	Toolchain      string
+	GOOS           string
+	GOARCH         string
+	GOExperiment   []string
+	Tuning         []TargetKey
+	Tags           []string
+	LDFlags        []string
+	GCFlags        []string
+	ASMFlags       []string
+	GOMODCACHE     string
+	GOPROXY        string
 }
 
-func (options ResolveOptions) defaults() ResolveOptions {
+func (options ResolveOptions) defaults() (ResolveOptions, error) {
 	if options.IngotVersion == "" {
 		options.IngotVersion = DefaultIngotVersion
 	}
 	if options.BuilderVersion == "" {
 		options.BuilderVersion = DefaultBuilderVersion
 	}
-	if options.SDKModule == "" {
-		options.SDKModule = DefaultSDKModule
+	config := BuilderConfig{BuilderConfigVersion: 1, SDKs: options.SDKs}
+	if err := config.Validate(); err != nil {
+		return options, err
 	}
-	if options.SDKVersion == "" {
-		options.SDKVersion = DefaultSDKVersion
-	}
+	options.SDKs = append([]SDKConfig(nil), config.SDKs...)
 	if options.Toolchain == "" {
 		options.Toolchain = runtime.Version()
 	}
@@ -80,7 +71,7 @@ func (options ResolveOptions) defaults() ResolveOptions {
 	sort.Slice(options.Tuning, func(i, j int) bool { return options.Tuning[i].Key < options.Tuning[j].Key })
 	options.GOExperiment, _ = sortedUnique(options.GOExperiment)
 	options.Tags, _ = sortedUnique(options.Tags)
-	return options
+	return options, nil
 }
 
 func defaultTuning(goarch string) []TargetKey {
@@ -118,6 +109,11 @@ type directSource struct {
 	digest    string
 }
 
+type resolvedSDKConfig struct {
+	SDKConfig
+	replacement *Replacement
+}
+
 // Resolve turns a validated desired plugin set into a complete lock using the
 // Go module resolver. It performs network-capable fetches but does not write the
 // caller's plugins.toml or plugins.lock.
@@ -125,13 +121,21 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if err := desired.Validate(); err != nil {
 		return nil, err
 	}
-	options = options.defaults()
-	if options.SDKPath == "" {
-		options.SDKPath = workspaceModuleReplacement(options.SDKModule)
+	var err error
+	options, err = options.defaults()
+	if err != nil {
+		return nil, err
 	}
-	var sdkReplacement *Replacement
-	if options.SDKPath != "" {
-		absolute, pathErr := filepath.Abs(options.SDKPath)
+	sdks := make([]resolvedSDKConfig, len(options.SDKs))
+	for index, configured := range options.SDKs {
+		sdks[index].SDKConfig = configured
+		if sdks[index].Path == "" {
+			sdks[index].Path = workspaceModuleReplacement(configured.Module)
+		}
+		if sdks[index].Path == "" {
+			continue
+		}
+		absolute, pathErr := filepath.Abs(sdks[index].Path)
 		if pathErr != nil {
 			return nil, pathErr
 		}
@@ -140,15 +144,25 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		if identityErr != nil {
 			return nil, identityErr
 		}
-		if identity != options.SDKModule {
-			return nil, &Error{Code: "INGOT-RESOLVE-SDK-LOCAL-MODULE-MISMATCH", Path: absolute, Want: options.SDKModule, Actual: identity}
+		if identity != configured.Module {
+			return nil, &Error{Code: "INGOT-RESOLVE-SDK-LOCAL-MODULE-MISMATCH", Path: absolute, Want: configured.Module, Actual: identity}
 		}
 		digest, digestErr := ModuleSourceDigest(absolute)
 		if digestErr != nil {
 			return nil, digestErr
 		}
-		options.SDKPath = absolute
-		sdkReplacement = &Replacement{ModulePath: options.SDKModule, SyntheticVersion: options.SDKVersion, DevPath: absolute, ContentSHA256: digest}
+		sdks[index].Path = absolute
+		sdks[index].replacement = &Replacement{ModulePath: configured.Module, SyntheticVersion: configured.Version, DevPath: absolute, ContentSHA256: digest}
+	}
+	for pluginIndex, plugin := range desired.Plugins {
+		for sdkIndex, sdk := range sdks {
+			if plugin.Module == sdk.Module {
+				return nil, &Error{Code: "INGOT-RESOLVE-PLUGIN-SDK-CONFLICT", Field: fmt.Sprintf("plugins[%d].module", pluginIndex), Actual: plugin.Module, Want: fmt.Sprintf("distinct from sdks[%d].module", sdkIndex)}
+			}
+		}
+	}
+	for index := range sdks {
+		options.SDKs[index] = sdks[index].SDKConfig
 	}
 	desiredDigest, err := desired.Digest()
 	if err != nil {
@@ -300,8 +314,10 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		lockedPlugins[i] = locked
 	}
-	if sdkReplacement != nil {
-		replacements = append(replacements, *sdkReplacement)
+	for _, sdk := range sdks {
+		if sdk.replacement != nil {
+			replacements = append(replacements, *sdk.replacement)
+		}
 	}
 
 	modules := make([]LockedModule, 0, len(selected))
@@ -325,22 +341,26 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		return modules[i].Version < modules[j].Version
 	})
-	sdkSelected, ok := selectedByPath[options.SDKModule]
-	if !ok || (sdkReplacement == nil && sdkSelected.Replace != nil) || (sdkReplacement != nil && (sdkSelected.Replace == nil || filepath.Clean(sdkSelected.Replace.Dir) != options.SDKPath)) {
-		return nil, &Error{Code: "INGOT-RESOLVE-SDK", Want: options.SDKModule}
-	}
-	if sdkReplacement != nil {
-		for index := range replacements {
-			if replacements[index].ModulePath == options.SDKModule {
-				replacements[index].SyntheticVersion = sdkSelected.Version
-				break
+	lockedSDKs := make([]SDKLock, len(sdks))
+	for sdkIndex, sdk := range sdks {
+		selectedSDK, ok := selectedByPath[sdk.Module]
+		if !ok || (sdk.replacement == nil && selectedSDK.Replace != nil) || (sdk.replacement != nil && (selectedSDK.Replace == nil || filepath.Clean(selectedSDK.Replace.Dir) != sdk.Path)) {
+			return nil, &Error{Code: "INGOT-RESOLVE-SDK", Field: fmt.Sprintf("sdks[%d]", sdkIndex), Want: sdk.Module}
+		}
+		lockedSDKs[sdkIndex] = SDKLock{ModulePath: sdk.Module, Version: selectedSDK.Version}
+		if sdk.replacement != nil {
+			for replacementIndex := range replacements {
+				if replacements[replacementIndex].ModulePath == sdk.Module {
+					replacements[replacementIndex].SyntheticVersion = selectedSDK.Version
+					break
+				}
 			}
 		}
 	}
 	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
 	lock := &Lock{
-		LockVersion: 1, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
-		Replacements: replacements, SDK: SDKLock{ModulePath: options.SDKModule, Version: sdkSelected.Version}, Toolchain: ToolchainLock{Version: options.Toolchain},
+		LockVersion: 2, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
+		Replacements: replacements, SDKs: lockedSDKs, Toolchain: ToolchainLock{Version: options.Toolchain},
 		Target:      TargetLock{GOOS: options.GOOS, GOARCH: options.GOARCH, CGOEnabled: false, GOExperiment: options.GOExperiment, Tuning: options.Tuning},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"},
 		Build:       BuildLock{Trimpath: true, BuildVCS: false, Tags: options.Tags, LDFlags: options.LDFlags, GCFlags: options.GCFlags, ASMFlags: options.ASMFlags},
@@ -412,9 +432,11 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 		_, _ = fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, source.version)
 		seen[source.plugin.Module] = true
 	}
-	if !seen[options.SDKModule] {
-		_, _ = fmt.Fprintf(&content, "\t%s %s\n", options.SDKModule, options.SDKVersion)
-		seen[options.SDKModule] = true
+	for _, sdk := range options.SDKs {
+		if !seen[sdk.Module] {
+			_, _ = fmt.Fprintf(&content, "\t%s %s\n", sdk.Module, sdk.Version)
+			seen[sdk.Module] = true
+		}
 	}
 	for _, item := range transitive {
 		if item.Main || seen[item.Path] || item.Version == "" {
@@ -429,8 +451,10 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", source.plugin.Module, goModQuote(filepath.ToSlash(source.devPath)))
 		}
 	}
-	if options.SDKPath != "" {
-		_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", options.SDKModule, goModQuote(filepath.ToSlash(options.SDKPath)))
+	for _, sdk := range options.SDKs {
+		if sdk.Path != "" {
+			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", sdk.Module, goModQuote(filepath.ToSlash(sdk.Path)))
+		}
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(content.String()), nil)
 	if err != nil {

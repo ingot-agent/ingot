@@ -14,6 +14,7 @@ ingot 是一个基于插件的智能体（Agent）运行时。与运行时加载
 flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Builder["ingot Builder"]
     Desired["plugins.toml<br/>(期望的插件集合)"] --> Builder
+    BuilderConfig["builder.toml<br/>(有序 SDK 列表)"] --> Builder
     Builder -->|resolve| Lock["plugins.lock<br/>(精确构建事实)"]
     Lock -->|build + check| Image["不可变 Runtime Image"]
     Image --> Runtime["原生二进制<br/>(瞬时启动)"]
@@ -30,7 +31,8 @@ flowchart LR
 
 ## 特性
 
-- **严格、规范的配置文件格式** —— 严格解析 `plugins.toml`、`plugins.lock` 与 `ingot.plugin.toml`，并提供规范化摘要（digest）。
+- **严格、规范的配置文件格式** —— 严格解析 `builder.toml`、`plugins.toml`、`plugins.lock` 与 `ingot.plugin.toml`，并提供规范化摘要（digest）。
+- **单镜像多 SDK** —— Builder 解析并锁定有序 SDK 列表，识别每个 SDK 的 Contract wrapper，并可在同一个 Runtime Image 中组合使用不同 SDK module 的 Component。
 - **精确、可复现的构建** —— 完整 Go Module 图与本地开发源码均会被哈希并校验；每个镜像携带 SHA-256 `ImageID`（构建输入）与 `ArtifactDigest`（二进制内容）。相同输入重建得到相同产物。
 - **编译期正确性** —— 组件契约、ONE/OPTIONAL/MANY 解析、self-loop、环检测与稳定拓扑排序，全部在任何代码运行之前完成校验。
 - **生成 wiring，无反射** —— 自动生成 `main.go` 与 `wiring_gen.go`，原生编译，并在镜像提交前以 `--ingot-check` 做启动校验。
@@ -53,12 +55,13 @@ go build ./cmd/ingot
 ./ingot chat
 ```
 
-`ingot init` 会写入官方默认插件集（作为 `bundled-plugins/` 下的本地开发源码）、`plugins.toml` 与 `config.toml` 模板；`--apply` 会立即解析、构建并切换首个镜像。详见[使用说明](./USAGE.zh.md)。
+`ingot init` 会写入官方默认插件集（作为 `bundled-plugins/` 下的本地开发源码）、`builder.toml`、`plugins.toml` 与 `config.toml` 模板；`--apply` 会立即解析、构建并切换首个镜像。详见[使用说明](./USAGE.zh.md)。
 
 所有状态都保存在 ingot home 中（默认为 `~/.ingot`，可用 `--home PATH` 指定其他路径）：
 
 | 文件 | 作用 |
 |---|---|
+| `builder.toml` | Builder 使用的有序 SDK module 与精确请求版本。 |
 | `plugins.toml` | 期望的插件集合（由你或 CLI 维护）。 |
 | `plugins.lock` | 精确解析结果：完整 Module 图、摘要、构建参数。 |
 | `config.toml` | 运行时配置值。 |
@@ -92,6 +95,7 @@ plugin      add | remove | update | reorder | list | inspect
 - 设计文档（中文）见 [`docs/`](../docs/)：
   - [ingot 架构设计 v0.3](./ingot_架构设计_v0.3.md)
   - [`plugins.toml` v0.1](./ingot_plugins.toml_v0.1_设计方案.md)
+  - [`builder.toml` v0.1](./ingot_builder.toml_v0.1_设计方案.md)
   - [`plugins.lock` v0.1](./ingot_plugins.lock_v0.1_设计方案.md)
   - [`ingot.plugin.toml` v0.1](./ingot.plugin.toml_设计方案_v0.1.md)
   - [SDK v0.1](./ingot_SDK_v0.1_设计方案.md)
@@ -112,7 +116,7 @@ plugin      add | remove | update | reorder | list | inspect
 
 ## 路线图
 
-- [x] `ingot init` —— 生成默认 `plugins.toml` 与 `config.toml`，让用户从安装到可用智能体一步到位（设计：[`docs/ingot_init_设计方案_v0.1.md`](./ingot_init_设计方案_v0.1.md)）。
+- [x] `ingot init` —— 生成默认 `builder.toml`、`plugins.toml` 与 `config.toml`，让用户从安装到可用智能体一步到位（设计：[`docs/ingot_init_设计方案_v0.1.md`](./ingot_init_设计方案_v0.1.md)）。
 - [ ] `ingot doctor` —— 检查默认插件是否完整、配置是否有效以及当前镜像是否可运行。
 
 ## 开发

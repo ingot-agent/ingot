@@ -71,6 +71,9 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		if result.WroteConfig {
 			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.ConfigPath)
 		}
+		if result.WroteBuilderConfig {
+			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.BuilderConfigPath)
+		}
 		if *directApply {
 			applied, err := home.Apply(ctx, builder.ResolveOptions{})
 			if err != nil {

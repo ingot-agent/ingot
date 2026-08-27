@@ -32,17 +32,17 @@ Runtime Config value、secret、用户输入与 Runtime State 使用独立存储
 
 ## 3. Exact Schema
 
-以下示例包含一个 remote Plugin 和一个 Local Dev Plugin。v0.1 schema 之外的字段均产生 Lock Validation Error。
+以下示例包含一个 remote Plugin 和一个 Local Dev Plugin。lock v2 schema 之外的字段均产生 Lock Validation Error。
 
 ```toml
-lock_version = 1
+lock_version = 2
 ingot_version = "0.3.0"
 builder_version = "0.3.0"
 replacements = [
   { module_path = "github.com/example/ingot-local-tool", synthetic_version = "v0.0.0", dev_path = "/workspace/ingot-local-tool", content_sha256 = "sha256:..." }
 ]
 
-[sdk]
+[[sdks]]
 module_path = "github.com/ingot-agent/sdk"
 version = "v0.1.0"
 
@@ -121,7 +121,7 @@ go_mod_sum = "h1:..."
 lock_version
 ingot_version
 builder_version
-sdk
+sdks
 toolchain
 target
 environment
@@ -131,13 +131,13 @@ modules
 replacements
 ```
 
-空集合使用空 TOML array。`plugins` 与 `modules` 至少包含一个条目；`modules` 至少包含 selected SDK module（SDK 为本地开发源码时除外，见4.2）。
+空集合使用空 TOML array。`plugins` 与 `sdks` 至少包含一个条目；每个 remote SDK 都必须出现在 `modules`（SDK 为本地开发源码时除外，见4.2）。
 
 ### 4.1 Version
 
 | Field | 语义 |
 |---|---|
-| `lock_version` | schema major，固定为 integer `1` |
+| `lock_version` | schema major，固定为 integer `2` |
 | `ingot_version` | distribution/runtime protocol 的 exact canonical SemVer，也是 Manifest `ingot` range 的求值版本 |
 | `builder_version` | 实际执行 resolve、codegen 和 build 的 Builder exact canonical SemVer |
 
@@ -145,7 +145,7 @@ replacements
 
 ### 4.2 SDK 与 Toolchain
 
-`[sdk]` 保存 generated wiring 直接使用的 SDK module path 与 exact selected version。默认情况下对应 module 同时出现在 `[[modules]]`；若 SDK 来自本地开发源码（`ResolveOptions.SDKPath` 或最近 go.work 的等价 `replace`），SDK 不出现在 `[[modules]]`，改由 `[[replacements]]` 中的 SDK 条目表示：`module_path` 为 SDK path、`synthetic_version` 等于 `sdk.version`（selected exact version，而不是从 path 推导的 synthetic version）、`content_sha256` 为 ModuleSourceDigest。
+有序 `[[sdks]]` 保存 generated wiring 同时使用的 SDK module path 与 exact selected version，第一项是 primary SDK。默认情况下每个 SDK module 同时出现在 `[[modules]]`；若 SDK 来自 `builder.toml` 的 `path` 或最近 `go.work` 的等价无版本 `replace`，该 SDK 不出现在 `[[modules]]`，改由 `[[replacements]]` 中的 SDK 条目表示：`module_path` 为 SDK path、`synthetic_version` 等于对应 `sdks[*].version`（selected exact version，而不是从 path 推导的 synthetic version）、`content_sha256` 为 ModuleSourceDigest。
 
 `[toolchain].version` 使用带 `go` 前缀的 exact version，例如 `go1.21.13`。
 
@@ -272,13 +272,13 @@ dev_path
 content_sha256
 ```
 
-`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从 module path 推导；SDK 条目使用 `sdk.version`（selected exact version）。
+`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从 module path 推导；SDK 条目使用对应 `sdks[*].version`（selected exact version）。
 
 | Module path | Synthetic version |
 |---|---|
 | 无 `/vN`，`N >= 2` | `v0.0.0` |
 | 以 `/vN` 结束，`N >= 2` | `vN.0.0` |
-| SDK 本地开发条目 | `sdk.version`（selected exact version） |
+| SDK 本地开发条目 | 对应 `sdks[*].version`（selected exact version） |
 
 条目按 `module_path` 排序。
 
@@ -366,19 +366,21 @@ manifest_digest = "sha256:" + lowercase_hex(
 )
 ```
 
-## 8. Canonical BuildManifest v1
+## 8. Canonical BuildManifest v2
 
 Lock Semantic Model 生成以下 exact JSON shape，并使用 RFC 8785 JCS：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "ingot_version": "0.3.0",
   "builder_version": "0.3.0",
-  "sdk": {
-    "module_path": "github.com/ingot-agent/sdk",
-    "version": "v0.1.0"
-  },
+  "sdks": [
+    {
+      "module_path": "github.com/ingot-agent/sdk",
+      "version": "v0.1.0"
+    }
+  ],
   "toolchain": {
     "go_version": "go1.21.13"
   },
@@ -500,7 +502,7 @@ Root `go.mod` materialization：
 | remote direct Plugin | `require <plugin.id> <exact version>` |
 | Local Dev direct Plugin | `require <plugin.id> <synthetic version>` |
 | SDK/generated wiring direct import（远程） | `require <module path> <selected exact version>` |
-| 本地开发 SDK | `require <module path> <sdk.version>` |
+| 本地开发 SDK | `require <module path> <对应 sdks[*].version>` |
 | Local Dev replacement（Plugin/SDK） | `replace <module path> => <dev_path>` |
 
 Root `go.sum` 仅由 `[[modules]]` 中非空 `sum` 与 `go_mod_sum` 生成。
