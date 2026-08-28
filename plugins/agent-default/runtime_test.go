@@ -12,7 +12,6 @@ import (
 	"github.com/ingot-agent/sdk"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/contextwindow"
-	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
@@ -102,20 +101,10 @@ func (passthroughPrompt) Render(_ context.Context, request prompt.Request) ([]mo
 	return append(result, model.Message{Role: model.RoleUser, Content: request.Input}), nil
 }
 
-type recordingInteraction struct{ events []interaction.Event }
-
 type agentInterceptorFunc func(context.Context, agent.Turn, pipeline.Next[agent.Turn, agent.Result]) (agent.Result, error)
 
 func (f agentInterceptorFunc) Invoke(ctx context.Context, turn agent.Turn, next pipeline.Next[agent.Turn, agent.Result]) (agent.Result, error) {
 	return f(ctx, turn, next)
-}
-
-func (r *recordingInteraction) Ask(context.Context, interaction.AskRequest) (interaction.AskResponse, error) {
-	return interaction.AskResponse{}, errors.New("unused")
-}
-func (r *recordingInteraction) Render(_ context.Context, event interaction.Event) error {
-	r.events = append(r.events, event)
-	return nil
 }
 
 func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
@@ -125,9 +114,8 @@ func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, Content: "done"}},
 	}}
 	tools := &fakeTools{}
-	ui := &recordingInteraction{}
 	exports, _, err := New(context.Background(), Config{}, Dependencies{
-		Model: models, Tools: tools, Store: store, Prompt: passthroughPrompt{}, Interaction: sdk.Some[interaction.Channel](ui),
+		Model: models, Tools: tools, Store: store, Prompt: passthroughPrompt{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -150,18 +138,14 @@ func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
 			t.Fatalf("entry %d message=%#v err=%v", i, message, decodeErr)
 		}
 	}
-	if len(ui.events) != 3 {
-		t.Fatalf("events=%#v", ui.events)
-	}
 }
 
-func TestAgentValidatesCompleteResponseBeforeRendering(t *testing.T) {
+func TestAgentValidatesCompleteResponseBeforePersisting(t *testing.T) {
 	t.Parallel()
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleUser, Content: "must not render"}}}}
-	ui := &recordingInteraction{}
 	exports, _, err := New(context.Background(), Config{}, Dependencies{
-		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{}, Interaction: sdk.Some[interaction.Channel](ui),
+		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,9 +154,6 @@ func TestAgentValidatesCompleteResponseBeforeRendering(t *testing.T) {
 	_, err = exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
 	if !errors.Is(err, ErrInvalidModelMessage) {
 		t.Fatalf("error=%v", err)
-	}
-	if len(ui.events) != 0 {
-		t.Fatalf("events=%#v, want none", ui.events)
 	}
 	entries, err := store.Load(context.Background(), "s")
 	if err != nil {

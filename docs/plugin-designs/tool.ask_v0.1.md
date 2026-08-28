@@ -6,7 +6,7 @@
 
 ## 1. 定位
 
-`tool.ask` 允许模型在一个 Agent turn 内同步向当前 logical interaction scope 询问信息。问题可以是普通文本，也可以携带有序预设选项；选项模式始终保留一项自由输入入口。它是 Tool 到 frontend 的 typed adapter，不负责审批、多字段表单、长期异步通知或多用户 routing。
+`tool.ask` 允许模型在一个 Agent turn 内同步请求当前Host环境提供文本信息。问题可以是普通文本，也可以携带有序建议选项；Host可以通过UI、CLI、policy或其他设施回答。它是Tool到Interaction Request的typed adapter，不负责审批、多字段表单、长期异步通知或多用户routing。
 
 ```go
 type Dependencies struct {
@@ -65,13 +65,14 @@ Input Schema：
 
 1. decode 并复制 prompt 与 options；
 2. 检查 UTF-8、label 唯一性、option 数量与总字节数；
-3. 没有 options 时调用普通文本 `AskRequest`；
-4. 有 options 时按声明顺序填入 `AskRequest.Options`，并设置 `AllowTextInput: true`；
+3. 构造稳定identity为`ask_user`的Interaction Request；
+4. Request包含一个必填`answer` String Field；有options时按声明顺序转换为Field Options。String Field的Options是建议值，不限制Host返回自由文本；
 5. 保留 Context 和 `interaction.ErrUnavailable` 错误链；
-6. 检查 response UTF-8 和长度；
-7. 返回 `tool.Result{Content: response.Text}`。
+6. Response必须包含唯一的`answer` String Value，否则返回`ErrInvalidResponse`；
+7. 检查answer UTF-8和长度；
+8. 返回`tool.Result{Content: answer}`。
 
-选择预设项时，Channel 返回对应 label；选择自由输入时返回用户原文。Plugin 不对 response trim、解释 yes/no 或添加格式。Channel 自己负责 Ask/ReadLine serialization，因此 Tool 不增加额外全局锁。
+Option的稳定Value与模型提供的label相同；Host选择建议项时返回该Value，提供自由输入时返回原文。Plugin不对answer trim、解释yes/no或添加格式，也不增加额外全局锁。
 
 `New` 只校验 Config 和非 nil dependency，无资源、无后台任务，返回 nil Cleanup。Tool 可被多个 Session 并发调用；实际交互顺序由每个 Channel Contract 决定。
 
@@ -88,6 +89,6 @@ name = "default"
 package = "."
 ```
 
-测试覆盖 exact Definition、纯文本兼容、选项顺序和 description 传递、强制自由输入、重复/空 label、option 数量/字节上限、response 原样返回、长度/UTF-8、Context cancellation、Unavailable、并发调用以及 dependency typed-nil startup validation。
+测试覆盖exact Definition、纯文本Request、选项顺序和description传递、自由输入、重复/空label、option数量/字节上限、Response字段和ValueKind校验、answer原样返回、长度/UTF-8、Context cancellation、Unavailable、并发调用以及dependency typed-nil startup validation。
 
-v0.1 只返回单个文本结果，不表达多选。多字段表单、secret input 和复杂表单校验应通过新的 Interaction Contract 演进。
+v0.1只返回单个文本结果，不表达多选。多字段表单、secret input和复杂表单校验应由面向相应需求的独立Tool或领域Contract提供。

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/ingot-agent/sdk"
@@ -22,6 +21,8 @@ const (
 	actionAllow            = "allow"
 	actionAsk              = "ask"
 	actionDeny             = "deny"
+	requestName            = "tool_approval"
+	decisionFieldName      = "decision"
 	displayFull            = "full"
 	displayNamesOnly       = "name-only"
 	defaultMaxDisplayBytes = 4096
@@ -51,7 +52,7 @@ type Config struct {
 	Rules           []Rule `toml:"rules"`
 }
 
-// Dependencies contains an optional interaction channel.
+// Dependencies contains an optional host interaction channel.
 type Dependencies struct {
 	Interaction sdk.Optional[interaction.Channel]
 }
@@ -152,24 +153,53 @@ func (a *approvalInterceptor) ask(ctx context.Context, call tool.Call, next pipe
 	}
 	prompt := a.prompt(call)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		response, err := a.interaction.Value.Ask(ctx, interaction.AskRequest{
-			Prompt: prompt,
-			Options: []interaction.AskOption{
-				{Label: "Yes", Description: "Allow this tool call once"},
-				{Label: "No", Description: "Deny this tool call"},
-			},
+		response, err := a.interaction.Value.Request(ctx, interaction.Request{
+			Name:        requestName,
+			Level:       interaction.LevelWarning,
+			Description: prompt,
+			Fields: []interaction.Field{{
+				Name:        decisionFieldName,
+				Label:       "Decision",
+				Description: "Choose whether to allow this tool call once.",
+				Kind:        interaction.FieldChoice,
+				Required:    true,
+				Options: []interaction.Option{
+					{Value: actionAllow, Label: "Yes", Description: "Allow this tool call once"},
+					{Value: actionDeny, Label: "No", Description: "Deny this tool call"},
+				},
+			}},
 		})
 		if err != nil {
 			return tool.Result{}, err
 		}
-		switch strings.ToLower(strings.TrimSpace(response.Text)) {
-		case "y", "yes":
+		decision, ok := responseString(response, decisionFieldName)
+		if !ok {
+			continue
+		}
+		switch decision {
+		case actionAllow:
 			return next(ctx, call)
-		case "n", "no":
+		case actionDeny:
 			return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, ErrApprovalDenied)
 		}
 	}
 	return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, ErrApprovalDenied)
+}
+
+func responseString(response interaction.Response, name string) (string, bool) {
+	var result string
+	found := false
+	for _, answer := range response.Values {
+		if answer.Name != name {
+			continue
+		}
+		if found || answer.Value.Kind != interaction.ValueString {
+			return "", false
+		}
+		result = answer.Value.String
+		found = true
+	}
+	return result, found
 }
 
 func (a *approvalInterceptor) prompt(call tool.Call) string {
