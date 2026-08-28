@@ -21,6 +21,8 @@ const (
 	defaultMaxResponseBytes = 16 * 1024
 	defaultMaxOptions       = 8
 	defaultMaxOptionsBytes  = 16 * 1024
+	requestName             = "ask_user"
+	answerFieldName         = "answer"
 )
 
 var (
@@ -34,6 +36,8 @@ var (
 	ErrResponseLimit = errors.New("ask response exceeds configured limit")
 	// ErrOptionsLimit indicates that the options exceed their configured bounds.
 	ErrOptionsLimit = errors.New("ask options exceed configured limit")
+	// ErrInvalidResponse indicates that the host returned no unique string answer.
+	ErrInvalidResponse = errors.New("invalid tool.ask interaction response")
 )
 
 // Config bounds prompt, option, and response sizes.
@@ -44,7 +48,7 @@ type Config struct {
 	MaxOptionsBytes  int `toml:"max_options_bytes"`
 }
 
-// Dependencies contains the user interaction channel.
+// Dependencies contains the host interaction channel.
 type Dependencies struct {
 	Interaction interaction.Channel
 }
@@ -143,7 +147,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 func (t *askTool) Definition() tool.Definition {
 	return tool.Definition{
 		Name:        "ask_user",
-		Description: "Ask the user a question, optionally with choices and a free-form response option.",
+		Description: "Ask the host environment a question, optionally with suggested choices and a free-form response.",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["prompt"],"properties":{"prompt":{"type":"string","minLength":1},"options":{"type":"array","minItems":1,"items":{"type":"object","additionalProperties":false,"required":["label"],"properties":{"label":{"type":"string","minLength":1},"description":{"type":"string"}}}}}}`),
 	}
 }
@@ -172,24 +176,34 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 	if err != nil {
 		return tool.Result{}, err
 	}
-	response, err := t.channel.Ask(ctx, interaction.AskRequest{
-		Prompt:         *args.Prompt,
-		Options:        options,
-		AllowTextInput: len(options) > 0,
+	response, err := t.channel.Request(ctx, interaction.Request{
+		Name:        requestName,
+		Description: *args.Prompt,
+		Fields: []interaction.Field{{
+			Name:     answerFieldName,
+			Label:    "Answer",
+			Kind:     interaction.FieldString,
+			Required: true,
+			Options:  options,
+		}},
 	})
 	if err != nil {
 		return tool.Result{}, err
 	}
-	if !utf8.ValidString(response.Text) {
+	answer, ok := responseString(response, answerFieldName)
+	if !ok {
+		return tool.Result{}, ErrInvalidResponse
+	}
+	if !utf8.ValidString(answer) {
 		return tool.Result{}, fmt.Errorf("response is not valid UTF-8")
 	}
-	if len([]byte(response.Text)) > t.maxResponseBytes {
+	if len([]byte(answer)) > t.maxResponseBytes {
 		return tool.Result{}, ErrResponseLimit
 	}
-	return tool.Result{Content: response.Text}, nil
+	return tool.Result{Content: answer}, nil
 }
 
-func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.AskOption, error) {
+func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.Option, error) {
 	if !raw.present {
 		return nil, nil
 	}
@@ -199,7 +213,7 @@ func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.AskOpti
 	if len(raw.values) > t.maxOptions {
 		return nil, ErrOptionsLimit
 	}
-	options := make([]interaction.AskOption, 0, len(raw.values))
+	options := make([]interaction.Option, 0, len(raw.values))
 	labels := make(map[string]struct{}, len(raw.values))
 	totalBytes := 0
 	for index, option := range raw.values {
@@ -217,9 +231,25 @@ func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.AskOpti
 		if totalBytes > t.maxOptionsBytes {
 			return nil, ErrOptionsLimit
 		}
-		options = append(options, interaction.AskOption{Label: *option.Label, Description: option.Description})
+		options = append(options, interaction.Option{Value: *option.Label, Label: *option.Label, Description: option.Description})
 	}
 	return options, nil
+}
+
+func responseString(response interaction.Response, name string) (string, bool) {
+	var result string
+	found := false
+	for _, answer := range response.Values {
+		if answer.Name != name {
+			continue
+		}
+		if found || answer.Value.Kind != interaction.ValueString {
+			return "", false
+		}
+		result = answer.Value.String
+		found = true
+	}
+	return result, found
 }
 
 func decodeObject(raw json.RawMessage, target any) error {

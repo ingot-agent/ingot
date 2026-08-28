@@ -13,7 +13,6 @@ import (
 	"github.com/ingot-agent/sdk"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/contextwindow"
-	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
@@ -57,7 +56,6 @@ type Dependencies struct {
 	Store        session.Store
 	Prompt       prompt.Renderer
 	Compactor    sdk.Optional[contextwindow.Compactor]
-	Interaction  sdk.Optional[interaction.Channel]
 	Interceptors []agent.Interceptor
 }
 
@@ -74,7 +72,6 @@ type runtime struct {
 	store         session.Store
 	prompt        prompt.Renderer
 	compactor     sdk.Optional[contextwindow.Compactor]
-	interaction   sdk.Optional[interaction.Channel]
 	interceptors  []agent.Interceptor
 	gates         *gateManager
 	provider      string
@@ -106,9 +103,6 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 	if deps.Compactor.Valid && isNil(deps.Compactor.Value) {
 		return Exports{}, nil, fmt.Errorf("compactor dependency is typed nil: %w", ErrInvalidConfig)
 	}
-	if deps.Interaction.Valid && isNil(deps.Interaction.Value) {
-		return Exports{}, nil, fmt.Errorf("interaction dependency is typed nil: %w", ErrInvalidConfig)
-	}
 	if cfg.Temperature != nil && (math.IsNaN(*cfg.Temperature) || math.IsInf(*cfg.Temperature, 0) || *cfg.Temperature < 0 || *cfg.Temperature > 2) {
 		return Exports{}, nil, fmt.Errorf("temperature must be in [0,2]: %w", ErrInvalidConfig)
 	}
@@ -138,7 +132,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 	}
 	instance := &runtime{
 		model: deps.Model, streaming: deps.Streaming, tools: deps.Tools, store: deps.Store,
-		prompt: deps.Prompt, compactor: deps.Compactor, interaction: deps.Interaction, interceptors: interceptors,
+		prompt: deps.Prompt, compactor: deps.Compactor, interceptors: interceptors,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
 		maxToolRounds: maxRounds, streamEnabled: cfg.Streaming, toolErrorMode: mode,
@@ -240,9 +234,6 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 			return agent.Result{}, ErrMaxToolRounds
 		}
 		for _, call := range response.Message.ToolCalls {
-			if err := r.render(ctx, interaction.ToolCallEvent{Call: cloneCall(call)}); err != nil {
-				return agent.Result{}, err
-			}
 			result, callErr := r.tools.Call(ctx, cloneCall(call))
 			if callErr != nil {
 				if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
@@ -255,9 +246,6 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 			}
 			if !utf8.ValidString(result.Content) {
 				return agent.Result{}, fmt.Errorf("tool %q returned invalid UTF-8", call.Name)
-			}
-			if err := r.render(ctx, interaction.ToolResultEvent{Call: cloneCall(call), Result: result}); err != nil {
-				return agent.Result{}, err
 			}
 			message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
 			if err := r.appendMessage(ctx, turn.SessionID, message); err != nil {
@@ -292,18 +280,10 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 		if err := validateAssistant(response.Message); err != nil {
 			return model.Response{}, err
 		}
-		if response.Message.Content != "" {
-			if err := r.render(ctx, interaction.TextEvent{Text: response.Message.Content}); err != nil {
-				return model.Response{}, err
-			}
-		}
 		return response, nil
 	}
-	response, err := r.streaming.Value.Stream(ctx, request, func(chunk model.StreamChunk) error {
-		if chunk.TextDelta == "" {
-			return nil
-		}
-		return r.render(ctx, interaction.TextEvent{Text: chunk.TextDelta})
+	response, err := r.streaming.Value.Stream(ctx, request, func(model.StreamChunk) error {
+		return nil
 	})
 	if err != nil {
 		return model.Response{}, fmt.Errorf("stream model: %w", err)
@@ -312,16 +292,6 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 		return model.Response{}, err
 	}
 	return response, nil
-}
-
-func (r *runtime) render(ctx context.Context, event interaction.Event) error {
-	if !r.interaction.Valid {
-		return nil
-	}
-	if err := r.interaction.Value.Render(ctx, event); err != nil {
-		return fmt.Errorf("render interaction event: %w", err)
-	}
-	return nil
 }
 
 func validateAssistant(message model.Message) error {

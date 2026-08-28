@@ -1,11 +1,11 @@
 # `agent.default` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`agent.Runtime`
+> Exports：`agent.Runtime`、`agent.History`
 
 ## 1. 定位
 
-`agent.default` 实现一个完整 Agent turn：same-session serialization、历史加载、Prompt render、Model complete/stream、Tool loop、Interaction events和Session append。
+`agent.default` 实现一个完整 Agent turn：same-session serialization、历史加载、Prompt render、Model complete/stream、Tool loop和Session append。
 
 它只通过 Runtime chokepoint调用 Model和Tool，不直接持有具体 Provider/Tool；Session storage format由 `session.Store` 所属 Plugin管理，但 Agent拥有其写入的 Entry kind/payload schema。
 
@@ -19,12 +19,12 @@ type Dependencies struct {
     Store        session.Store
     Prompt       prompt.Renderer
     Compactor    sdk.Optional[contextwindow.Compactor]
-    Interaction  sdk.Optional[interaction.Channel]
     Interceptors []agent.Interceptor
 }
 
 type Exports struct {
     Runtime agent.Runtime
+    History agent.History
 }
 ```
 
@@ -131,26 +131,24 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ### 6.2 Model 调用
 
-- streaming=false使用`Model.Complete`；完整assistant response先通过role、UTF-8和ToolCalls校验，随后在Interaction有效且Content非空时统一Render一次TextEvent；
-- streaming=true使用`Streaming.Stream`；每个TextDelta按顺序通过可选Interaction Render为TextEvent，最终不重复Render完整Content；
-- Interaction absent时仍可stream并累积，但配置校验可提示这种选择无UI收益；
-- Stream handler/Render error立即停止并传播；
+- streaming=false使用`Model.Complete`；完整assistant response先通过role、UTF-8和ToolCalls校验；
+- streaming=true使用`Streaming.Stream`并以no-op handler消费增量；本组件不把模型文本或delta投影为通用Interaction；
+- Stream error立即停止并传播；
 - 最终assistant Message完成校验后Append，再加入本轮in-memory messages。
 
 ### 6.3 Tool loop
 
-若assistant没有ToolCalls，返回`agent.Result{Output: Message.Content}`。`Result.Output`始终保留给非交互调用方；在官方CLI Graph中assistant文本已经由Agent通过同一个Interaction Channel输出，CLI不得再次渲染Result造成重复。
+若assistant没有ToolCalls，返回`agent.Result{Output: Message.Content}`。调用方通过Result和`agent.History`获取最终输出及持久化消息；流式观察和Tool执行观察需要未来独立的typed observer contract，不使用通用Interaction承载领域事件。
 
 否则：
 
 1. round计数，超过上限返回`ErrMaxToolRounds`；
 2. ToolCalls按模型返回slice顺序串行执行，保持确定性和依赖关系；
 3. 每个Call要求ID和Name非空、Arguments valid JSON；
-4. 可选Interaction依次Render ToolCallEvent和ToolResultEvent；
-5. 调用`Tools.Call(ctx, call)`；
-6. 成功结果生成RoleTool Message并Append；
-7. 非Context error在mode=result时按以下固定映射转换为tool result；mode=fail时立即返回包装后的原错误，尚未产生的result由下一次Run按4.1恢复；
-8. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
+4. 调用`Tools.Call(ctx, call)`；
+5. 成功结果生成RoleTool Message并Append；
+6. 非Context error在mode=result时按以下固定映射转换为tool result；mode=fail时立即返回包装后的原错误，尚未产生的result由下一次Run按4.1恢复；
+7. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
 
 `result`模式提供给模型和持久化历史的Content只使用稳定安全文本，不拼接`err.Error()`、Go stack或其他下游诊断：
 
@@ -160,7 +158,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 | `errors.Is(err, tool.ErrInvalidArguments)` | `tool error [invalid_arguments]: tool arguments were rejected` |
 | 其他非Context error | `tool error [execution_failed]: tool execution failed` |
 
-转换后的`tool.Result`正常Render `ToolResultEvent`并Append RoleTool message。原错误不向模型暴露；`fail`模式则通过`Run`错误链交给调用方。无论模式，之前已提交的assistant/tool记录不回滚。
+转换后的`tool.Result`正常Append RoleTool message。原错误不向模型暴露；`fail`模式则通过`Run`错误链交给调用方。无论模式，之前已提交的assistant/tool记录不回滚。
 
 ## 7. Interceptor、ownership与错误
 
@@ -212,12 +210,11 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 - user→prompt→model→assistant persistence顺序；
 - multi-round tool call完整trace；
 - ToolCalls顺序、tool error result/fail、max rounds；
-- Complete/Stream、chunk顺序、handler/Render error；
+- Complete/Stream、response校验和Stream error；
 - optional Compactor absent/typed-nil、完整Request输入、每轮调用、replacement ownership和错误传播；
-- Interaction absent；
 - Agent Interceptor outermost/short-circuit；
 - same-session ticket order、等待取消、cross-session并发；
 - partial failure不回滚已提交Entry；
 - aggregate ownership和race test。
 
-未来可增加独立token/turn usage event；v0.1 stream delta仍由Agent通过可选Interaction按顺序渲染，frontend不重复聚合输出。
+未来可增加独立的agent observer contract承载stream delta、ToolCall/ToolResult和token/turn usage；这些领域事件不投影成通用Interaction。

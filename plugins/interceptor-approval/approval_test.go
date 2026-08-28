@@ -15,20 +15,22 @@ import (
 type queueChannel struct {
 	responses []string
 	prompts   []string
-	requests  []interaction.AskRequest
+	requests  []interaction.Request
 }
 
-func (c *queueChannel) Ask(_ context.Context, request interaction.AskRequest) (interaction.AskResponse, error) {
-	c.prompts = append(c.prompts, request.Prompt)
+func (c *queueChannel) Request(_ context.Context, request interaction.Request) (interaction.Response, error) {
+	c.prompts = append(c.prompts, request.Description)
 	c.requests = append(c.requests, request)
 	if len(c.responses) == 0 {
-		return interaction.AskResponse{}, nil
+		return interaction.Response{}, nil
 	}
 	response := c.responses[0]
 	c.responses = c.responses[1:]
-	return interaction.AskResponse{Text: response}, nil
+	return interaction.Response{Values: []interaction.Answer{{Name: decisionFieldName, Value: interaction.StringValue(response)}}}, nil
 }
-func (*queueChannel) Render(context.Context, interaction.Event) error { return nil }
+func (*queueChannel) Emit(context.Context, interaction.Event) error { return nil }
+func (*queueChannel) Set(context.Context, interaction.State) error  { return nil }
+func (*queueChannel) Clear(context.Context, string) error           { return nil }
 
 func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {
 	return func(_ context.Context, _ tool.Call) (tool.Result, error) {
@@ -38,7 +40,7 @@ func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {
 }
 
 func TestApprovalActionsAndRules(t *testing.T) {
-	channel := &queueChannel{responses: []string{"maybe", "YES"}}
+	channel := &queueChannel{responses: []string{"maybe", actionAllow}}
 	exports, _, err := New(context.Background(), Config{DefaultAction: "deny", Rules: []Rule{{Tool: "safe", Action: "allow"}, {Tool: "danger", Action: "ask"}}}, Dependencies{Interaction: sdk.Some[interaction.Channel](channel)})
 	if err != nil {
 		t.Fatal(err)
@@ -60,8 +62,14 @@ func TestApprovalActionsAndRules(t *testing.T) {
 	if !strings.Contains(channel.prompts[0], "danger") || !strings.Contains(channel.prompts[0], "c1") || !strings.Contains(channel.prompts[0], "{\"path\":\"x\"}") {
 		t.Fatalf("prompt=%q", channel.prompts[0])
 	}
-	if len(channel.requests[0].Options) != 2 || channel.requests[0].Options[0].Label != "Yes" || channel.requests[0].Options[1].Label != "No" {
-		t.Fatalf("options=%#v", channel.requests[0].Options)
+	request := channel.requests[0]
+	if request.Name != requestName || request.Level != interaction.LevelWarning || len(request.Fields) != 1 {
+		t.Fatalf("request=%#v", request)
+	}
+	options := request.Fields[0].Options
+	if request.Fields[0].Name != decisionFieldName || request.Fields[0].Kind != interaction.FieldChoice || len(options) != 2 ||
+		options[0].Value != actionAllow || options[0].Label != "Yes" || options[1].Value != actionDeny || options[1].Label != "No" {
+		t.Fatalf("field=%#v", request.Fields[0])
 	}
 }
 
@@ -99,5 +107,26 @@ func TestApprovalPreservesCanceledContext(t *testing.T) {
 	_, err = exports.Interceptors[0].Invoke(ctx, tool.Call{Name: "safe"}, terminal(new(int)))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestResponseStringRejectsMalformedAnswers(t *testing.T) {
+	tests := []struct {
+		name     string
+		response interaction.Response
+	}{
+		{name: "missing"},
+		{name: "wrong kind", response: interaction.Response{Values: []interaction.Answer{{Name: decisionFieldName, Value: interaction.BooleanValue(true)}}}},
+		{name: "duplicate", response: interaction.Response{Values: []interaction.Answer{
+			{Name: decisionFieldName, Value: interaction.StringValue(actionAllow)},
+			{Name: decisionFieldName, Value: interaction.StringValue(actionDeny)},
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if value, ok := responseString(test.response, decisionFieldName); ok {
+				t.Fatalf("responseString()=(%q, true), want invalid", value)
+			}
+		})
 	}
 }
