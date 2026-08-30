@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
@@ -51,11 +51,11 @@ type Config struct {
 // Dependencies contains the runtime chokepoints used by an agent turn.
 type Dependencies struct {
 	Model        model.Runtime
-	Streaming    sdk.Optional[model.StreamingRuntime]
+	Streaming    ingotabi.Optional[model.StreamingRuntime]
 	Tools        tool.Runtime
 	Store        session.Store
 	Prompt       prompt.Renderer
-	Compactor    sdk.Optional[contextwindow.Compactor]
+	Compactor    ingotabi.Optional[contextwindow.Compactor]
 	Interceptors []agent.Interceptor
 }
 
@@ -67,11 +67,11 @@ type Exports struct {
 
 type runtime struct {
 	model         model.Runtime
-	streaming     sdk.Optional[model.StreamingRuntime]
+	streaming     ingotabi.Optional[model.StreamingRuntime]
 	tools         tool.Runtime
 	store         session.Store
 	prompt        prompt.Renderer
-	compactor     sdk.Optional[contextwindow.Compactor]
+	compactor     ingotabi.Optional[contextwindow.Compactor]
 	interceptors  []agent.Interceptor
 	gates         *gateManager
 	provider      string
@@ -84,7 +84,7 @@ type runtime struct {
 }
 
 // New validates immutable dependencies and creates an independent runtime.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct agent.default: %w", ErrInvalidConfig)
 	}

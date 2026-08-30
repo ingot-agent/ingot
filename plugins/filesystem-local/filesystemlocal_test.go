@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	filesystemlocal "github.com/ingot-agent/filesystem-local"
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/filesystem"
 )
 
@@ -33,7 +33,7 @@ func newFilesystem(t *testing.T) filesystem.FS {
 func TestComponentContract(t *testing.T) {
 	t.Parallel()
 
-	var constructor func(context.Context, filesystemlocal.Config, filesystemlocal.Dependencies) (filesystemlocal.Exports, sdk.Cleanup, error) = filesystemlocal.New
+	var constructor func(context.Context, filesystemlocal.Config, filesystemlocal.Dependencies) (filesystemlocal.Exports, ingotabi.Cleanup, error) = filesystemlocal.New
 	_ = constructor
 	var _ filesystem.FS = newFilesystem(t)
 }

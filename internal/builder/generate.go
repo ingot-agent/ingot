@@ -15,48 +15,54 @@ import (
 // Generate writes the statically wired runtime main package into a restored
 // root module.
 func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
-	primarySDK := lock.SDKs[0].ModulePath
 	aliasByPath := map[string]string{}
 	mainImports := map[string]string{
 		"context": "context", "errors": "errors", "fmt": "fmt", "os": "os", "os/signal": "signal",
 		"path/filepath": "filepath", "reflect": "reflect", "strings": "strings", "sync": "sync", "time": "time",
-		primarySDK: "sdk", primarySDK + "/application": "sdkapplication",
+		IngotABIModulePath:                 "ingotabi",
+		IngotABIModulePath + "/invocation": "invocation",
+		IngotABIModulePath + "/lifecycle":  "lifecycle",
+		IngotABIModulePath + "/state":      "state",
 	}
 	wiringImports := map[string]string{
-		"context": "context", "fmt": "fmt", "os": "os", "path/filepath": "filepath", "reflect": "reflect",
-		primarySDK: "sdk",
+		"context": "context", "bytes": "bytes", "errors": "errors", "fmt": "fmt", "os": "os", "path/filepath": "filepath", "reflect": "reflect",
+		IngotABIModulePath:                 "ingotabi",
+		IngotABIModulePath + "/invocation": "invocation",
+		RuntimeSupportTOMLModule:           "toml",
 	}
-	for index, sdk := range lock.SDKs {
-		rootAlias := sdkRootAlias(index)
-		configAlias := sdkConfigAlias(index)
-		applicationAlias := sdkApplicationAlias(index)
-		aliasByPath[sdk.ModulePath] = rootAlias
-		aliasByPath[sdk.ModulePath+"/config"] = configAlias
-		aliasByPath[sdk.ModulePath+"/application"] = applicationAlias
-		wiringImports[sdk.ModulePath+"/config"] = configAlias
-		wiringImports[sdk.ModulePath+"/application"] = applicationAlias
-	}
-	hasDependencies := false
+	aliasByPath[IngotABIModulePath] = "ingotabi"
+	hasValidate := false
+	hasState := false
 	for _, component := range graph.Components {
-		hasDependencies = hasDependencies || len(component.DependencyList) > 0
+		for _, dependency := range component.DependencyList {
+			if !dependency.Host {
+				hasValidate = true
+			}
+			if dependency.Host && dependency.HostType == "state" {
+				hasState = true
+			}
+		}
 	}
-	if !hasDependencies {
+	if !hasValidate {
 		delete(wiringImports, "reflect")
+	}
+	if !hasState {
+		delete(wiringImports, "path/filepath")
 	}
 	paths := []string{}
 	for _, component := range graph.Components {
 		paths = append(paths, component.ImportPath, component.ConfigImport)
 		for _, dependency := range component.DependencyList {
-			if dependency.WrapperSDK != "" {
-				wiringImports[dependency.WrapperSDK] = aliasByPath[dependency.WrapperSDK]
+			if dependency.WrapperRuntime != "" {
+				wiringImports[dependency.WrapperRuntime] = aliasByPath[dependency.WrapperRuntime]
 			}
 			// ONE assignments never spell the capability type: the composite
 			// literal field is assigned directly from a provider export. Only
-			// OPTIONAL (sdk.None/sdk.Some type argument) and MANY (slice type)
-			// expressions reference the target package, so only those imports
-			// are collected. Importing an unreferenced package breaks the
-			// generated build.
-			if dependency.Cardinality == CardinalityOne {
+			// OPTIONAL (ingotabi.None/ingotabi.Some type argument) and
+			// MANY (slice type) expressions reference the target package, so
+			// only those imports are collected. Importing an unreferenced
+			// package breaks the generated build.
+			if dependency.Cardinality == CardinalityOne || dependency.Host {
 				continue
 			}
 			_ = types.TypeString(dependency.Target, func(pkg *types.Package) string {
@@ -77,7 +83,7 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	var mainSource, wiringSource bytes.Buffer
 	writeGeneratedHeader(&mainSource, mainImports)
 	writeGeneratedHeader(&wiringSource, wiringImports)
-	writeRuntimeSupport(&mainSource, lock.SDKs)
+	writeRuntimeSupport(&mainSource)
 	writeRuntimeConfig(&wiringSource, lock, aliasByPath)
 	writeWiring(&wiringSource, lock, graph, aliasByPath)
 	if err := formatAndWriteGenerated(rootDirectory, "main.go", mainSource.Bytes()); err != nil {
@@ -86,22 +92,22 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	if err := formatAndWriteGenerated(rootDirectory, "wiring_gen.go", wiringSource.Bytes()); err != nil {
 		return err
 	}
-	if err := formatAndWriteGenerated(rootDirectory, "signals_nonwindows_gen.go", []byte("//go:build !windows\n\npackage main\n\nimport (\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIGTERM} }\n")); err != nil {
+	buildTags := fmt.Sprintf(`//go:build !windows
+
+package main
+
+import (
+	"os"
+	"syscall"
+)
+
+func processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIGTERM} }
+`)
+	if err := formatAndWriteGenerated(rootDirectory, "signals_nonwindows_gen.go", []byte(buildTags)); err != nil {
 		return err
 	}
 	return formatAndWriteGenerated(rootDirectory, "signals_windows_gen.go", []byte("//go:build windows\n\npackage main\n\nimport \"os\"\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt} }\n"))
 }
-
-func sdkRootAlias(index int) string {
-	if index == 0 {
-		return "sdk"
-	}
-	return fmt.Sprintf("sdk%d", index+1)
-}
-
-func sdkConfigAlias(index int) string { return sdkRootAlias(index) + "config" }
-
-func sdkApplicationAlias(index int) string { return sdkRootAlias(index) + "application" }
 
 func writeGeneratedHeader(source *bytes.Buffer, imports map[string]string) {
 	source.WriteString("// Code generated by ingot Builder. DO NOT EDIT.\npackage main\n\nimport (\n")
@@ -126,52 +132,71 @@ func formatAndWriteGenerated(rootDirectory, name string, source []byte) error {
 	return os.WriteFile(filepath.Join(rootDirectory, name), formatted, 0o644)
 }
 
-func writeRuntimeSupport(source *bytes.Buffer, sdks []SDKLock) {
-	source.WriteString("var ingotSDKModules = map[string]struct{}{\n")
-	for _, sdk := range sdks {
-		_, _ = fmt.Fprintf(source, "\t%q: {},\n", sdk.ModulePath)
-	}
+func writeRuntimeSupport(source *bytes.Buffer) {
+	source.WriteString("var ingotRuntimeModules = map[string]struct{}{\n")
+	_, _ = fmt.Fprintf(source, "\t%q: {},\n", IngotABIModulePath)
 	source.WriteString("}\n\n")
 	source.WriteString(`
 const defaultCleanupTimeout = 10 * time.Second
 
+// processControl is the generated runtime implementation of the host
+// contracts: invocation.Invocation, lifecycle.Controller and, indirectly,
+// the state.Scope values assigned per Component.
 type processControl struct {
 	arguments []string
-	check bool
-	cancel context.CancelFunc
-	once sync.Once
-	mu sync.Mutex
+	mode      invocation.Mode
+	cancel    context.CancelFunc
+	mu        sync.Mutex
 	requested bool
-	err error
+	causes    []error
 }
 
-func newProcessControl(arguments []string, check bool, cancel context.CancelFunc) *processControl {
-	return &processControl{arguments: append([]string(nil), arguments...), check: check, cancel: cancel}
+func newProcessControl(arguments []string, mode invocation.Mode, cancel context.CancelFunc) *processControl {
+	return &processControl{arguments: append([]string(nil), arguments...), mode: mode, cancel: cancel}
 }
 
 func (p *processControl) Arguments() []string {
 	return append([]string(nil), p.arguments...)
 }
 
-func (p *processControl) Check() bool { return p.check }
+func (p *processControl) Mode() invocation.Mode { return p.mode }
 
-func (p *processControl) Shutdown(err error) {
-	p.once.Do(func() {
-		p.mu.Lock()
+// RequestShutdown is concurrent-safe and non-blocking. The first request
+// cancels the runtime context; every non-nil cause is aggregated so a later
+// fatal error can never be hidden by an earlier normal-completion request.
+func (p *processControl) RequestShutdown(err error) {
+	first := false
+	p.mu.Lock()
+	if !p.requested {
 		p.requested = true
-		p.err = err
-		p.mu.Unlock()
+		first = true
+	}
+	if err != nil {
+		p.causes = append(p.causes, err)
+	}
+	p.mu.Unlock()
+	if first {
 		p.cancel()
-	})
+	}
 }
 
-func (p *processControl) result() (bool, error) {
+func (p *processControl) result() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.requested, p.err
+	return errors.Join(p.causes...)
 }
 
-var _ sdkapplication.Process = (*processControl)(nil)
+var _ lifecycle.Controller = (*processControl)(nil)
+var _ invocation.Invocation = (*processControl)(nil)
+
+// stateScope is the generated runtime assignment of one Component's
+// Plugin-scoped persistent state directory. It carries only the location;
+// file access and persistence remain the Plugin's responsibility.
+type stateScope struct{ dir string }
+
+func (s stateScope) Dir() string { return s.dir }
+
+var _ state.Scope = stateScope{}
 
 func validateRequired(value reflect.Value, path string) error {
 	if !value.IsValid() {
@@ -184,18 +209,20 @@ func validateRequired(value reflect.Value, path string) error {
 		value = value.Elem()
 	}
 	typeValue := value.Type()
-	if _, isSDK := ingotSDKModules[typeValue.PkgPath()]; isSDK && strings.HasPrefix(typeValue.Name(), "Optional[") {
-		if !value.FieldByName("Valid").Bool() {
-			return nil
+	if _, isRuntime := ingotRuntimeModules[typeValue.PkgPath()]; isRuntime {
+		if strings.HasPrefix(typeValue.Name(), "Optional[") {
+			if !value.FieldByName("Valid").Bool() {
+				return nil
+			}
+			return validateRequired(value.FieldByName("Value"), path+".Value")
 		}
-		return validateRequired(value.FieldByName("Value"), path+".Value")
-	}
-	if _, isSDK := ingotSDKModules[typeValue.PkgPath()]; isSDK && strings.HasPrefix(typeValue.Name(), "Named[") {
-		name := value.FieldByName("Name").String()
-		if name == "" {
-			return fmt.Errorf("%s.Name: empty capability name", path)
+		if strings.HasPrefix(typeValue.Name(), "Named[") {
+			name := value.FieldByName("Name").String()
+			if name == "" {
+				return fmt.Errorf("%s.Name: empty capability name", path)
+			}
+			return validateRequired(value.FieldByName("Value"), path+"["+name+"].Value")
 		}
-		return validateRequired(value.FieldByName("Value"), path+"["+name+"].Value")
 	}
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.Slice:
@@ -216,12 +243,14 @@ func namedIdentity(value reflect.Value) (string, bool) {
 	}
 	if !value.IsValid() { return "", false }
 	typeValue := value.Type()
-	if _, isSDK := ingotSDKModules[typeValue.PkgPath()]; isSDK && strings.HasPrefix(typeValue.Name(), "Optional[") {
-		if !value.FieldByName("Valid").Bool() { return "", false }
-		return namedIdentity(value.FieldByName("Value"))
-	}
-	if _, isSDK := ingotSDKModules[typeValue.PkgPath()]; isSDK && strings.HasPrefix(typeValue.Name(), "Named[") {
-		return value.FieldByName("Name").String(), true
+	if _, isRuntime := ingotRuntimeModules[typeValue.PkgPath()]; isRuntime {
+		if strings.HasPrefix(typeValue.Name(), "Optional[") {
+			if !value.FieldByName("Valid").Bool() { return "", false }
+			return namedIdentity(value.FieldByName("Value"))
+		}
+		if strings.HasPrefix(typeValue.Name(), "Named[") {
+			return value.FieldByName("Name").String(), true
+		}
 	}
 	return "", false
 }
@@ -244,7 +273,7 @@ func validateCollection(value reflect.Value, path string, outerMany bool) error 
 	return nil
 }
 
-func cleanupAll(parent context.Context, cleanups []sdk.Cleanup, cause error) error {
+func cleanupAll(parent context.Context, cleanups []ingotabi.Cleanup, cause error) error {
 	errorsFound := []error{}
 	if cause != nil { errorsFound = append(errorsFound, cause) }
 	base := context.WithoutCancel(parent)
@@ -285,14 +314,21 @@ func main() {
 	if configPath == "" { configPath = filepath.Join(home, "config.toml") }
 	stateRoot := os.Getenv("INGOT_STATE_ROOT")
 	if stateRoot == "" { stateRoot = filepath.Join(home, "state") }
+	absoluteStateRoot, err := filepath.Abs(stateRoot)
+	if err != nil { _, _ = fmt.Fprintln(os.Stderr, fmt.Errorf("resolve state root: %w", err)); os.Exit(1) }
+	stateRoot = absoluteStateRoot
 	processContext, stop := signal.NotifyContext(context.Background(), processSignals()...)
 	defer stop()
 	runtimeContext, cancelRuntime := context.WithCancel(processContext)
 	defer cancelRuntime()
 	arguments := append([]string(nil), os.Args[1:]...)
-	if check { arguments = nil }
-	process := newProcessControl(arguments, check, cancelRuntime)
-	if err := run(runtimeContext, configPath, stateRoot, check, process); err != nil {
+	mode := invocation.ModeRun
+	if check {
+		arguments = nil
+		mode = invocation.ModeCheck
+	}
+	process := newProcessControl(arguments, mode, cancelRuntime)
+	if err := run(runtimeContext, configPath, stateRoot, process); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -306,15 +342,44 @@ func writeRuntimeConfig(source *bytes.Buffer, lock *Lock, aliases map[string]str
 	for i, plugin := range lock.Plugins {
 		_, _ = fmt.Fprintf(source, "\tPlugin%d %s.Config\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)])
 	}
-	source.WriteString("}\n\nfunc decodeConfigs(path string) (decodedConfigs, error) {\n\tvar result decodedConfigs\n\tdata, err := os.ReadFile(path)\n\tif err != nil { return result, fmt.Errorf(\"read runtime config: %w\", err) }\n\ttables, err := sdkconfig.ResolveTables(data, []sdkconfig.PluginReference{\n")
-	for _, plugin := range lock.Plugins {
-		_, _ = fmt.Fprintf(source, "\t\t{ID: %q, Name: %q},\n", plugin.ID, plugin.Name)
-	}
-	source.WriteString("\t})\n\tif err != nil { return result, err }\n")
+	source.WriteString("}\n\nfunc decodeConfigs(path string) (decodedConfigs, error) {\n\tvar result decodedConfigs\n\tdata, err := os.ReadFile(path)\n\tif err != nil { return result, fmt.Errorf(\"read runtime config: %w\", err) }\n\tdecoder := toml.NewDecoder(bytes.NewReader(data))\n\tdecoder.DisallowUnknownFields()\n\tvar document struct {\n\t\tPlugins map[string]map[string]any `toml:\"plugins\"`\n\t}\n\tif err := decoder.Decode(&document); err != nil { return result, fmt.Errorf(\"parse runtime config: %w\", err) }\n")
 	for i, plugin := range lock.Plugins {
-		_, _ = fmt.Fprintf(source, "\tresult.Plugin%d, err = sdkconfig.Decode[%s.Config](tables[%q])\n\tif err != nil { return result, fmt.Errorf(%q, err) }\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)], plugin.ID, "decode config for plugin "+plugin.ID+": %w")
+		_, _ = fmt.Fprintf(source, "\ttable%d, err := resolveConfigTable(document.Plugins, %q, %q)\n", i, plugin.ID, plugin.Name)
+		_, _ = fmt.Fprintf(source, "\tif err != nil { return result, fmt.Errorf(\"resolve config for plugin %s: %%w\", err) }\n", plugin.ID)
+		_, _ = fmt.Fprintf(source, "\tresult.Plugin%d, err = strictDecodeConfig[%s.Config](table%d)\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)], i)
+		_, _ = fmt.Fprintf(source, "\tif err != nil { return result, fmt.Errorf(%q, err) }\n", "decode config for plugin "+plugin.ID+": %w")
 	}
 	source.WriteString("\treturn result, nil\n}\n\n")
+	source.WriteString(`func resolveConfigTable(tables map[string]map[string]any, id, name string) (map[string]any, error) {
+	byID, hasID := tables[id]
+	byName, hasName := tables[name]
+	if hasID && hasName {
+		return nil, fmt.Errorf("plugin %s (%s): present under both canonical id and short name", id, name)
+	}
+	if !hasID && !hasName {
+		return nil, fmt.Errorf("plugin %s (%s): missing config table", id, name)
+	}
+	if hasID {
+		return byID, nil
+	}
+	return byName, nil
+}
+
+func strictDecodeConfig[T any](table map[string]any) (T, error) {
+	var value T
+	encoded, err := toml.Marshal(table)
+	if err != nil {
+		return value, fmt.Errorf("encode plugin config table: %w", err)
+	}
+	decoder := toml.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return value, fmt.Errorf("decode plugin config: %w", err)
+	}
+	return value, nil
+}
+
+`)
 }
 
 func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[string]string) {
@@ -326,25 +391,40 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 	for i, plugin := range lock.Plugins {
 		pluginNumber[plugin.ID] = i
 	}
-	source.WriteString("func run(ctx context.Context, configPath, stateRoot string, check bool, process *processControl) error {\n")
-	for index := range lock.SDKs {
-		_, _ = fmt.Fprintf(source, "\tctx = %s.WithProcess(ctx, process)\n", sdkApplicationAlias(index))
-	}
-	source.WriteString("\tconfigs, err := decodeConfigs(configPath)\n\tif err != nil { return err }\n\tcleanups := []sdk.Cleanup{}\n")
+	source.WriteString("func run(ctx context.Context, configPath, stateRoot string, process *processControl) error {\n")
+	source.WriteString("\tconfigs, err := decodeConfigs(configPath)\n\tif err != nil { return err }\n\tcleanups := []ingotabi.Cleanup{}\n")
 	for _, component := range graph.CreationOrder {
 		number := componentNumber[component]
 		alias := aliases[component.ImportPath]
-		_, _ = fmt.Fprintf(source, "\tcomponentContext%d := ctx\n", number)
-		for index := range lock.SDKs {
-			_, _ = fmt.Fprintf(source, "\tcomponentContext%d = %s.WithStateDir(componentContext%d, filepath.Join(stateRoot, %q))\n", number, sdkConfigAlias(index), number, component.PluginID)
+		hasState := false
+		for _, dependency := range component.DependencyList {
+			if dependency.Host && dependency.HostType == "state" {
+				hasState = true
+				break
+			}
 		}
-		_, _ = fmt.Fprintf(source, "\tif err := os.MkdirAll(filepath.Join(stateRoot, %q), 0o700); err != nil { return cleanupAll(ctx, cleanups, err) }\n", component.PluginID)
+		if hasState {
+			_, _ = fmt.Fprintf(source, "\tstateDir%d := filepath.Join(stateRoot, %q)\n", number, component.PluginID)
+			_, _ = fmt.Fprintf(source, "\tif err := os.MkdirAll(stateDir%d, 0o700); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number)
+		}
 		_, _ = fmt.Fprintf(source, "\tdeps%d := %s.Dependencies{\n", number, alias)
 		for _, dependency := range component.DependencyList {
+			if dependency.Host {
+				switch dependency.HostType {
+				case "state":
+					_, _ = fmt.Fprintf(source, "\t\t%s: stateScope{dir: stateDir%d},\n", dependency.Name, number)
+				default:
+					_, _ = fmt.Fprintf(source, "\t\t%s: process,\n", dependency.Name)
+				}
+				continue
+			}
 			_, _ = fmt.Fprintf(source, "\t\t%s: %s,\n", dependency.Name, dependencyExpression(dependency, componentNumber, aliases))
 		}
 		source.WriteString("\t}\n")
 		for _, dependency := range component.DependencyList {
+			if dependency.Host {
+				continue
+			}
 			path := component.ID + ".Dependencies." + dependency.Name
 			if dependency.Cardinality == CardinalityMany {
 				_, _ = fmt.Fprintf(source, "\tif err := validateCollection(reflect.ValueOf(deps%d.%s), %q, true); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
@@ -352,12 +432,18 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 				_, _ = fmt.Fprintf(source, "\tif err := validateRequired(reflect.ValueOf(deps%d.%s), %q); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
 			}
 		}
-		_, _ = fmt.Fprintf(source, "\texports%d, cleanup%d, constructErr%d := %s.New(componentContext%d, configs.Plugin%d, deps%d)\n", number, number, number, alias, number, pluginNumber[component.PluginID], number)
+		_, _ = fmt.Fprintf(source, "\texports%d, cleanup%d, constructErr%d := %s.New(ctx, configs.Plugin%d, deps%d)\n", number, number, number, alias, pluginNumber[component.PluginID], number)
 		_, _ = fmt.Fprintf(source, "\t_ = exports%d\n", number)
-		_, _ = fmt.Fprintf(source, "\tif cleanup%d != nil { cleanups = append(cleanups, sdk.Cleanup(cleanup%d)) }\n", number, number)
+		_, _ = fmt.Fprintf(source, "\tif cleanup%d != nil { cleanups = append(cleanups, cleanup%d) }\n", number, number)
 		_, _ = fmt.Fprintf(source, "\tif constructErr%d != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(%q, constructErr%d)) }\n", number, "construct "+component.ID+": %w", number)
 	}
-	source.WriteString("\tif check { return cleanupAll(ctx, cleanups, nil) }\n\t<-ctx.Done()\n\t_, shutdownErr := process.result()\n\treturn cleanupAll(ctx, cleanups, shutdownErr)\n}\n")
+	source.WriteString("\tif process.Mode() == invocation.ModeCheck { return cleanupAll(ctx, cleanups, nil) }\n")
+	source.WriteString("\t<-ctx.Done()\n")
+	// Snapshot shutdown causes only after cleanup. A normal request cancels
+	// the graph immediately, but a concurrent fatal request arriving during
+	// cleanup must still determine the final process result.
+	source.WriteString("\tcleanupErr := cleanupAll(ctx, cleanups, nil)\n")
+	source.WriteString("\treturn errors.Join(process.result(), cleanupErr)\n}\n")
 }
 
 func dependencyExpression(dependency *Dependency, componentNumber map[*Component]int, aliases map[string]string) string {
@@ -376,7 +462,7 @@ func dependencyExpression(dependency *Dependency, componentNumber map[*Component
 	case CardinalityOne:
 		return sourceExpression(dependency.Providers[0])
 	case CardinalityOptional:
-		sdkAlias := aliases[dependency.WrapperSDK]
+		sdkAlias := aliases[dependency.WrapperRuntime]
 		if len(dependency.Providers) == 0 {
 			return fmt.Sprintf("%s.None[%s]()", sdkAlias, typeString(dependency.Target))
 		}

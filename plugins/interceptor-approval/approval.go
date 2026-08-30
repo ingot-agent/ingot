@@ -11,7 +11,7 @@ import (
 	"sort"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -54,7 +54,7 @@ type Config struct {
 
 // Dependencies contains an optional host interaction channel.
 type Dependencies struct {
-	Interaction sdk.Optional[interaction.Channel]
+	Interaction ingotabi.Optional[interaction.Channel]
 }
 
 // Exports contains the approval interceptor.
@@ -65,12 +65,12 @@ type approvalInterceptor struct {
 	display       string
 	maxDisplay    int
 	rules         map[string]string
-	interaction   sdk.Optional[interaction.Channel]
+	interaction   ingotabi.Optional[interaction.Channel]
 }
 
 // New validates immutable configuration. A missing interaction channel is
 // allowed at startup so allow-only configurations remain usable; ask fails closed at call time.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct interceptor.approval: %w", ErrInvalidConfig)
 	}

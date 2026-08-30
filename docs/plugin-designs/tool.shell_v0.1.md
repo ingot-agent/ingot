@@ -23,7 +23,7 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 v0.1 导出一个 tool，稳定名称为 `shell_exec`。

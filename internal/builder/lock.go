@@ -45,7 +45,7 @@ type Lock struct {
 	IngotVersion   string          `toml:"ingot_version"`
 	BuilderVersion string          `toml:"builder_version"`
 	Replacements   []Replacement   `toml:"replacements"`
-	SDKs           []SDKLock       `toml:"sdks"`
+	Runtime        RuntimeLock     `toml:"runtime"`
 	Toolchain      ToolchainLock   `toml:"toolchain"`
 	Target         TargetLock      `toml:"target"`
 	Environment    EnvironmentLock `toml:"environment"`
@@ -55,9 +55,15 @@ type Lock struct {
 	filePath       string
 }
 
-type SDKLock struct {
+// RuntimeLock pins the fixed Runtime ABI of the Builder that produced this
+// lock. The ingot ABI is never a user-configured module: module path and
+// version are Builder constants and Sum identifies the exact verified
+// source (empty when the module came from a developer workspace
+// replacement).
+type RuntimeLock struct {
 	ModulePath string `toml:"module_path" json:"module_path"`
 	Version    string `toml:"version" json:"version"`
+	Sum        string `toml:"sum,omitempty" json:"sum,omitempty"`
 }
 
 type ToolchainLock struct {
@@ -156,9 +162,18 @@ func validateLockPresence(data []byte) error {
 	if err := toml.Unmarshal(data, &document); err != nil {
 		return err
 	}
-	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "sdks", "toolchain", "target", "environment", "build", "plugins", "modules"} {
+	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "runtime", "toolchain", "target", "environment", "build", "plugins", "modules"} {
 		if _, ok := document[key]; !ok {
 			return fmt.Errorf("missing required field %s", key)
+		}
+	}
+	runtimeTable, ok := document["runtime"].(map[string]any)
+	if !ok {
+		return fmt.Errorf("runtime must be a table")
+	}
+	for _, key := range []string{"module_path", "version"} {
+		if _, exists := runtimeTable[key]; !exists {
+			return fmt.Errorf("missing required field runtime.%s", key)
 		}
 	}
 	for table, keys := range map[string][]string{
@@ -174,17 +189,6 @@ func validateLockPresence(data []byte) error {
 		for _, key := range keys {
 			if _, ok := values[key]; !ok {
 				return fmt.Errorf("missing required field %s.%s", table, key)
-			}
-		}
-	}
-	sdkTables, ok := tomlTableArray(document["sdks"])
-	if !ok {
-		return fmt.Errorf("sdks must be an array of tables")
-	}
-	for index, sdk := range sdkTables {
-		for _, key := range []string{"module_path", "version"} {
-			if _, exists := sdk[key]; !exists {
-				return fmt.Errorf("missing required field sdks[%d].%s", index, key)
 			}
 		}
 	}
@@ -260,8 +264,8 @@ func tomlTableArray(value any) ([]map[string]any, bool) {
 }
 
 func (l *Lock) Validate() error {
-	if l.LockVersion != 2 {
-		return &Error{Code: "INGOT-LOCK-UNSUPPORTED-VERSION", Field: "lock_version", Want: "2", Actual: strconv.Itoa(l.LockVersion)}
+	if l.LockVersion != 3 {
+		return &Error{Code: "INGOT-LOCK-UNSUPPORTED-VERSION", Field: "lock_version", Want: "3", Actual: strconv.Itoa(l.LockVersion)}
 	}
 	if !digestPattern.MatchString(l.PluginsDigest) {
 		return &Error{Code: "INGOT-LOCK-PLUGINS-DIGEST", Field: "plugins_digest", Actual: l.PluginsDigest}
@@ -271,22 +275,8 @@ func (l *Lock) Validate() error {
 			return &Error{Code: "INGOT-LOCK-VERSION", Field: field, Actual: version, Want: "canonical SemVer without v prefix"}
 		}
 	}
-	if len(l.SDKs) == 0 {
-		return &Error{Code: "INGOT-LOCK-SDKS", Field: "sdks", Want: "at least one SDK"}
-	}
-	seenSDKs := make(map[string]int, len(l.SDKs))
-	for index, sdk := range l.SDKs {
-		field := fmt.Sprintf("sdks[%d]", index)
-		if err := module.CheckPath(sdk.ModulePath); err != nil {
-			return &Error{Code: "INGOT-LOCK-SDK-MODULE", Field: field + ".module_path", Actual: sdk.ModulePath, Err: err}
-		}
-		if previous, ok := seenSDKs[sdk.ModulePath]; ok {
-			return &Error{Code: "INGOT-LOCK-DUPLICATE-SDK", Field: field + ".module_path", Actual: sdk.ModulePath, Want: fmt.Sprintf("unique (first at sdks[%d])", previous)}
-		}
-		seenSDKs[sdk.ModulePath] = index
-		if module.CanonicalVersion(sdk.Version) != sdk.Version || module.Check(sdk.ModulePath, sdk.Version) != nil {
-			return &Error{Code: "INGOT-LOCK-SDK-VERSION", Field: field + ".version", Actual: sdk.Version, Want: "canonical version matching SDK module path"}
-		}
+	if err := l.validateRuntime(); err != nil {
+		return err
 	}
 	if !toolchainPattern.MatchString(l.Toolchain.Version) {
 		return &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "toolchain.version", Actual: l.Toolchain.Version, Want: "go1.x.y"}
@@ -327,6 +317,39 @@ func (l *Lock) Validate() error {
 	}
 	if err := l.validatePluginsAndGraph(); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateRuntimeLockValue(value string) bool {
+	return validModuleSum(value, false)
+}
+
+// validateRuntime pins the Runtime ABI: the module path and version are
+// Builder constants, the recorded sum must be a verified h1 digest (or be
+// absent only when a developer workspace replacement is locked), and Go
+// MVS may never silently pick a different ingot ABI version.
+func (l *Lock) validateRuntime() error {
+	if l.Runtime.ModulePath != IngotABIModulePath {
+		return &Error{Code: "INGOT-LOCK-RUNTIME-MODULE", Field: "runtime.module_path", Want: IngotABIModulePath, Actual: l.Runtime.ModulePath}
+	}
+	if l.Runtime.Version != IngotABIVersion {
+		return &Error{Code: "INGOT-LOCK-RUNTIME-VERSION", Field: "runtime.version", Want: IngotABIVersion + " pinned by this Builder", Actual: l.Runtime.Version}
+	}
+	replaced := false
+	for _, replacement := range l.Replacements {
+		if replacement.ModulePath == l.Runtime.ModulePath {
+			replaced = true
+		}
+	}
+	if replaced {
+		if l.Runtime.Sum != "" {
+			return &Error{Code: "INGOT-LOCK-RUNTIME-SUM", Field: "runtime.sum", Want: "absent for a replaced ingot ABI", Actual: l.Runtime.Sum}
+		}
+		return nil
+	}
+	if !validateRuntimeLockValue(l.Runtime.Sum) {
+		return &Error{Code: "INGOT-LOCK-RUNTIME-SUM", Field: "runtime.sum", Actual: l.Runtime.Sum, Want: "verified h1: digest"}
 	}
 	return nil
 }
@@ -403,28 +426,27 @@ func (l *Lock) validatePluginsAndGraph() error {
 		modules[item.Path] = item
 		previousModule = key
 	}
-	sdkByModule := make(map[string]SDKLock, len(l.SDKs))
-	for _, sdk := range l.SDKs {
-		sdkByModule[sdk.ModulePath] = sdk
-	}
 	replacementByModule := make(map[string]Replacement, len(l.Replacements))
 	for _, replacement := range l.Replacements {
 		replacementByModule[replacement.ModulePath] = replacement
 	}
-	for index, sdk := range l.SDKs {
-		sdkReplacement, replaced := replacementByModule[sdk.ModulePath]
-		if !replaced {
-			if sdkModule, ok := modules[sdk.ModulePath]; !ok || sdkModule.Version != sdk.Version {
-				return &Error{Code: "INGOT-LOCK-SDK-GRAPH", Field: fmt.Sprintf("sdks[%d]", index), Want: sdk.ModulePath + "@" + sdk.Version}
-			}
-		} else if _, exists := modules[sdk.ModulePath]; exists || sdk.Version != sdkReplacement.SyntheticVersion {
-			return &Error{Code: "INGOT-LOCK-SDK-REPLACEMENT", Field: fmt.Sprintf("sdks[%d]", index), Want: sdk.ModulePath + "@" + sdkReplacement.SyntheticVersion}
+	runtimeReplacement, runtimeReplaced := replacementByModule[l.Runtime.ModulePath]
+	if !runtimeReplaced {
+		runtimeModule, ok := modules[l.Runtime.ModulePath]
+		if !ok || runtimeModule.Version != l.Runtime.Version || runtimeModule.Sum != l.Runtime.Sum {
+			return &Error{Code: "INGOT-LOCK-RUNTIME-GRAPH", Field: "runtime", Want: l.Runtime.ModulePath + "@" + l.Runtime.Version + " " + l.Runtime.Sum}
 		}
+	} else if _, exists := modules[l.Runtime.ModulePath]; exists {
+		return &Error{Code: "INGOT-LOCK-RUNTIME-REPLACEMENT", Field: "runtime", Want: "replaced ingot ABI excluded from modules", Actual: runtimeReplacement.ModulePath}
+	}
+	runtimeConfigModule, ok := modules[RuntimeSupportTOMLModule]
+	if !ok || semver.Compare(runtimeConfigModule.Version, RuntimeSupportTOMLVersion) < 0 {
+		return &Error{Code: "INGOT-LOCK-CONFIG-TOML", Field: "modules", Want: RuntimeSupportTOMLModule + "@>= " + RuntimeSupportTOMLVersion}
 	}
 	for i, plugin := range l.Plugins {
 		field := fmt.Sprintf("plugins[%d]", i)
-		if _, isSDK := sdkByModule[plugin.ID]; isSDK {
-			return &Error{Code: "INGOT-LOCK-PLUGIN-SDK-CONFLICT", Field: field + ".id", Actual: plugin.ID, Want: "plugin and SDK module paths must be distinct"}
+		if plugin.ID == l.Runtime.ModulePath {
+			return &Error{Code: "INGOT-LOCK-PLUGIN-RUNTIME-CONFLICT", Field: field + ".id", Actual: plugin.ID, Want: "plugins must be distinct from the ingot ABI module path"}
 		}
 		if err := module.CheckPath(plugin.ID); err != nil {
 			return &Error{Code: "INGOT-LOCK-PLUGIN-ID", Field: field + ".id", Actual: plugin.ID, Err: err}
@@ -472,14 +494,25 @@ func (l *Lock) validatePluginsAndGraph() error {
 	replacements := map[string]bool{}
 	previousReplacement := ""
 	for i, replacement := range l.Replacements {
-		_, sdkSource := sdkByModule[replacement.ModulePath]
-		allowedSource := devPlugins[replacement.ModulePath] || sdkSource
+		_, devSource := devPlugins[replacement.ModulePath]
+		runtimeSource := replacement.ModulePath == l.Runtime.ModulePath
+		_, moduleSource := modules[replacement.ModulePath]
+		allowedSource := devSource || runtimeSource || !moduleSource
 		if replacement.ModulePath <= previousReplacement || replacements[replacement.ModulePath] || !allowedSource || !digestPattern.MatchString(replacement.ContentSHA256) || !filepath.IsAbs(replacement.DevPath) || filepath.Clean(replacement.DevPath) != replacement.DevPath {
 			return &Error{Code: "INGOT-LOCK-REPLACEMENT", Field: fmt.Sprintf("replacements[%d]", i), Actual: replacement.ModulePath}
 		}
 		expected, err := SyntheticVersion(replacement.ModulePath)
-		if sdk, ok := sdkByModule[replacement.ModulePath]; ok {
-			expected, err = sdk.Version, nil
+		if runtimeSource {
+			expected, err = l.Runtime.Version, nil
+		} else if !devSource {
+			// Generic workspace contract module: the locked replacement uses
+			// the Go-selected version of the module path. It must be a
+			// canonical version for the path but cannot be derived from the
+			// path alone.
+			err = nil
+			if module.CanonicalVersion(replacement.SyntheticVersion) != replacement.SyntheticVersion || module.Check(replacement.ModulePath, replacement.SyntheticVersion) != nil {
+				return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Actual: replacement.SyntheticVersion, Want: "canonical version matching " + replacement.ModulePath}
+			}
 		}
 		if err != nil || expected != replacement.SyntheticVersion {
 			return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Want: expected, Actual: replacement.SyntheticVersion, Err: err}
@@ -510,7 +543,7 @@ type buildManifest struct {
 	SchemaVersion  int                    `json:"schema_version"`
 	IngotVersion   string                 `json:"ingot_version"`
 	BuilderVersion string                 `json:"builder_version"`
-	SDKs           []SDKLock              `json:"sdks"`
+	Runtime        RuntimeLock            `json:"runtime"`
 	Toolchain      buildManifestToolchain `json:"toolchain"`
 	Target         buildManifestTarget    `json:"target"`
 	Environment    EnvironmentLock        `json:"environment"`
@@ -561,7 +594,7 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		tuning[item.Key] = item.Value
 	}
 	manifest := buildManifest{
-		SchemaVersion: 2, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, SDKs: append([]SDKLock(nil), l.SDKs...),
+		SchemaVersion: 3, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, Runtime: l.Runtime,
 		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
 		Environment: l.Environment,
@@ -625,11 +658,20 @@ func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string)
 		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", plugin.ID, version)
 		seen[plugin.ID] = true
 	}
-	for _, sdk := range l.SDKs {
-		if !seen[sdk.ModulePath] {
-			_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", sdk.ModulePath, sdk.Version)
-			seen[sdk.ModulePath] = true
+	if !seen[IngotABIModulePath] {
+		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", IngotABIModulePath, IngotABIVersion)
+		seen[IngotABIModulePath] = true
+	}
+	if !seen[RuntimeSupportTOMLModule] {
+		selectedVersion := RuntimeSupportTOMLVersion
+		for _, item := range l.Modules {
+			if item.Path == RuntimeSupportTOMLModule {
+				selectedVersion = item.Version
+				break
+			}
 		}
+		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", RuntimeSupportTOMLModule, selectedVersion)
+		seen[RuntimeSupportTOMLModule] = true
 	}
 	// Go's pruned module graph requires the root to retain selected transitive
 	// modules explicitly. Materializing every immutable locked node also makes

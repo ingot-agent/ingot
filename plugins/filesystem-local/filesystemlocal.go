@@ -19,7 +19,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/filesystem"
 )
 
@@ -55,7 +55,7 @@ func New(
 	ctx context.Context,
 	cfg Config,
 	_ Dependencies,
-) (Exports, sdk.Cleanup, error) {
+) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil || cfg.Root == "" {
 		return Exports{}, nil, fmt.Errorf("root must be non-empty: %w", ErrInvalidConfig)
 	}
@@ -116,7 +116,7 @@ func New(
 		return Exports{}, nil, fmt.Errorf("workspace root changed while opening: %w: %w", ErrInvalidConfig, ErrRootChanged)
 	}
 	created := &localFS{root: canonical, rootHandle: rootHandle, secureRoot: secureRoot, rootInfo: rootInfo}
-	cleanup := sdk.Cleanup(func(ctx context.Context) error {
+	cleanup := ingotabi.Cleanup(func(ctx context.Context) error {
 		created.closeOnce.Do(func() {
 			created.closeErr = errors.Join(secureRoot.Close(), rootHandle.Close())
 		})

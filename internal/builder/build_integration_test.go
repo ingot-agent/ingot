@@ -16,13 +16,15 @@ func TestResolveAndBuildRemoteVerticalSlice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	t.Chdir(t.TempDir())
 	proxy := filepath.Join(t.TempDir(), "proxy")
-	sdkSource := filepath.Join(t.TempDir(), "sdk")
+	ingotABISource := filepath.Join(t.TempDir(), "ingot-abi")
 	pluginSource := filepath.Join(t.TempDir(), "plugin")
-	writeTestSDKModule(t, sdkSource)
+	writeTestIngotABIModule(t, ingotABISource)
 	writeTestRemotePlugin(t, pluginSource)
-	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, ingotABISource)
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-plugin", "v1.0.0", pluginSource)
+	installTomlProxy(t, proxy)
 	home := t.TempDir()
 	t.Cleanup(func() {
 		_ = filepath.Walk(filepath.Join(home, "cache"), func(path string, info os.FileInfo, err error) error {
@@ -43,7 +45,7 @@ func TestResolveAndBuildRemoteVerticalSlice(t *testing.T) {
 module = "example.com/ingot-test-plugin"
 version = "v1.0.0"
 `)
-	writeTestFile(t, filepath.Join(home, "config.toml"), "# the test SDK config decoder accepts the empty document\n")
+	writeTestFile(t, filepath.Join(home, "config.toml"), "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
@@ -51,13 +53,16 @@ version = "v1.0.0"
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
 	lock, err := Resolve(context.Background(), desired, ResolveOptions{
-		SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(),
-		GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache,
+		Toolchain: runtime.Version(),
+		GOPROXY:   "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lock.Modules) != 2 {
+	if lock.Runtime.ModulePath != IngotABIModulePath || lock.Runtime.Version != IngotABIVersion || lock.Runtime.Sum == "" {
+		t.Fatalf("runtime lock = %#v", lock.Runtime)
+	}
+	if len(lock.Modules) != 3 {
 		t.Fatalf("resolved module graph has %d nodes: %#v", len(lock.Modules), lock.Modules)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache})
@@ -94,30 +99,32 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	t.Chdir(t.TempDir())
 	proxy := filepath.Join(t.TempDir(), "proxy")
-	sdkSource := filepath.Join(t.TempDir(), "sdk")
+	ingotABISource := filepath.Join(t.TempDir(), "ingot-abi")
 	pluginSource := filepath.Join(t.TempDir(), "local plugin")
-	writeTestSDKModule(t, sdkSource)
+	writeTestIngotABIModule(t, ingotABISource)
 	writeTestRemotePlugin(t, pluginSource)
-	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, ingotABISource)
+	installTomlProxy(t, proxy)
 	home := t.TempDir()
 	makeModuleCacheRemovable(t, home)
 	desiredPath := filepath.Join(home, "plugins.toml")
 	writeTestFile(t, desiredPath, fmt.Sprintf("plugins_version=1\n[[plugins]]\nmodule=%q\npath=%q\n", "example.com/ingot-test-plugin", filepath.ToSlash(pluginSource)))
 	configPath := filepath.Join(home, "config.toml")
-	writeTestFile(t, configPath, "")
+	writeTestFile(t, configPath, "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0", Path: sdkSource}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 2 || lock.SDKs[0].Version != "v0.1.0" {
-		t.Fatalf("local lock materialization = %#v / %#v", lock.Plugins[0], lock.Replacements)
+	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 1 || lock.Runtime.Sum == "" {
+		t.Fatalf("local lock materialization = %#v / %#v / %#v", lock.Plugins[0], lock.Replacements, lock.Runtime)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
 	if err != nil {
@@ -126,46 +133,46 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	if _, err := os.Stat(result.BinaryPath); err != nil {
 		t.Fatal(err)
 	}
-	sdkDriftPath := filepath.Join(sdkSource, "changed.txt")
-	writeTestFile(t, sdkDriftPath, "drift")
-	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
-	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-DEV-DIGEST") || !strings.Contains(err.Error(), "example.com/ingot-test-sdk") {
-		t.Fatalf("SDK source drift error = %v", err)
-	}
-	if err := os.Remove(sdkDriftPath); err != nil {
-		t.Fatal(err)
-	}
-	writeTestFile(t, filepath.Join(pluginSource, "changed.txt"), "drift")
+	pluginDriftPath := filepath.Join(pluginSource, "changed.txt")
+	writeTestFile(t, pluginDriftPath, "drift")
 	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
 	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-DEV-DIGEST") {
 		t.Fatalf("source drift error = %v", err)
 	}
 }
 
-func TestResolveAndBuildWithMultipleSDKs(t *testing.T) {
+func TestResolveAndBuildWithDomainContractModules(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
-	primarySDK := filepath.Join(t.TempDir(), "primary-sdk")
-	secondarySDK := filepath.Join(t.TempDir(), "secondary-sdk")
+	t.Chdir(t.TempDir())
+	proxy := filepath.Join(t.TempDir(), "proxy")
+	ingotABISource := filepath.Join(t.TempDir(), "ingot-abi")
+	secondarySDKSource := filepath.Join(t.TempDir(), "secondary-sdk")
 	providerSource := filepath.Join(t.TempDir(), "provider")
 	consumerSource := filepath.Join(t.TempDir(), "consumer")
-	writeTestSDKModuleNamed(t, primarySDK, "example.com/primary-sdk")
-	writeTestSDKModuleNamed(t, secondarySDK, "example.com/secondary-sdk")
-	writeTestFile(t, filepath.Join(secondarySDK, "capability", "capability.go"), "package capability\ntype Value struct{}\n")
+	writeTestIngotABIModule(t, ingotABISource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, ingotABISource)
+	installTomlProxy(t, proxy)
+
+	// A domain contract module is an ordinary Go module imported by
+	// plugin go.mod files. It needs no Builder configuration.
+	writeTestFile(t, filepath.Join(secondarySDKSource, "go.mod"), "module example.com/secondary-sdk\n\ngo 1.24.0\n")
+	writeTestFile(t, filepath.Join(secondarySDKSource, "capability", "capability.go"), "package capability\ntype Value struct{ Name string }\n")
+	writeModuleProxyVersion(t, proxy, "example.com/secondary-sdk", "v0.1.0", secondarySDKSource)
 
 	writeTestFile(t, filepath.Join(providerSource, "go.mod"), `module example.com/provider
 
 go 1.24.0
 
 require (
-	example.com/primary-sdk v0.1.0
+	github.com/ingot-agent/ingot-abi v0.1.0
 	example.com/secondary-sdk v0.1.0
 )
 `)
 	writeTestFile(t, filepath.Join(providerSource, "ingot.plugin.toml"), `manifest_version=1
 name="provider"
-ingot="0.3.0"
+ingot=">=0.3.0 <0.4.0"
 config_package="."
 [[components]]
 name="default"
@@ -174,24 +181,29 @@ package="."
 	writeTestFile(t, filepath.Join(providerSource, "component.go"), `package provider
 import (
 	"context"
-	primary "example.com/primary-sdk"
+	ingotabi "github.com/ingot-agent/ingot-abi"
 	"example.com/secondary-sdk/capability"
 )
 type Config struct{}
 type Dependencies struct{}
 type Exports struct { Value capability.Value }
-func New(context.Context, Config, Dependencies) (Exports, primary.Cleanup, error) { return Exports{}, nil, nil }
+func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+	return Exports{Value: capability.Value{Name: "provided"}}, nil, nil
+}
 `)
 
 	writeTestFile(t, filepath.Join(consumerSource, "go.mod"), `module example.com/consumer
 
 go 1.24.0
 
-require example.com/secondary-sdk v0.1.0
+require (
+	github.com/ingot-agent/ingot-abi v0.1.0
+	example.com/secondary-sdk v0.1.0
+)
 `)
 	writeTestFile(t, filepath.Join(consumerSource, "ingot.plugin.toml"), `manifest_version=1
 name="consumer"
-ingot="0.3.0"
+ingot=">=0.3.0 <0.4.0"
 config_package="."
 [[components]]
 name="default"
@@ -200,13 +212,15 @@ package="."
 	writeTestFile(t, filepath.Join(consumerSource, "component.go"), `package consumer
 import (
 	"context"
-	secondary "example.com/secondary-sdk"
+	ingotabi "github.com/ingot-agent/ingot-abi"
 	"example.com/secondary-sdk/capability"
 )
 type Config struct{}
-type Dependencies struct { Value secondary.Optional[capability.Value] }
+type Dependencies struct { Value ingotabi.Optional[capability.Value] }
 type Exports struct{}
-func New(context.Context, Config, Dependencies) (Exports, secondary.Cleanup, error) { return Exports{}, nil, nil }
+func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+	return Exports{}, nil, nil
+}
 `)
 
 	home := t.TempDir()
@@ -221,26 +235,21 @@ module="example.com/consumer"
 path=%q
 `, filepath.ToSlash(providerSource), filepath.ToSlash(consumerSource)))
 	configPath := filepath.Join(home, "config.toml")
-	writeTestFile(t, configPath, "")
+	writeTestFile(t, configPath, "[plugins.\"example.com/provider\"]\n[plugins.\"example.com/consumer\"]\n")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{
-		SDKs: []SDKConfig{
-			{Module: "example.com/primary-sdk", Version: "v0.1.0", Path: primarySDK},
-			{Module: "example.com/secondary-sdk", Version: "v0.1.0", Path: secondarySDK},
-		},
-		Toolchain: runtime.Version(), GOPROXY: "off", GOMODCACHE: moduleCache,
-	})
+	t.Setenv("GOSUMDB", "off")
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lock.SDKs) != 2 || lock.SDKs[0].ModulePath != "example.com/primary-sdk" || lock.SDKs[1].ModulePath != "example.com/secondary-sdk" {
-		t.Fatalf("locked SDKs = %#v", lock.SDKs)
+	if lock.Runtime.ModulePath != IngotABIModulePath {
+		t.Fatalf("runtime = %#v", lock.Runtime)
 	}
-	if len(lock.Replacements) != 4 {
+	if len(lock.Replacements) != 2 {
 		t.Fatalf("replacements = %#v", lock.Replacements)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
@@ -253,19 +262,80 @@ path=%q
 	}
 }
 
+func TestResolveRejectsMVSUpgradedIngotABI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	t.Chdir(t.TempDir())
+	proxy := filepath.Join(t.TempDir(), "proxy")
+	oldSDKSource := filepath.Join(t.TempDir(), "old-ingot-abi")
+	newSDKSource := filepath.Join(t.TempDir(), "new-ingot-abi")
+	pluginSource := filepath.Join(t.TempDir(), "plugin")
+	writeTestIngotABIModule(t, oldSDKSource)
+	writeTestIngotABIModuleNamed(t, newSDKSource, "v0.1.1", "ingot-abi-new")
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, oldSDKSource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, "v0.1.1", newSDKSource)
+	installTomlProxy(t, proxy)
+
+	writeTestFile(t, filepath.Join(pluginSource, "go.mod"), `module example.com/ingot-test-plugin
+
+go 1.24.0
+
+require github.com/ingot-agent/ingot-abi v0.1.1
+`)
+	writeTestFile(t, filepath.Join(pluginSource, "ingot.plugin.toml"), `manifest_version = 1
+name = "test-plugin"
+ingot = ">=0.3.0 <0.4.0"
+config_package = "."
+[[components]]
+name = "default"
+package = "."
+`)
+	writeTestFile(t, filepath.Join(pluginSource, "component.go"), `package testplugin
+import (
+	"context"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+)
+type Config struct{}
+type Dependencies struct{}
+type Exports struct{}
+func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
+`)
+	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-plugin", "v1.0.0", pluginSource)
+	home := t.TempDir()
+	makeModuleCacheRemovable(t, home)
+	desiredPath := filepath.Join(home, "plugins.toml")
+	writeTestFile(t, desiredPath, `plugins_version=1
+[[plugins]]
+module="example.com/ingot-test-plugin"
+version="v1.0.0"
+`)
+	desired, err := ParseDesired(desiredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOSUMDB", "off")
+	_, err = Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(home, "cache", "gomod")})
+	if err == nil || !strings.Contains(err.Error(), "INGOT-RESOLVE-RUNTIME-VERSION") {
+		t.Fatalf("MVS upgraded ingot ABI error = %v", err)
+	}
+}
+
 func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	t.Chdir(t.TempDir())
 	proxy := filepath.Join(t.TempDir(), "proxy")
-	sdkSource := filepath.Join(t.TempDir(), "sdk")
+	ingotABISource := filepath.Join(t.TempDir(), "ingot-abi")
 	depOneSource := filepath.Join(t.TempDir(), "dep-one")
 	depTwoSource := filepath.Join(t.TempDir(), "dep-two")
 	pluginSource := filepath.Join(t.TempDir(), "plugin")
 
 	// dep-two is a dependency of dep-one, which is only a transitive
-	// requirement of the SDK. Under Go 1.17+ pruned module graphs its go.mod
-	// edge is invisible until the staged root explicitly requires dep-one.
+	// requirement of the ingot ABI. Under Go 1.17+ pruned module graphs
+	// its go.mod edge is invisible until the staged root explicitly requires
+	// dep-one.
 	writeTestFile(t, filepath.Join(depTwoSource, "go.mod"), "module example.com/ingot-dep-two\n\ngo 1.24.0\n")
 	writeTestFile(t, filepath.Join(depTwoSource, "dep.go"), "package deptwo\n")
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-dep-two", "v1.0.0", depTwoSource)
@@ -274,29 +344,10 @@ func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
 	writeTestFile(t, filepath.Join(depOneSource, "dep.go"), "package depone\n")
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-dep-one", "v1.0.0", depOneSource)
 
-	sdkGoMod := "module example.com/ingot-test-sdk\n\ngo 1.24.0\n\nrequire example.com/ingot-dep-one v1.0.0\n"
-	writeTestFile(t, filepath.Join(sdkSource, "go.mod"), sdkGoMod)
-	writeTestFile(t, filepath.Join(sdkSource, "sdk.go"), `package sdk
-import "context"
-type Cleanup func(context.Context) error
-type Optional[T any] struct { Value T; Valid bool }
-func None[T any]() Optional[T] { return Optional[T]{} }
-func Some[T any](value T) Optional[T] { return Optional[T]{Value:value, Valid:true} }
-type Named[T any] struct { Name string; Value T }
-`)
-	writeTestFile(t, filepath.Join(sdkSource, "config", "config.go"), `package config
-import (
-	"context"
-	"errors"
-)
-type PluginReference struct { ID, Name string }
-func ResolveTables(data []byte, refs []PluginReference) (map[string][]byte, error) { if string(data) == "fail\n" { return nil, errors.New("requested config failure") }; result := map[string][]byte{}; for _, ref := range refs { result[ref.ID] = []byte{} }; return result, nil }
-func Decode[T any]([]byte) (T, error) { var result T; return result, nil }
-type stateKey struct{}
-func WithStateDir(ctx context.Context, path string) context.Context { return context.WithValue(ctx, stateKey{}, path) }
-`)
-	writeTestApplicationPackage(t, sdkSource)
-	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+	writeTestIngotABIModule(t, ingotABISource)
+	writeTestFile(t, filepath.Join(ingotABISource, "go.mod"), "module "+IngotABIModulePath+"\n\ngo 1.24.0\n\nrequire example.com/ingot-dep-one v1.0.0\n")
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, ingotABISource)
+	installTomlProxy(t, proxy)
 
 	writeTestRemotePlugin(t, pluginSource)
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-plugin", "v1.0.0", pluginSource)
@@ -305,14 +356,14 @@ func WithStateDir(ctx context.Context, path string) context.Context { return con
 	makeModuleCacheRemovable(t, home)
 	desiredPath := filepath.Join(home, "plugins.toml")
 	writeTestFile(t, desiredPath, "plugins_version = 1\n\n[[plugins]]\nmodule = \"example.com/ingot-test-plugin\"\nversion = \"v1.0.0\"\n")
-	writeTestFile(t, filepath.Join(home, "config.toml"), "")
+	writeTestFile(t, filepath.Join(home, "config.toml"), "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +372,7 @@ func WithStateDir(ctx context.Context, path string) context.Context { return con
 		selected[item.Path] = item.Version
 	}
 	if selected["example.com/ingot-dep-one"] != "v1.0.0" {
-		t.Fatalf("direct SDK dependency missing from lock: %#v", selected)
+		t.Fatalf("direct ingot ABI dependency missing from lock: %#v", selected)
 	}
 	if selected["example.com/ingot-dep-two"] != "v1.0.0" {
 		t.Fatalf("pruned transitive dependency missing from lock: %#v", selected)
@@ -342,10 +393,12 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
 	}
+	t.Chdir(t.TempDir())
 	proxy := filepath.Join(t.TempDir(), "proxy")
-	sdkSource := filepath.Join(t.TempDir(), "sdk")
-	writeTestSDKModule(t, sdkSource)
-	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-sdk", "v0.1.0", sdkSource)
+	ingotABISource := filepath.Join(t.TempDir(), "ingot-abi")
+	writeTestIngotABIModule(t, ingotABISource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, ingotABISource)
+	installTomlProxy(t, proxy)
 
 	pluginA := filepath.Join(t.TempDir(), "plugin a")
 	pluginB := filepath.Join(t.TempDir(), "plugin b")
@@ -358,14 +411,14 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 		desiredPath := filepath.Join(home, "plugins.toml")
 		writeTestFile(t, desiredPath, fmt.Sprintf("plugins_version=1\n[[plugins]]\nmodule=%q\npath=%q\n", "example.com/ingot-test-plugin", filepath.ToSlash(pluginSource)))
 		configPath := filepath.Join(home, "config.toml")
-		writeTestFile(t, configPath, "")
+		writeTestFile(t, configPath, "[plugins.\"example.com/ingot-test-plugin\"]\n")
 		t.Setenv("GOSUMDB", "off")
 		desired, err := ParseDesired(desiredPath)
 		if err != nil {
 			t.Fatal(err)
 		}
 		moduleCache := filepath.Join(home, "cache", "gomod")
-		lock, err := Resolve(context.Background(), desired, ResolveOptions{SDKs: []SDKConfig{{Module: "example.com/ingot-test-sdk", Version: "v0.1.0"}}, Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+		lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -402,50 +455,42 @@ func makeModuleCacheRemovable(t *testing.T, home string) {
 	})
 }
 
-func writeTestSDKModule(t *testing.T, root string) {
+func writeTestIngotABIModule(t *testing.T, root string) {
 	t.Helper()
-	writeTestSDKModuleNamed(t, root, "example.com/ingot-test-sdk")
+	writeTestIngotABIModuleNamed(t, root, IngotABIVersion, "ingotabi")
 }
 
-func writeTestSDKModuleNamed(t *testing.T, root, modulePath string) {
+func writeTestIngotABIModuleNamed(t *testing.T, root, version, packageName string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo 1.24.0\n")
-	writeTestFile(t, filepath.Join(root, "sdk.go"), `package sdk
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+IngotABIModulePath+"\n\ngo 1.24.0\n")
+	writeTestFile(t, filepath.Join(root, "ingotabi.go"), `package `+packageName+`
 import "context"
 type Cleanup func(context.Context) error
 type Optional[T any] struct { Value T; Valid bool }
 func None[T any]() Optional[T] { return Optional[T]{} }
 func Some[T any](value T) Optional[T] { return Optional[T]{Value:value, Valid:true} }
 type Named[T any] struct { Name string; Value T }
+func CheckUniqueNames[T any](items []Named[T]) error { return nil }
 `)
-	writeTestFile(t, filepath.Join(root, "config", "config.go"), `package config
-import (
-	"context"
-	"errors"
+	writeTestFile(t, filepath.Join(root, "invocation", "invocation.go"), `package invocation
+type Mode uint8
+const (
+	ModeRun Mode = iota + 1
+	ModeCheck
 )
-type PluginReference struct { ID, Name string }
-func ResolveTables(data []byte, refs []PluginReference) (map[string][]byte, error) { if string(data) == "fail\n" { return nil, errors.New("requested config failure") }; result := map[string][]byte{}; for _, ref := range refs { result[ref.ID] = []byte{} }; return result, nil }
-func Decode[T any]([]byte) (T, error) { var result T; return result, nil }
-type stateKey struct{}
-func WithStateDir(ctx context.Context, path string) context.Context { return context.WithValue(ctx, stateKey{}, path) }
+type Invocation interface { Arguments() []string; Mode() Mode }
 `)
-	writeTestApplicationPackage(t, root)
-}
-
-func writeTestApplicationPackage(t *testing.T, root string) {
-	t.Helper()
-	writeTestFile(t, filepath.Join(root, "application", "application.go"), `package application
-import "context"
-type Process interface { Arguments() []string; Check() bool; Shutdown(error) }
-type processKey struct{}
-func WithProcess(ctx context.Context, process Process) context.Context { return context.WithValue(ctx, processKey{}, process) }
-func FromContext(ctx context.Context) (Process, bool) { process, ok := ctx.Value(processKey{}).(Process); return process, ok }
+	writeTestFile(t, filepath.Join(root, "lifecycle", "lifecycle.go"), `package lifecycle
+type Controller interface { RequestShutdown(error) }
+`)
+	writeTestFile(t, filepath.Join(root, "state", "state.go"), `package state
+type Scope interface { Dir() string }
 `)
 }
 
 func writeTestRemotePlugin(t *testing.T, root string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/ingot-test-plugin\n\ngo 1.24.0\n\nrequire example.com/ingot-test-sdk v0.1.0\n")
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/ingot-test-plugin\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/ingot-abi v0.1.0\n")
 	writeTestFile(t, filepath.Join(root, "ingot.plugin.toml"), `manifest_version = 1
 name = "test-plugin"
 ingot = ">=0.3.0 <0.4.0"
@@ -457,13 +502,34 @@ package = "."
 	writeTestFile(t, filepath.Join(root, "component.go"), `package testplugin
 import (
 	"context"
-	"example.com/ingot-test-sdk"
+	ingotabi "github.com/ingot-agent/ingot-abi"
 )
 type Config struct{}
 type Dependencies struct{}
 type Exports struct{}
-func New(context.Context, Config, Dependencies) (Exports, sdk.Cleanup, error) { return Exports{}, nil, nil }
+func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
 `)
+}
+
+// installTomlProxy publishes the pinned TOML decoder module into the test
+// proxy from the local Go module cache so the generated config support can
+// be resolved and built offline.
+func installTomlProxy(t *testing.T, proxy string) {
+	t.Helper()
+	moduleCache := os.Getenv("GOMODCACHE")
+	if moduleCache == "" {
+		userHome, _ := os.UserHomeDir()
+		goPath := os.Getenv("GOPATH")
+		if goPath == "" {
+			goPath = filepath.Join(userHome, "go")
+		}
+		moduleCache = filepath.Join(strings.Split(goPath, string(os.PathListSeparator))[0], "pkg", "mod")
+	}
+	source := filepath.Join(moduleCache, "github.com", "pelletier", "go-toml", "v2@v2.2.4")
+	if _, err := os.Stat(source); err != nil {
+		t.Skipf("TOML module %s not found in module cache: %v", source, err)
+	}
+	writeModuleProxyVersion(t, proxy, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, source)
 }
 
 func writeModuleProxyVersion(t *testing.T, proxy, modulePath, version, sourceRoot string) {

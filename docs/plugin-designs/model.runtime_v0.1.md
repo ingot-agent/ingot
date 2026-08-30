@@ -9,7 +9,7 @@
 
 ```go
 type Dependencies struct {
-    Providers          []sdk.Named[model.Provider]
+    Providers          []ingotabi.Named[model.Provider]
     Interceptors       []model.Interceptor
     StreamInterceptors []model.StreamInterceptor
 }

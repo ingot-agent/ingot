@@ -11,7 +11,7 @@ import (
 	"reflect"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -100,7 +100,7 @@ func (o *askOptionArguments) UnmarshalJSON(raw []byte) error {
 }
 
 // New validates dependencies and creates the ask_user tool.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.ask: %w", ErrInvalidConfig)
 	}

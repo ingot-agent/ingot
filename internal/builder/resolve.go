@@ -14,17 +14,30 @@ import (
 	"strings"
 
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 )
 
 const (
 	DefaultIngotVersion   = "0.3.0"
 	DefaultBuilderVersion = "0.3.1"
+
+	// IngotABIModulePath is the fixed, unconfigurable Runtime ABI module
+	// between Plugins and generated Runtime Images.
+	IngotABIModulePath = "github.com/ingot-agent/ingot-abi"
+	// IngotABIVersion is the exact Runtime ABI version pinned by this Builder.
+	IngotABIVersion = "v0.1.0"
+	// RuntimeSupportTOMLModule is the TOML decoder used by the generated
+	// runtime configuration support.
+	RuntimeSupportTOMLModule = "github.com/pelletier/go-toml/v2"
+	// RuntimeSupportTOMLVersion is the minimum generated config decoder
+	// version required by this Builder. The selected version remains an
+	// ordinary locked module and may be raised by Go MVS.
+	RuntimeSupportTOMLVersion = "v2.2.4"
 )
 
 type ResolveOptions struct {
 	IngotVersion   string
 	BuilderVersion string
-	SDKs           []SDKConfig
 	Toolchain      string
 	GOOS           string
 	GOARCH         string
@@ -45,11 +58,6 @@ func (options ResolveOptions) defaults() (ResolveOptions, error) {
 	if options.BuilderVersion == "" {
 		options.BuilderVersion = DefaultBuilderVersion
 	}
-	config := BuilderConfig{BuilderConfigVersion: 1, SDKs: options.SDKs}
-	if err := config.Validate(); err != nil {
-		return options, err
-	}
-	options.SDKs = append([]SDKConfig(nil), config.SDKs...)
 	if options.Toolchain == "" {
 		options.Toolchain = runtime.Version()
 	}
@@ -109,9 +117,11 @@ type directSource struct {
 	digest    string
 }
 
-type resolvedSDKConfig struct {
-	SDKConfig
-	replacement *Replacement
+type moduleReplacement struct {
+	modulePath string
+	synthetic  string
+	devPath    string
+	digest     string
 }
 
 // Resolve turns a validated desired plugin set into a complete lock using the
@@ -126,43 +136,14 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if err != nil {
 		return nil, err
 	}
-	sdks := make([]resolvedSDKConfig, len(options.SDKs))
-	for index, configured := range options.SDKs {
-		sdks[index].SDKConfig = configured
-		if sdks[index].Path == "" {
-			sdks[index].Path = workspaceModuleReplacement(configured.Module)
-		}
-		if sdks[index].Path == "" {
-			continue
-		}
-		absolute, pathErr := filepath.Abs(sdks[index].Path)
-		if pathErr != nil {
-			return nil, pathErr
-		}
-		absolute = filepath.Clean(absolute)
-		identity, identityErr := moduleIdentity(filepath.Join(absolute, "go.mod"))
-		if identityErr != nil {
-			return nil, identityErr
-		}
-		if identity != configured.Module {
-			return nil, &Error{Code: "INGOT-RESOLVE-SDK-LOCAL-MODULE-MISMATCH", Path: absolute, Want: configured.Module, Actual: identity}
-		}
-		digest, digestErr := ModuleSourceDigest(absolute)
-		if digestErr != nil {
-			return nil, digestErr
-		}
-		sdks[index].Path = absolute
-		sdks[index].replacement = &Replacement{ModulePath: configured.Module, SyntheticVersion: configured.Version, DevPath: absolute, ContentSHA256: digest}
+	runtimeReplacement, err := resolveModuleReplacement(IngotABIModulePath, IngotABIVersion)
+	if err != nil {
+		return nil, err
 	}
 	for pluginIndex, plugin := range desired.Plugins {
-		for sdkIndex, sdk := range sdks {
-			if plugin.Module == sdk.Module {
-				return nil, &Error{Code: "INGOT-RESOLVE-PLUGIN-SDK-CONFLICT", Field: fmt.Sprintf("plugins[%d].module", pluginIndex), Actual: plugin.Module, Want: fmt.Sprintf("distinct from sdks[%d].module", sdkIndex)}
-			}
+		if plugin.Module == IngotABIModulePath {
+			return nil, &Error{Code: "INGOT-RESOLVE-PLUGIN-RUNTIME-CONFLICT", Field: fmt.Sprintf("plugins[%d].module", pluginIndex), Actual: plugin.Module, Want: "distinct from the ingot ABI module path"}
 		}
-	}
-	for index := range sdks {
-		options.SDKs[index] = sdks[index].SDKConfig
 	}
 	desiredDigest, err := desired.Digest()
 	if err != nil {
@@ -201,18 +182,22 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		return nil, err
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
-	if err := writeResolveRoot(staging, options, sources, nil); err != nil {
+	moduleReplacements := map[string]moduleReplacement{}
+	if runtimeReplacement != nil {
+		moduleReplacements[runtimeReplacement.modulePath] = *runtimeReplacement
+	}
+	if err := writeResolveRoot(staging, options, sources, nil, moduleReplacements); err != nil {
 		return nil, err
 	}
 	environment := resolveEnvironment(options)
 	// Go 1.17+ pruned module graphs only include the requirement edges of
 	// directly rooted edges. The staged root starts with just the direct
-	// plugins and the SDK, so the first-pass `all` misses transitive modules
-	// that a lock-rooted build would need; their go.mod files, sums and zips
-	// must already be present in the module cache for the offline build.
-	// Rewriting the staged go.mod to require every selected module and
-	// re-listing converges on exactly the graph RestoreRootModule
-	// materializes.
+	// plugins and the runtime support modules, so the first-pass `all`
+	// misses transitive modules that a lock-rooted build would need; their
+	// go.mod files, sums and zips must already be present in the module
+	// cache for the offline build. Rewriting the staged go.mod to require
+	// every selected module and re-listing converges on exactly the graph
+	// RestoreRootModule materializes.
 	var selected []resolvedModule
 	var downloadOutput []byte
 	for pass := 0; pass < resolveGraphPasses; pass++ {
@@ -228,12 +213,19 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		if err != nil {
 			return nil, err
 		}
-		if selectedGraphEqual(selected, next) {
+		extra, extraErr := discoverWorkspaceReplacements(next, moduleReplacements)
+		if extraErr != nil {
+			return nil, extraErr
+		}
+		for path, replacement := range extra {
+			moduleReplacements[path] = replacement
+		}
+		if selectedGraphEqual(selected, next) && len(extra) == 0 {
 			selected = next
 			break
 		}
 		selected = next
-		if err := writeResolveRoot(staging, options, sources, selected); err != nil {
+		if err := writeResolveRoot(staging, options, sources, selected, moduleReplacements); err != nil {
 			return nil, err
 		}
 		if pass == resolveGraphPasses-1 {
@@ -314,11 +306,16 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		lockedPlugins[i] = locked
 	}
-	for _, sdk := range sdks {
-		if sdk.replacement != nil {
-			replacements = append(replacements, *sdk.replacement)
-		}
+	replacementPaths := make([]string, 0, len(moduleReplacements))
+	for path := range moduleReplacements {
+		replacementPaths = append(replacementPaths, path)
 	}
+	sort.Strings(replacementPaths)
+	for _, path := range replacementPaths {
+		replacement := moduleReplacements[path]
+		replacements = append(replacements, Replacement{ModulePath: replacement.modulePath, SyntheticVersion: replacement.synthetic, DevPath: replacement.devPath, ContentSHA256: replacement.digest})
+	}
+	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
 
 	modules := make([]LockedModule, 0, len(selected))
 	for _, selectedModule := range selected {
@@ -341,26 +338,35 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		return modules[i].Version < modules[j].Version
 	})
-	lockedSDKs := make([]SDKLock, len(sdks))
-	for sdkIndex, sdk := range sdks {
-		selectedSDK, ok := selectedByPath[sdk.Module]
-		if !ok || (sdk.replacement == nil && selectedSDK.Replace != nil) || (sdk.replacement != nil && (selectedSDK.Replace == nil || filepath.Clean(selectedSDK.Replace.Dir) != sdk.Path)) {
-			return nil, &Error{Code: "INGOT-RESOLVE-SDK", Field: fmt.Sprintf("sdks[%d]", sdkIndex), Want: sdk.Module}
-		}
-		lockedSDKs[sdkIndex] = SDKLock{ModulePath: sdk.Module, Version: selectedSDK.Version}
-		if sdk.replacement != nil {
-			for replacementIndex := range replacements {
-				if replacements[replacementIndex].ModulePath == sdk.Module {
-					replacements[replacementIndex].SyntheticVersion = selectedSDK.Version
-					break
-				}
-			}
-		}
+	runtimeSelected, runtimeFound := selectedByPath[IngotABIModulePath]
+	if !runtimeFound {
+		return nil, &Error{Code: "INGOT-RESOLVE-RUNTIME", Field: "runtime", Want: IngotABIModulePath + "@" + IngotABIVersion}
 	}
-	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
+	if runtimeSelected.Version != IngotABIVersion {
+		return nil, &Error{Code: "INGOT-RESOLVE-RUNTIME-VERSION", Field: "runtime", Want: IngotABIVersion, Actual: runtimeSelected.Version, Err: fmt.Errorf("Go MVS selected an unpinned ingot ABI version")}
+	}
+	configSelected, configFound := selectedByPath[RuntimeSupportTOMLModule]
+	if !configFound || semver.Compare(configSelected.Version, RuntimeSupportTOMLVersion) < 0 {
+		actual := "missing"
+		if configFound {
+			actual = configSelected.Version
+		}
+		return nil, &Error{Code: "INGOT-RESOLVE-CONFIG-TOML", Field: "modules", Want: RuntimeSupportTOMLModule + "@>= " + RuntimeSupportTOMLVersion, Actual: actual}
+	}
+	runtimeLock := RuntimeLock{ModulePath: IngotABIModulePath, Version: IngotABIVersion}
+	if runtimeReplacement != nil {
+		if runtimeSelected.Replace == nil {
+			return nil, &Error{Code: "INGOT-RESOLVE-RUNTIME-REPLACEMENT", Field: "runtime", Want: runtimeReplacement.devPath, Actual: "missing workspace replacement"}
+		}
+		if filepath.Clean(runtimeSelected.Replace.Dir) != runtimeReplacement.devPath {
+			return nil, &Error{Code: "INGOT-RESOLVE-RUNTIME-REPLACEMENT", Field: "runtime", Want: runtimeReplacement.devPath, Actual: runtimeSelected.Replace.Dir}
+		}
+	} else {
+		runtimeLock.Sum = runtimeSelected.Sum
+	}
 	lock := &Lock{
-		LockVersion: 2, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
-		Replacements: replacements, SDKs: lockedSDKs, Toolchain: ToolchainLock{Version: options.Toolchain},
+		LockVersion: 3, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
+		Replacements: replacements, Runtime: runtimeLock, Toolchain: ToolchainLock{Version: options.Toolchain},
 		Target:      TargetLock{GOOS: options.GOOS, GOARCH: options.GOARCH, CGOEnabled: false, GOExperiment: options.GOExperiment, Tuning: options.Tuning},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"},
 		Build:       BuildLock{Trimpath: true, BuildVCS: false, Tags: options.Tags, LDFlags: options.LDFlags, GCFlags: options.GCFlags, ASMFlags: options.ASMFlags},
@@ -422,7 +428,7 @@ func selectedGraphEqual(previous, next []resolvedModule) bool {
 	return true
 }
 
-func writeResolveRoot(directory string, options ResolveOptions, sources []directSource, transitive []resolvedModule) error {
+func writeResolveRoot(directory string, options ResolveOptions, sources []directSource, transitive []resolvedModule, moduleReplacements map[string]moduleReplacement) error {
 	var content strings.Builder
 	content.WriteString("module ingot.local/runtime-image\n\ngo ")
 	content.WriteString(strings.TrimPrefix(options.Toolchain, "go"))
@@ -432,11 +438,13 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 		_, _ = fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, source.version)
 		seen[source.plugin.Module] = true
 	}
-	for _, sdk := range options.SDKs {
-		if !seen[sdk.Module] {
-			_, _ = fmt.Fprintf(&content, "\t%s %s\n", sdk.Module, sdk.Version)
-			seen[sdk.Module] = true
-		}
+	if !seen[IngotABIModulePath] {
+		_, _ = fmt.Fprintf(&content, "\t%s %s\n", IngotABIModulePath, IngotABIVersion)
+		seen[IngotABIModulePath] = true
+	}
+	if !seen[RuntimeSupportTOMLModule] {
+		_, _ = fmt.Fprintf(&content, "\t%s %s\n", RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+		seen[RuntimeSupportTOMLModule] = true
 	}
 	for _, item := range transitive {
 		if item.Main || seen[item.Path] || item.Version == "" {
@@ -451,16 +459,88 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", source.plugin.Module, goModQuote(filepath.ToSlash(source.devPath)))
 		}
 	}
-	for _, sdk := range options.SDKs {
-		if sdk.Path != "" {
-			_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", sdk.Module, goModQuote(filepath.ToSlash(sdk.Path)))
-		}
+	replacementPaths := make([]string, 0, len(moduleReplacements))
+	for path := range moduleReplacements {
+		replacementPaths = append(replacementPaths, path)
+	}
+	sort.Strings(replacementPaths)
+	for _, path := range replacementPaths {
+		replacement := moduleReplacements[path]
+		_, _ = fmt.Fprintf(&content, "\nreplace %s => %s\n", path, goModQuote(filepath.ToSlash(replacement.devPath)))
 	}
 	parsed, err := modfile.Parse("go.mod", []byte(content.String()), nil)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(filepath.Join(directory, "go.mod"), modfile.Format(parsed.Syntax), 0o644)
+}
+
+// resolveModuleReplacement resolves a Builder-owned module that is replaced
+// by the developer workspace (go.work). It returns nil when no workspace
+// replacement exists, in which case the module is served from the module
+// graph like any other dependency.
+func resolveModuleReplacement(modulePath, version string) (*moduleReplacement, error) {
+	locator := workspaceModuleReplacement(modulePath)
+	if locator == "" {
+		return nil, nil
+	}
+	absolute, err := filepath.Abs(locator)
+	if err != nil {
+		return nil, err
+	}
+	absolute = filepath.Clean(absolute)
+	identity, err := moduleIdentity(filepath.Join(absolute, "go.mod"))
+	if err != nil {
+		return nil, err
+	}
+	if identity != modulePath {
+		return nil, &Error{Code: "INGOT-RESOLVE-RUNTIME-LOCAL-MODULE-MISMATCH", Path: absolute, Want: modulePath, Actual: identity}
+	}
+	digest, err := ModuleSourceDigest(absolute)
+	if err != nil {
+		return nil, err
+	}
+	return &moduleReplacement{modulePath: modulePath, synthetic: version, devPath: absolute, digest: digest}, nil
+}
+
+// discoverWorkspaceReplacements detects ordinary contract modules in the
+// selected graph that the developer workspace replaces with local sources
+// (for example the Agent SDK checkout beside the Builder). Such modules are
+// ordinary Go dependencies of plugins; they participate in the graph via
+// type identity, but the workspace locator is required to build against the
+// local checkout instead of a published module.
+func discoverWorkspaceReplacements(selected []resolvedModule, existing map[string]moduleReplacement) (map[string]moduleReplacement, error) {
+	result := map[string]moduleReplacement{}
+	for _, item := range selected {
+		if item.Main || item.Replace != nil || item.Path == IngotABIModulePath {
+			continue
+		}
+		if _, ok := existing[item.Path]; ok {
+			continue
+		}
+		locator := workspaceModuleReplacement(item.Path)
+		if locator == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(locator)
+		if err != nil {
+			return nil, err
+		}
+		absolute = filepath.Clean(absolute)
+		identity, err := moduleIdentity(filepath.Join(absolute, "go.mod"))
+		if err != nil {
+			return nil, err
+		}
+		if identity != item.Path {
+			return nil, &Error{Code: "INGOT-RESOLVE-LOCAL-MODULE-MISMATCH", Path: absolute, Want: item.Path, Actual: identity}
+		}
+		digest, err := ModuleSourceDigest(absolute)
+		if err != nil {
+			return nil, err
+		}
+		result[item.Path] = moduleReplacement{modulePath: item.Path, synthetic: item.Version, devPath: absolute, digest: digest}
+	}
+	return result, nil
 }
 
 func workspaceModuleReplacement(modulePath string) string {

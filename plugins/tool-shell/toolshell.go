@@ -20,7 +20,7 @@ import (
 
 	"os/exec"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -70,7 +70,7 @@ type normalizedConfig struct {
 type shellTool struct{ config normalizedConfig }
 
 // New validates the fixed process boundary and creates shell_exec.
-func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.shell: %w", ErrInvalidConfig)
 	}

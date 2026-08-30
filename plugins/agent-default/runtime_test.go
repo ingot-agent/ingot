@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
@@ -184,7 +184,7 @@ func TestAgentCompactsEveryModelInvocationWithoutReplacingRawMessages(t *testing
 		Provider: "provider", Model: "model", Temperature: &temperature, MaxTokens: &maxTokens,
 	}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{},
-		Compactor: sdk.Some[contextwindow.Compactor](compactor),
+		Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestAgentCompactorErrorStopsModelAndPreservesCommittedUser(t *testing.T) {
 	compactor := &recordingCompactor{err: compactErr}
 	exports, _, err := New(context.Background(), Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Prompt: passthroughPrompt{},
-		Compactor: sdk.Some[contextwindow.Compactor](compactor),
+		Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -267,7 +267,7 @@ func TestAgentRejectsTypedNilCompactor(t *testing.T) {
 	var compactor *recordingCompactor
 	_, _, err := New(context.Background(), Config{}, Dependencies{
 		Model: &sequenceModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{}},
-		Prompt: passthroughPrompt{}, Compactor: sdk.Some[contextwindow.Compactor](compactor),
+		Prompt: passthroughPrompt{}, Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
 	})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("error=%v", err)

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -41,7 +41,7 @@ func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {
 
 func TestApprovalActionsAndRules(t *testing.T) {
 	channel := &queueChannel{responses: []string{"maybe", actionAllow}}
-	exports, _, err := New(context.Background(), Config{DefaultAction: "deny", Rules: []Rule{{Tool: "safe", Action: "allow"}, {Tool: "danger", Action: "ask"}}}, Dependencies{Interaction: sdk.Some[interaction.Channel](channel)})
+	exports, _, err := New(context.Background(), Config{DefaultAction: "deny", Rules: []Rule{{Tool: "safe", Action: "allow"}, {Tool: "danger", Action: "ask"}}}, Dependencies{Interaction: ingotabi.Some[interaction.Channel](channel)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestApprovalFailsClosedAndRetries(t *testing.T) {
 		t.Fatalf("missing channel error=%v", err)
 	}
 	channel := &queueChannel{responses: []string{"what", "still", "unknown"}}
-	exports, _, err = New(context.Background(), Config{MaxDisplayBytes: 14}, Dependencies{Interaction: sdk.Some[interaction.Channel](channel)})
+	exports, _, err = New(context.Background(), Config{MaxDisplayBytes: 14}, Dependencies{Interaction: ingotabi.Some[interaction.Channel](channel)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -31,7 +31,7 @@ type Config struct {
 
 // Dependencies contains providers and the independent complete/stream chains.
 type Dependencies struct {
-	Providers          []sdk.Named[model.Provider]
+	Providers          []ingotabi.Named[model.Provider]
 	Interceptors       []model.Interceptor
 	StreamInterceptors []model.StreamInterceptor
 }
@@ -54,7 +54,7 @@ type runtime struct {
 }
 
 // New snapshots providers and composes immutable runtime state.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct model.runtime: %w", ErrInvalidConfig)
 	}
@@ -64,7 +64,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 	if len(deps.Providers) == 0 {
 		return Exports{}, nil, fmt.Errorf("providers must not be empty: %w", ErrInvalidConfig)
 	}
-	if err := sdk.CheckUniqueNames(deps.Providers); err != nil {
+	if err := ingotabi.CheckUniqueNames(deps.Providers); err != nil {
 		return Exports{}, nil, fmt.Errorf("providers: %w: %w", ErrInvalidConfig, err)
 	}
 	providers := make(map[string]model.Provider, len(deps.Providers))

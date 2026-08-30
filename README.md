@@ -111,7 +111,7 @@ writes `builder.toml`, `plugins.toml`, and a `config.toml` template. Pass
 flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Resolve
     Desired["plugins.toml<br/>(selected composition)"] --> Resolve
-    SDKs["builder.toml<br/>(capability SDKs)"] --> Resolve
+    Runtime["ingot ABI<br/>(fixed host ABI)"] --> Resolve
     Resolve["Resolve + type-check<br/>Component Graph"] --> Lock["plugins.lock<br/>(exact build facts)"]
     Lock --> Generate["Generate static wiring"]
     Generate --> Compile["Compile + startup check"]
@@ -123,7 +123,7 @@ The composition passes through three distinct states:
 
 1. `plugins.toml` states what you want.
 2. `plugins.lock` records exactly what was resolved, including the full Go
-   module graph, source digests, SDKs, and build flags.
+   module graph, source digests, the pinned Runtime ABI, and build flags.
 3. `images/<ImageID>/` contains the immutable native executable and its
    provenance manifest.
 
@@ -156,13 +156,18 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 The Builder reads these contracts, resolves `ONE`, `OPTIONAL`, and `MANY`
 dependencies, establishes a deterministic creation order, and writes the calls
-that ordinary Go code would make by hand. The public capability contracts live
-in the separate [ingot SDK](https://github.com/ingot-agent/sdk).
+that ordinary Go code would make by hand. The Component ABI primitives
+(`Cleanup`, `Optional`, `Named`) and every runtime-owned host contract
+(invocation metadata, lifecycle shutdown, plugin state scope) live in the
+fixed [ingot ABI](https://github.com/ingot-agent/ingot-abi). The
+replaceable agent capability contracts live in the separate
+[ingot SDK](https://github.com/ingot-agent/sdk) or any other domain contract
+module; no contract module needs Builder configuration.
 
 To add or replace a plugin:
 
@@ -181,8 +186,12 @@ build fails before it can become the active image.
 - **Strict canonical inputs** — `builder.toml`, `plugins.toml`, `plugins.lock`,
   and `ingot.plugin.toml` are parsed strictly and represented by canonical
   digests.
-- **Multiple SDKs per image** — the Builder locks an ordered SDK list and can
-  compose components that use different SDK modules in one Runtime Image.
+- **Fixed Runtime ABI** — the Builder pins the exact ingot ABI module path,
+  version, and source identity; production builds refuse an unpinned or
+  MVS-upgraded ingot ABI.
+- **Ordinary contract modules** — agent and domain SDKs need no Builder
+  configuration; they participate in the Component Graph through plain Go
+  type identity and are locked as ordinary modules.
 - **Content-addressed identity** — `ImageID` identifies the complete build
   inputs; `ArtifactDigest` identifies the final executable bytes.
 - **Reproducibility checks** — rebuilding an existing `ImageID` must reproduce
@@ -197,7 +206,7 @@ location.
 
 | Path | Role |
 |---|---|
-| `builder.toml` | Ordered capability SDK modules and requested versions. |
+| `builder.toml` | Builder configuration (no SDK list; the ingot ABI is fixed). |
 | `plugins.toml` | The desired plugin composition. |
 | `plugins.lock` | Exact resolution, source hashes, module graph, and build flags. |
 | `config.toml` | Runtime values, including provider configuration and secrets. |
@@ -236,6 +245,7 @@ See the [Usage Guide](./docs/USAGE.md) or
 - [`builder.toml` design](./docs/ingot_builder.toml_v0.1_设计方案.md) (Chinese)
 - [`plugins.lock` design](./docs/ingot_plugins.lock_v0.1_设计方案.md) (Chinese)
 - [SDK design v0.1](./docs/ingot_SDK_v0.1_设计方案.md) (Chinese)
+- [ingot ABI design v0.1](./docs/ingot_ABI_v0.1_设计提案.md) (Chinese)
 - [`ingot init` design](./docs/ingot_init_设计方案_v0.1.md) (Chinese)
 
 ## Repository layout
@@ -250,8 +260,8 @@ See the [Usage Guide](./docs/USAGE.md) or
 - `plugins/` — official plugins; every directory is an independent Go module.
 - `scripts/` — Unix and PowerShell installation scripts.
 
-For local development, place the SDK repository beside this repository; the
-included `go.work` selects it with a workspace replacement.
+For local development, place the ingot ABI repository beside this
+repository; the included `go.work` selects it with a workspace replacement.
 
 ## Development
 

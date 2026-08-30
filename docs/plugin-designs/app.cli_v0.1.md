@@ -20,7 +20,9 @@ model.runtime ------model.Runtime----------> app.cli/app
 session.jsonl ------session.MutableStore----> app.cli/app
 ```
 
-process 级调用元数据（`application.Process`）由 generated main 通过 Context 注入，不经过 Component Graph。
+进程级调用元数据与关闭请求分别由 generated main 以
+`invocation.Invocation` 和 `lifecycle.Controller` 显式注入。它们在 inspection
+中可见，但由虚拟 host provider 提供，不产生 Component 间拓扑边。
 
 ## 2. Root Config
 
@@ -52,7 +54,10 @@ type AppConfig struct {
 ```go
 package interactioncomponent
 
-type Dependencies struct{}
+type Dependencies struct {
+    Invocation invocation.Invocation
+    Lifecycle  lifecycle.Controller
+}
 
 type Exports struct {
     Channel  interaction.Channel
@@ -63,7 +68,7 @@ func New(
     ctx context.Context,
     cfg root.Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 ### 3.1 Frontend 契约（app.cli 本地传输）
@@ -84,10 +89,10 @@ type Frontend interface {
 
 ### 3.2 前端模式选择
 
-`New` 从 Context 取 `application.Process`，然后按下述优先级选择实现：
+`New` 使用显式 host Dependencies，然后按下述优先级选择实现：
 
-1. `process.Check()` 为 true（`--ingot-check`）：构造**校验模式**实例——`Channel`/`Frontend` 都指向一个丢弃 stdout/stderr 的 line channel，不读终端、不启动 TUI，Cleanup 只做幂等释放。这样 graph startup validation 可以完整构造并清理 interaction scope；
-2. `appcli.ParseArguments(process.Arguments())`：
+1. `deps.Invocation.Mode() == invocation.ModeCheck`（`--ingot-check`）：构造**校验模式**实例——`Channel`/`Frontend` 都指向一个丢弃 stdout/stderr 的 line channel，不读终端、不启动 TUI，Cleanup 只做幂等释放。这样 graph startup validation 可以完整构造并清理 interaction scope；
+2. `appcli.ParseArguments(deps.Invocation.Arguments())`：
    - `["chat"]` → **ModeTUI**（全屏终端前端）；
    - `["chat", "--plain"]` → **ModePlain**（可取消行输入 + 纯文本输出）；
    - 其他参数 → `ErrInvalidArguments`（usage: `ingot chat [--plain]`）。
@@ -129,7 +134,7 @@ Transcript 渲染：
 
 Ask 渲染：选项列表（`›` 标记 + 编号），`↑/↓` 或 `j/k` 或 `1-9` 选择，`Enter` 确认；`AllowTextInput` 时追加 `Other…` 入口，选择后的输入仍属于同一次持锁 Ask，空输入继续提示；`Esc`/`Ctrl+C` 取消当前 turn，`Ctrl+Q` 退出。
 
-生命周期：`New` 启动 program goroutine、等待 first frame `ready` 后返回；`Render`/`Sync`/`StartTurn`/`FinishTurn` 通过 `program.Send` 投递并等待 ack（观察调用 Context 与 program done）；`ReadLine`/`Ask` 复用 input gate 串行化。Cleanup：取消 instance context → program 结束 → 释放终端租约 → 返回 program fatal error；非取消类 fatal error 通过 `process.Shutdown` 上报。
+生命周期：`New` 启动 program goroutine、等待 first frame `ready` 后返回；`Render`/`Sync`/`StartTurn`/`FinishTurn` 通过 `program.Send` 投递并等待 ack（观察调用 Context 与 program done）；`ReadLine`/`Ask` 复用 input gate 串行化。Cleanup：取消 instance context → program 结束 → 释放终端租约 → 返回 program fatal error；非取消类 fatal error 通过 `Lifecycle.RequestShutdown` 上报。
 
 ### 3.5 Channel 语义（两种模式共同）
 
@@ -164,6 +169,8 @@ type Dependencies struct {
     Interaction interaction.Channel
     Frontend    appcli.Frontend
     Store       session.MutableStore
+    Invocation  invocation.Invocation
+    Lifecycle   lifecycle.Controller
 }
 
 type Exports struct{}
@@ -172,10 +179,12 @@ func New(
     ctx context.Context,
     cfg root.Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
-`New` 从 Context 取 `application.Process`（缺失或非法 → `ErrInvalidConfig`）；`process.Check()` 为 true 时直接返回无 Cleanup 的 Exports，不启动 loop（与 interaction 的校验模式配合，`--ingot-check` 只验证构造）。
+`New` 校验 `Invocation` 与 `Lifecycle`（缺失或 typed-nil →
+`ErrInvalidConfig`）；Invocation 为 `ModeCheck` 时直接返回无 Cleanup 的 Exports，
+不启动 loop（与 interaction 的校验模式配合，`--ingot-check` 只验证构造）。
 
 CLI commands首版固定为：
 
@@ -187,7 +196,7 @@ CLI commands首版固定为：
 | `/use <id>` | 通过 `History.Load` 验证后切换Session并 `syncSession` |
 | `/list` | List并渲染Session摘要 |
 | `/help` | 展示命令 |
-| `/exit` | 请求正常进程退出（`process.Shutdown(nil)`） |
+| `/exit` | 请求正常进程退出（`Lifecycle.RequestShutdown(nil)`） |
 
 非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。App仅在首轮成功后将`Result.Output`与首条用户输入交给标题模型。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
 
@@ -249,19 +258,22 @@ Cleanup
 
 ## 6. Loop结束与进程退出语义
 
-生成代码为每个 runtime 进程注入一个 `application.Process` 控制（SDK Contract，自 v0.1.2 起正式发布）：
+生成代码为每个 runtime 进程注入 ingot ABI host 实现：
 
-- `Arguments()` 返回 `os.Args[1:]`（`--ingot-check` 时为 nil）；`Check()` 返回是否有 `--ingot-check`；
-- `Shutdown(err)` 幂等，第一次调用决定进程结果：nil → 正常完成（退出码 0），非 nil → 记录 fatal error（generated main 退出码 1）；
-- generated main 在 `<-ctx.Done()` 后取 `process.result()` 作为最终错误返回，与 reverse Cleanup 错误 `errors.Join`。
+- `Invocation.Arguments()` 返回 caller-owned 的 `os.Args[1:]` copy；check 模式为 nil；
+- `Invocation.Mode()` 返回 `ModeRun` 或 `ModeCheck`；
+- 第一次 `Lifecycle.RequestShutdown` 取消 Runtime Context；所有非 nil 原因都会
+  被收集，因此先到达的正常请求不会覆盖 shutdown 期间的并发 fatal error；
+- generated main 完成 reverse Cleanup 后再汇总 shutdown causes 与 Cleanup
+  errors，最终无错误退出 0，否则退出 1。
 
 因此：
 
-- `/exit`、stdin EOF 与 TUI `Ctrl+Q` 正常停止 frontend loop 并调用 `process.Shutdown(nil)`：当前 runtime 进程退出码 0；
-- loop 内部无法继续的 fatal error（如 terminal adapter failure）：best-effort 渲染后保存，`process.Shutdown(err)`——进程以 1 退出，Cleanup 同时返回该错误；
+- `/exit`、stdin EOF 与 TUI `Ctrl+Q` 正常停止 frontend loop 并调用 `RequestShutdown(nil)`：当前 runtime 进程退出码 0；
+- loop 内部无法继续的 fatal error（如 terminal adapter failure）：best-effort 渲染后保存，`RequestShutdown(err)`——进程以 1 退出；
 - 单条命令、Store、Agent 业务错误只渲染 `interaction.ErrorEvent`，不会结束进程；
 - Cleanup 主动取消造成的 `context.Canceled`/`DeadlineExceeded` 不作为 loop failure 重复上报；取消前已记录的独立 fatal error 仍返回；
-- 进程退出仍由 generated main 统一完成，Component 不调用 `os.Exit`、不发信号、不取消 parent Context——`app.cli` 只是通过 SDK `application.Process` 优雅地报告自己的结束原因；
+- 进程退出仍由 generated main 统一完成，Component 不调用 `os.Exit`、不发信号、不取消 parent Context——`app.cli` 只通过 ingot ABI lifecycle Contract 报告结束原因；
 - current Session只保存在app instance内存中，不写Plugin State；Session数据本身由Store持久化。
 
 ## 7. Manifest
@@ -306,10 +318,11 @@ Plugin不声明State；两个Component共享root Config。
 - Agent input/result/error；
 - Agent运行中Ask复用Channel无deadlock；
 - `New`及时返回且每个instance只有一个owned loop；
-- `/exit`、EOF 请求 `Shutdown(nil)`；fatal loop error 请求 `Shutdown(err)` 且 Cleanup 返回同一错误；
-- 缺 `application.Process`、typed-nil Dependencies 拒绝构造；check 模式不启动 loop；
+- `/exit`、EOF 请求 `RequestShutdown(nil)`；fatal loop error 请求 `RequestShutdown(err)`；
+- 缺 Invocation/Lifecycle、typed-nil Dependencies 拒绝构造；check 模式不启动 loop；
 - process Context cancel、Cleanup cancel/join和fatal loop error回收；
 - 多个app/frontend instance可以并存且状态隔离；
 - fake clock、Store、Model、Agent、History、Frontend的deterministic transcript tests。
 
-验收以顶层 `New`/`Cleanup` lifecycle conformance为准；进程退出统一经 SDK `application.Process` 报告，Builder 无 root-consumer 特例。
+验收以顶层 `New`/`Cleanup` lifecycle conformance 为准；进程退出统一经 ingot
+ABI `lifecycle.Controller` 报告，Builder 无 root-consumer 特例。

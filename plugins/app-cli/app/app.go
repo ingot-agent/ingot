@@ -13,9 +13,10 @@ import (
 	"unicode/utf8"
 
 	appcli "github.com/ingot-agent/app-cli"
-	"github.com/ingot-agent/sdk"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/invocation"
+	"github.com/ingot-agent/ingot-abi/lifecycle"
 	"github.com/ingot-agent/sdk/agent"
-	applicationruntime "github.com/ingot-agent/sdk/application"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -32,6 +33,12 @@ type Dependencies struct {
 	Interaction interaction.Channel
 	Frontend    appcli.Frontend
 	Store       session.MutableStore
+	// Invocation is the runtime invocation metadata injected by the
+	// generated runtime.
+	Invocation invocation.Invocation
+	// Lifecycle is the runtime shutdown request interface injected by the
+	// generated runtime.
+	Lifecycle lifecycle.Controller
 }
 
 // Exports is empty because app is a graph leaf.
@@ -44,7 +51,8 @@ type application struct {
 	interaction      interaction.Channel
 	frontend         appcli.Frontend
 	store            session.MutableStore
-	process          applicationruntime.Process
+	invocationData   invocation.Invocation
+	lifecycle        lifecycle.Controller
 	inputPrompt      string
 	initialTitle     string
 	titleProvider    string
@@ -56,18 +64,14 @@ type application struct {
 }
 
 // New starts one instance-owned CLI loop and returns promptly.
-func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
-	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Model) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) {
+func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Model) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) || isNil(deps.Invocation) || isNil(deps.Lifecycle) {
 		return Exports{}, nil, fmt.Errorf("construct app.cli app: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	process, err := applicationruntime.FromContext(ctx)
-	if err != nil {
-		return Exports{}, nil, fmt.Errorf("construct app.cli app: %w: %w", ErrInvalidConfig, err)
-	}
-	if process.Check() {
+	if deps.Invocation.Mode() == invocation.ModeCheck {
 		return Exports{}, nil, nil
 	}
 	if !utf8.ValidString(cfg.App.InitialSessionTitle) || !utf8.ValidString(cfg.App.TitleProvider) || !utf8.ValidString(cfg.App.TitleModel) || !utf8.ValidString(cfg.Interaction.InputPrompt) {
@@ -80,7 +84,8 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sd
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	instance := &application{
-		agent: deps.Agent, history: deps.History, model: deps.Model, interaction: deps.Interaction, frontend: deps.Frontend, store: deps.Store, process: process,
+		agent: deps.Agent, history: deps.History, model: deps.Model, interaction: deps.Interaction, frontend: deps.Frontend, store: deps.Store,
+		invocationData: deps.Invocation, lifecycle: deps.Lifecycle,
 		inputPrompt: inputPrompt, initialTitle: cfg.App.InitialSessionTitle,
 		titleProvider: cfg.App.TitleProvider, titleModel: cfg.App.TitleModel,
 		showBanner: cfg.App.ShowBanner, now: time.Now,
@@ -88,11 +93,11 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, sd
 	go func() {
 		err := instance.loop(runCtx)
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			process.Shutdown(err)
+			instance.lifecycle.RequestShutdown(err)
 		}
 		done <- err
 	}()
-	cleanup := sdk.Cleanup(func(cleanupCtx context.Context) error {
+	cleanup := ingotabi.Cleanup(func(cleanupCtx context.Context) error {
 		cancel()
 		if cleanupCtx == nil {
 			return context.Canceled
@@ -124,7 +129,7 @@ func (a *application) loop(ctx context.Context) error {
 		if err != nil {
 			switch {
 			case errors.Is(err, io.EOF):
-				a.process.Shutdown(nil)
+				a.lifecycle.RequestShutdown(nil)
 				return nil
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				return err
@@ -152,7 +157,7 @@ func (a *application) loop(ctx context.Context) error {
 				}
 			}
 			if exit {
-				a.process.Shutdown(nil)
+				a.lifecycle.RequestShutdown(nil)
 				return nil
 			}
 			continue
@@ -172,7 +177,7 @@ func (a *application) loop(ctx context.Context) error {
 			return err
 		}
 		if exit {
-			a.process.Shutdown(nil)
+			a.lifecycle.RequestShutdown(nil)
 			return nil
 		}
 	}

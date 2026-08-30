@@ -60,7 +60,7 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if err := builderConfig.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if len(builderConfig.SDKs) != 1 || builderConfig.SDKs[0].Module != "github.com/ingot-agent/sdk" || builderConfig.SDKs[0].Version != "v0.1.4" {
+	if builderConfig.BuilderConfigVersion != 1 {
 		t.Fatalf("default builder config = %#v", builderConfig)
 	}
 	for index, plugin := range desired.Plugins {

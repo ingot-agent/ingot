@@ -24,7 +24,7 @@ session.jsonl --session.MutableStore-> app.cli/app
 - 同一 Session 的成功 Append 形成 total order；
 - `Load` 按 committed order 返回；
 - 不同 Session 可并行；
-- 使用 `config.StateDir(ctx)`，不读写 workspace 或任意全局路径；
+- 使用显式注入的 `state.Scope`，不读写 workspace 或任意全局路径；
 - 磁盘格式带独立版本并按 reader window fail-closed；
 - 检测中间损坏，并安全处理未提交的尾部残片；
 - `Create`、`Append`、`Load`、`List`、`Rename` 均支持 Context cancellation；
@@ -49,11 +49,14 @@ package sessionjsonl
 import (
     "context"
 
-    "github.com/ingot-agent/sdk"
+    ingotabi "github.com/ingot-agent/ingot-abi"
+    "github.com/ingot-agent/ingot-abi/state"
     "github.com/ingot-agent/sdk/session"
 )
 
-type Dependencies struct{}
+type Dependencies struct {
+    State state.Scope
+}
 
 type Exports struct {
     Store session.MutableStore
@@ -63,7 +66,7 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 ## 4. Config
@@ -85,13 +88,14 @@ type Config struct {
 
 ## 5. State directory 与版本
 
-`New` 使用传入的 Component Context：
+`New` 使用显式 host Dependency：
 
 ```go
-stateDir, err := config.StateDir(ctx)
+stateDir := deps.State.Dir()
 ```
 
-缺少 scope 时保留 `config.ErrStateDirUnavailable`。不得回退到 working directory、用户 home 或临时目录。
+缺少或 typed-nil scope 时返回 `ErrInvalidDependencies`。Builder 注入的目录是
+绝对路径；Plugin 不得回退到 working directory、用户 home 或临时目录。
 
 目录布局：
 
@@ -386,7 +390,9 @@ min_reader_version = 1
 - Offset、Limit、zero limit、out-of-range offset；
 - negative query。
 
-测试使用 `t.TempDir()` 和 `config.WithStateDir`，通过可注入 clock、random reader、file operation adapter 制造确定性 ID、时间和失败，不在公共 SDK Contract 中暴露这些测试依赖。
+测试使用 `t.TempDir()` 和测试专用的 `state.Scope` 实现，通过显式
+`Dependencies.State` 注入目录；可注入 clock、random reader、file operation
+adapter 用于制造确定性 ID、时间和失败，不在公共 SDK Contract 中暴露这些测试依赖。
 
 ## 14. 验收标准
 
@@ -397,7 +403,7 @@ min_reader_version = 1
 5. partial tail 只按规定恢复，中间 corruption fail-closed；
 6. `List` 顺序和 pagination 固定；
 7. input/output ownership 测试覆盖 `json.RawMessage`；
-8. 所有文件路径只来自 `StateDir` 和已验证 ID；
+8. 所有文件路径只来自 `Dependencies.State.Dir()` 和已验证 ID；
 9. 普通测试、`go vet` 和支持环境中的 race test 通过。
 
 ## 15. v0.1 实现决策

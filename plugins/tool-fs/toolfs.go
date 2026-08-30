@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/filesystem"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -70,7 +70,7 @@ type normalizedConfig struct {
 }
 
 // New validates configuration and creates the seven filesystem tools.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.fs: %w", ErrInvalidConfig)
 	}

@@ -1,7 +1,7 @@
 # `usage.default` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1  
-> SDK Contract：v0.1.4  
+> SDK Contract：v0.1.6
 > Dependencies：`model.RequestResolver`  
 > Exports：`usage.Counter`
 

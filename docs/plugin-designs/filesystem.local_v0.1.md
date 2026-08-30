@@ -42,7 +42,7 @@ package filesystemlocal
 import (
     "context"
 
-    "github.com/ingot-agent/sdk"
+    ingotabi "github.com/ingot-agent/ingot-abi"
     "github.com/ingot-agent/sdk/filesystem"
 )
 
@@ -56,7 +56,7 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 ## 4. Config 与 workspace root

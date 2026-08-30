@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	contextcompact "github.com/ingot-agent/context-compact"
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -42,4 +42,4 @@ func TestPublicComponentContract(t *testing.T) {
 	var _ contextwindow.Compactor = exports.Compactor
 }
 
-var _ func(context.Context, contextcompact.Config, contextcompact.Dependencies) (contextcompact.Exports, sdk.Cleanup, error) = contextcompact.New
+var _ func(context.Context, contextcompact.Config, contextcompact.Dependencies) (contextcompact.Exports, ingotabi.Cleanup, error) = contextcompact.New

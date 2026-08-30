@@ -1,8 +1,13 @@
 # ingot SDK v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Historical baseline，已按 SDK v0.1.6 / ingot ABI v0.1 修订边界
 > 目标版本：SDK v0.1  
 > 关联规范：架构 v0.3、Plugin Manifest v0.1、`plugins.lock` v0.1
+
+> 注意：Component ABI primitive、Invocation、Lifecycle 与 State host Contract
+> 已迁移到 `github.com/ingot-agent/ingot-abi`。ABI 的当前规范以
+> 《ingot ABI v0.1 设计提案》和该仓库 README 为准；本文件其余章节描述可替换
+> Agent Contract 的 v0.1 设计背景。
 
 ## 1. 定位
 
@@ -10,7 +15,6 @@ ingot SDK 是 Component Graph 的公共 Go Contract 层。Builder 读取 Compone
 
 SDK 提供：
 
-- 少量 Composition primitives；
 - 稳定的 Tool、Model、Session、Prompt、Context Window、Interaction、Agent 等领域 Contract；
 - typed Interceptor；
 - Context、生命周期、错误、并发和 ownership 语义。
@@ -55,8 +59,6 @@ github.com/ingot-agent/sdk
 
 | Package | 主要内容 |
 |---|---|
-| `sdk` | `Cleanup`、`Optional[T]`、`Named[T]` |
-| `config` | strict decode、Plugin-scoped State directory |
 | `pipeline` | generic typed Interceptor |
 | `httpx` | shared HTTP client capability |
 | `filesystem` | workspace-relative filesystem capability |
@@ -65,15 +67,16 @@ github.com/ingot-agent/sdk
 | `session` | append-oriented session persistence |
 | `prompt` | contributors 与 renderer |
 | `contextwindow` | model invocation context compaction |
+| `usage` | model-aware input token counting |
 | `interaction` | frontend interaction channel |
 | `agent` | agent turn runtime 与 interceptor |
 
-## 4. Root Primitives
+## 4. Component ABI Primitives（位于 ingot ABI）
 
 ### 4.1 Cleanup
 
 ```go
-package sdk
+package ingotabi
 
 type Cleanup func(context.Context) error
 ```
@@ -85,13 +88,13 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 ### 4.2 Optional
 
 ```go
-package sdk
+package ingotabi
 
 type Optional[T any] struct {
     Value T
@@ -112,7 +115,7 @@ func Some[T any](value T) Optional[T] {
 ### 4.3 Named
 
 ```go
-package sdk
+package ingotabi
 
 type Named[T any] struct {
     Name  string
@@ -126,7 +129,7 @@ func CheckUniqueNames[T any](items []Named[T]) error
 
 ```go
 type Exports struct {
-    Providers []sdk.Named[model.Provider]
+    Providers []ingotabi.Named[model.Provider]
 }
 ```
 
@@ -149,7 +152,7 @@ func New(
     ctx context.Context,
     cfg PluginConfig,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 Builder 精确验证：
@@ -160,7 +163,7 @@ Builder 精确验证：
 | 参数 2 | Manifest root package 的 `Config` |
 | 参数 3 | 当前 Component package 的 `Dependencies` |
 | 返回 1 | 当前 Component package 的 `Exports` |
-| 返回 2 | `sdk.Cleanup` |
+| 返回 2 | `ingotabi.Cleanup` |
 | 返回 3 | `error` |
 
 `Dependencies` 与 `Exports` 使用顶层、具名、导出字段。Embedded 或 unexported field 产生 Component Contract Error。
@@ -174,7 +177,7 @@ Composite Plugin 的每个 Component 接收相同的 root `Config` type identity
 Dependency field 解析为递归表达式：
 
 ```text
-Expr := Base | sdk.Optional[Expr] | []Expr | sdk.Named[Expr]
+Expr := Base | ingotabi.Optional[Expr] | []Expr | ingotabi.Named[Expr]
 ```
 
 Wrapper 可任意深度组合。最外层决定 field cardinality；去掉最外层 cardinality wrapper 后，剩余完整 Go type 作为 target。
@@ -199,7 +202,7 @@ types.AssignableTo(source, target)
 | Dependency | 0 Provider | 1 Provider | 多个 Provider |
 |---|---|---|---|
 | ONE `T` | Build Error | Connect | Ambiguity Error |
-| OPTIONAL `sdk.Optional[T]` | `None[T]()` | `Some(value)` | Ambiguity Error |
+| OPTIONAL `ingotabi.Optional[T]` | `None[T]()` | `Some(value)` | Ambiguity Error |
 | MANY `[]T` | empty collection | collect | collect |
 
 MANY `[]T` 接受：
@@ -215,10 +218,10 @@ MANY `[]T` 接受：
 
 | Dependency | 语义 |
 |---|---|
-| `sdk.Optional[[]T]` | 0/1 个完整 `[]T` Provider |
-| `[]sdk.Optional[T]` | 聚合 scalar/slice `sdk.Optional[T]` |
+| `ingotabi.Optional[[]T]` | 0/1 个完整 `[]T` Provider |
+| `[]ingotabi.Optional[T]` | 聚合 scalar/slice `ingotabi.Optional[T]` |
 | `[][]T` | 聚合 scalar `[]T` 或 flatten `[][]T` |
-| `sdk.Optional[sdk.Named[T]]` | 0/1 个 `sdk.Named[T]` Provider |
+| `ingotabi.Optional[ingotabi.Named[T]]` | 0/1 个 `ingotabi.Named[T]` Provider |
 
 Go alias 按 type identity 解析。基于 wrapper 声明的新 defined type 按普通 ONE target 处理。
 
@@ -291,7 +294,7 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error) {
+) (Exports, ingotabi.Cleanup, error) {
     runCtx, cancel := context.WithCancel(ctx)
     done := make(chan struct{})
 
@@ -352,30 +355,30 @@ UI、TUI、server、watcher 与 daemon 使用普通 Component 生命周期。Gen
 
 `ingot-runtime --ingot-check` 是 generated main/Builder protocol，不属于 SDK API。它在隔离 persistent root 上构造并清理完整 Graph。
 
-### 7.4 Application Process Contract（SDK v0.1.2）
+### 7.4 Invocation 与 Lifecycle Host Contract
 
-Generated main 为每个 runtime 进程注入一个 `application.Process`（`sdk/application`），通过 Context 传递给所有 Component（`application.WithProcess` / `FromContext`）：
+Generated main 通过显式 Dependencies 注入 ingot ABI Contract：
 
 ```go
-package application
-
-type Process interface {
-    Arguments() []string   // os.Args[1:]；--ingot-check 时为 nil
-    Check() bool           // 是否处于 --ingot-check 校验模式
-    Shutdown(error)        // 幂等；首次调用决定进程结果，nil=正常完成
+type Dependencies struct {
+    Invocation invocation.Invocation
+    Lifecycle  lifecycle.Controller
 }
 ```
 
-`Arguments` 返回调用者拥有的副本，`Shutdown` 并发安全。该契约用于 frontend（如 `app.cli`）向 generated main 优雅报告自己的结束原因：Component 不得`os.Exit`、发信号或取消 parent Context。本契约随 SDK v0.1.2 发布（`sdk/application` 包，`agent.History` 同期加入），工作区 Plugin 模块统一依赖 v0.1.2。
+`Arguments` 返回调用者拥有的副本；`Mode` 区分 run/check；
+`RequestShutdown(error)` 并发安全并由 generated runtime 汇总所有非 nil 原因。
+Component 不得 `os.Exit`、发信号或取消 parent Context。
 
-## 8. Config Package
+## 8. Generated Config 与 State Host
 
 ### 8.1 Decode
 
-Generated wiring 按 root Config type 严格解码：
+Generated wiring 在 generated root 内按 root Config type 严格解码；decode helper
+不是 SDK public API：
 
 ```go
-cfg, err := config.Decode[openaicompat.Config](resolvedPluginConfig)
+cfg, err := strictDecodeConfig[openaicompat.Config](resolvedPluginConfig)
 ```
 
 Runtime Config table 可使用 canonical Plugin `id` 或作者 `name`。Loader 基于 lock 建立唯一映射：
@@ -393,20 +396,16 @@ Config 在 Component 中按 immutable-by-contract 处理。Map、slice 与 point
 
 ### 8.2 State Directory
 
-```go
-package config
-
-func StateDir(context.Context) (string, error)
-```
-
-Generated wiring 将 Plugin-scoped state directory 写入 Component Context。同一 Composite Plugin 的 Component 共享目录。目录键来自 canonical Plugin ID 的安全编码。
+需要持久化位置的 Component 显式依赖 `state.Scope`。Generated wiring 注入
+absolute Plugin-scoped directory；同一 Composite Plugin 的 Component 共享目录。
 
 | 模式 | State root |
 |---|---|
 | normal runtime | production root 下的 Plugin-scoped directory |
 | `--ingot-check` | build staging 下的空隔离 directory |
 
-缺少 Plugin scope 时，`StateDir` 返回明确错误。拥有 Persistent State 的 Plugin 使用 `StateDir` 获取根目录，并在该边界内管理子路径、schema compatibility 与 migration。
+缺少或 typed-nil `state.Scope` 时，Component 构造失败。拥有 Persistent State 的
+Plugin 在该边界内管理子路径、schema compatibility 与 migration。
 
 ### 8.3 Runtime 与 Build-time
 
@@ -653,7 +652,7 @@ Provider Component 常见导出：
 
 ```go
 type Exports struct {
-    Providers []sdk.Named[model.Provider]
+    Providers []ingotabi.Named[model.Provider]
 }
 ```
 
@@ -703,7 +702,7 @@ type StreamInterceptor interface {
 
 ```go
 type Dependencies struct {
-    Providers          []sdk.Named[model.Provider]
+    Providers          []ingotabi.Named[model.Provider]
     Interceptors       []model.Interceptor
     StreamInterceptors []model.StreamInterceptor
 }
@@ -965,12 +964,12 @@ type Interceptor = pipeline.Interceptor[Turn, Result]
 ```go
 type Dependencies struct {
     Model        model.Runtime
-    Streaming    sdk.Optional[model.StreamingRuntime]
+    Streaming    ingotabi.Optional[model.StreamingRuntime]
     Tools        tool.Runtime
     Store        session.Store
     Prompt       prompt.Renderer
-    Compactor    sdk.Optional[contextwindow.Compactor]
-    Interaction  sdk.Optional[interaction.Channel]
+    Compactor    ingotabi.Optional[contextwindow.Compactor]
+    Interaction  ingotabi.Optional[interaction.Channel]
     Interceptors []agent.Interceptor
 }
 ```
@@ -1123,7 +1122,7 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 - reverse Cleanup 与 per-Component deadline；
 - canonical ID/name Config resolution；
 - strict Config decode；
-- normal/check `StateDir` isolation。
+- normal/check 模式下显式 `state.Scope` 的目录隔离。
 
 ### 23.3 Domain Contracts
 
@@ -1147,9 +1146,9 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 
 ## 24. 实施顺序
 
-### Phase 1：Composition Kernel
+### Phase 1：Component ABI 与 Composition Kernel
 
-- `sdk.Cleanup`、`sdk.Optional`、`sdk.Named`、`pipeline.Interceptor`；
+- `ingotabi.Cleanup`、`ingotabi.Optional`、`ingotabi.Named`、`pipeline.Interceptor`；
 - Component Contract loader；
 - Target Type Rule、ONE/OPTIONAL/MANY、AssignableTo；
 - stable order、self-loop、cycle；

@@ -1,7 +1,7 @@
 # `interceptor.approval` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Dependencies：`sdk.Optional[interaction.Channel]`  
+> Dependencies：`ingotabi.Optional[interaction.Channel]`
 > Exports：`[]tool.Interceptor`
 
 ## 1. 定位
@@ -10,7 +10,7 @@
 
 ```go
 type Dependencies struct {
-    Interaction sdk.Optional[interaction.Channel]
+    Interaction ingotabi.Optional[interaction.Channel]
 }
 
 type Exports struct {
