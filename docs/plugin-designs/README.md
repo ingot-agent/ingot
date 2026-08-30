@@ -25,7 +25,7 @@ Plugin 设计必须遵循：
 | [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
 | [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
 | [`interceptor.script`](./interceptor.script_v0.1.md) | Implemented v0.1 | typed Interceptors | 外部策略/审计hook协议与进程回收 |
-| [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Implemented v0.1 | `[]sdk.Named[model.Provider]` | Chat Completions和SSE协议适配 |
+| [`model.openai-compatible`](./model.openai-compatible_v0.1.md) | Implemented v0.1 | `[]ingotabi.Named[model.Provider]` | Chat Completions和SSE协议适配 |
 | [`model.runtime`](./model.runtime_v0.1.md) | Implemented v0.1 | complete/stream runtimes | Named Provider选择与独立拦截链 |
 | [`usage.default`](./usage.default_v0.1.md) | Implemented v0.1 | `usage.Counter` | model-aware input token计数、Profile路由、有界缓存 |
 | [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
@@ -45,7 +45,13 @@ Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.cli / interceptor.script hardening
 ```
 
-`app.cli/app`遵循顶层普通Component生命周期：`New`启动instance-owned后台loop并及时返回，Cleanup取消并join。frontend结束通过SDK `application.Process.Shutdown` 向generated main优雅报告进程结果（nil=退出0，err=退出1），不新增`application.Runner`、Builder root特例、`os.Exit`或隐藏全局channel。`application.Process`与`agent.History`自 SDK v0.1.2 起正式发布（`sdk`/`application` + `agent.History`）；会话标题更新能力`session.MutableStore`自 SDK v0.1.3 起提供。消费新能力的 Plugin 依赖 v0.1.3。`usage.default` 依赖 SDK v0.1.4 提供的 `usage` 与 `model.RequestResolver` Contract；workspace 开发时可使用本地 SDK replacement，发布用模块依赖保持为 v0.1.4。
+`app.cli/app` 遵循顶层普通 Component 生命周期：`New` 启动
+instance-owned 后台 loop 并及时返回，Cleanup 取消并 join。frontend 通过 ingot
+ABI 的 `lifecycle.Controller.RequestShutdown` 向 generated main 报告结束意图，
+调用元数据通过 `invocation.Invocation` 读取；二者均为显式 host Dependencies。
+Component 不新增 Builder root 特例，不调用 `os.Exit`，也不使用隐藏全局
+channel。官方 Plugin 的 Agent Contract 统一依赖 SDK v0.1.6，Component ABI 与
+host Contract 依赖 ingot ABI v0.1.0。
 
 `app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
 

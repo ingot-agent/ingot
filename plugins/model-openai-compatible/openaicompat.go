@@ -15,7 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/httpx"
 	"github.com/ingot-agent/sdk/model"
 )
@@ -106,7 +106,7 @@ type Dependencies struct {
 
 // Exports contains named model providers in declaration order.
 type Exports struct {
-	Providers []sdk.Named[model.Provider]
+	Providers []ingotabi.Named[model.Provider]
 }
 
 type provider struct {
@@ -123,7 +123,7 @@ type provider struct {
 }
 
 // New validates and snapshots all provider configuration.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil || isNil(deps.HTTP) {
 		return Exports{}, nil, fmt.Errorf("construct model.openai-compatible: %w", ErrInvalidConfig)
 	}
@@ -134,15 +134,15 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 		return Exports{}, nil, configError("providers", "must contain at least one provider")
 	}
 
-	items := make([]sdk.Named[model.Provider], 0, len(cfg.Providers))
+	items := make([]ingotabi.Named[model.Provider], 0, len(cfg.Providers))
 	for i, candidate := range cfg.Providers {
 		instance, err := newProvider(candidate, deps.HTTP)
 		if err != nil {
 			return Exports{}, nil, fmt.Errorf("providers[%d]: %w", i, err)
 		}
-		items = append(items, sdk.Named[model.Provider]{Name: instance.name, Value: instance})
+		items = append(items, ingotabi.Named[model.Provider]{Name: instance.name, Value: instance})
 	}
-	if err := sdk.CheckUniqueNames(items); err != nil {
+	if err := ingotabi.CheckUniqueNames(items); err != nil {
 		return Exports{}, nil, fmt.Errorf("providers: %w: %w", ErrInvalidConfig, err)
 	}
 	return Exports{Providers: items}, nil, nil

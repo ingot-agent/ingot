@@ -8,7 +8,7 @@
 
 - [安装](#安装)
 - [ingot home](#ingot-home)
-  - [Builder SDK 配置](#builder-sdk-配置)
+  - [Builder 配置与 Runtime ABI](#builder-配置与-runtime-abi)
 - [工作流概览](#工作流概览)
 - [命令参考](#命令参考)
   - [全局选项](#全局选项)
@@ -63,7 +63,7 @@ ingot --home /path/to/home status
 
 ```
 ~/.ingot/
-├── builder.toml        # resolve/build 使用的有序 SDK module
+├── builder.toml        # Builder 配置（ingot ABI 固定，无 SDK 列表）
 ├── plugins.toml        # 期望的插件集合（由你或 CLI 维护）
 ├── plugins.lock        # 精确解析结果：模块图、摘要、构建参数
 ├── config.toml         # 运行时配置值（由镜像读取）
@@ -82,37 +82,30 @@ ingot --home /path/to/home status
 - `bundled-plugins/` 由 ingot 管理：`ingot init` 写入或刷新；`plugins.toml` 中的官方插件均作为本地开发源码指向这里。
 - 镜像是不可变的：不要修改 `images/` 下的任何内容。
 
-### Builder SDK 配置
+### Builder 配置与 Runtime ABI
 
-`builder.toml` 按声明顺序选择一个或多个 SDK module。第一项是生成 Runtime
-基础设施使用的主 SDK；Component 可以使用任一已配置 SDK 中的 `Cleanup`、
-`Optional` 与 `Named`。
+`builder.toml` 是 Builder 配置。不存在可配置的 SDK 列表：Agent SDK 等
+Contract Module 由插件 `go.mod` 引入，以普通 Go Type Identity 参与
+Component Graph，并作为普通 module 记录进 `plugins.lock`。
+`github.com/ingot-agent/ingot-abi`（Component `Cleanup`/`Optional`/`Named`、
+调用元数据、生命周期关闭与插件状态目录）由 Builder 独占并精确定版：
 
 ```toml
 builder_config_version = 1
-
-[[sdks]]
-module = "github.com/ingot-agent/sdk"
-version = "v0.1.4"
-
-[[sdks]]
-module = "example.com/acme-sdk/v2"
-version = "v2.3.0"
-# path = "../acme-sdk" # 可选的本地 checkout，相对于 builder.toml
 ```
 
-环境变量在文件配置之后覆盖：
+锁定后的 Runtime ABI 记录在 `plugins.lock`：
 
-| 环境变量 | 含义 |
-|---|---|
-| `INGOT_BUILDER_SDKS` | 使用逗号分隔的 `module@version` 条目整体替换 SDK 列表。 |
-| `INGOT_BUILDER_SDK_MODULE` | 覆盖第一项 SDK module。 |
-| `INGOT_BUILDER_SDK_VERSION` | 覆盖第一项 SDK version。 |
+```toml
+[runtime]
+module_path = "github.com/ingot-agent/ingot-abi"
+version = "v0.1.0"
+sum = "h1:..."
+```
 
-`INGOT_BUILDER_SDKS` 不能与两个首项覆盖变量同时使用。例如：
-`INGOT_BUILDER_SDKS='example.com/sdk@v1.2.0,example.com/sdk-extra/v2@v2.0.1'`。
-SDK module path 必须唯一；并行使用不兼容 major 时应采用不同的 Go semantic
-import path，例如 `example.com/sdk` 与 `example.com/sdk/v2`。
+当 ingot ABI 缺失、Go MVS 因插件要求选出不同版本、Plugin 导出 host
+类型或出现未授权的 replacement 时，resolve/build 会失败。旧的 `[[sdks]]`
+声明与 `INGOT_BUILDER_SDKS*` 覆盖已不再是 schema 的一部分并被拒绝。
 
 ## 工作流概览
 
@@ -147,7 +140,7 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 1. 定位官方插件集（`--bundle` 显式指定，否则按可执行文件相对位置探测：安装脚本的 `<prefix>/share/ingot/plugins` 或仓库根目录的 `plugins/`）；
 2. 将其物化到 `~/.ingot/bundled-plugins/`（幂等：内容未变化时不重写）；
 3. 写入默认 `plugins.toml`（profile 内所有插件均为本地开发源码）；
-4. 写入默认 `builder.toml` SDK 配置；
+4. 写入默认的 `builder.toml`（Builder 配置，无 SDK 列表）；
 5. 写入默认 `config.toml` 模板。
 
 | 选项 | 含义 |

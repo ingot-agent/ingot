@@ -74,7 +74,7 @@ go build -o ingot ./cmd/ingot
 flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Resolve
     Desired["plugins.toml<br/>(选定的组合)"] --> Resolve
-    SDKs["builder.toml<br/>(Capability SDK)"] --> Resolve
+    IngotABI["ingot ABI<br/>(固定宿主 ABI)"] --> Resolve
     Resolve["解析并类型检查<br/>Component Graph"] --> Lock["plugins.lock<br/>(精确构建事实)"]
     Lock --> Generate["生成静态 wiring"]
     Generate --> Compile["编译 + 启动校验"]
@@ -85,7 +85,7 @@ flowchart LR
 一次组合会经过三个清晰的状态：
 
 1. `plugins.toml` 描述你想要什么。
-2. `plugins.lock` 记录精确解析结果，包括完整 Go Module 图、源码摘要、SDK 和构建参数。
+2. `plugins.lock` 记录精确解析结果，包括完整 Go Module 图、源码摘要、固定的 Runtime ABI 和构建参数。
 3. `images/<ImageID>/` 保存不可变的原生可执行文件和来源 Manifest。
 
 修改运行参数只需修改 `config.toml`。替换实现则意味着修改插件集合并构建新镜像；旧镜像仍然保留，可随时回滚。
@@ -114,10 +114,10 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
-Builder 读取这些 Contract，解析 `ONE`、`OPTIONAL` 和 `MANY` 依赖，确定稳定的创建顺序，并生成普通 Go 代码原本需要手写的调用。公共 Capability Contract 位于独立的 [ingot SDK](https://github.com/ingot-agent/sdk) 中。
+Builder 读取这些 Contract，解析 `ONE`、`OPTIONAL` 和 `MANY` 依赖，确定稳定的创建顺序，并生成普通 Go 代码原本需要手写的调用。Component ABI 原语（`Cleanup`、`Optional`、`Named`）与所有 Runtime 独占的宿主 Contract（调用元数据、生命周期关闭、插件状态目录）位于固定的 [ingot ABI](https://github.com/ingot-agent/ingot-abi)。可替换的 Agent Capability Contract 位于独立的 [ingot SDK](https://github.com/ingot-agent/sdk) 或其他任何 Domain Contract Module；Contract Module 无需 Builder 配置。
 
 添加或替换插件：
 
@@ -133,7 +133,8 @@ ingot apply
 ## 构建保证
 
 - **严格、规范化的输入** —— `builder.toml`、`plugins.toml`、`plugins.lock` 和 `ingot.plugin.toml` 均被严格解析，并生成规范化摘要。
-- **单镜像多 SDK** —— Builder 锁定有序 SDK 列表，并能在同一个 Runtime Image 中组合使用不同 SDK Module 的 Component。
+- **固定 Runtime ABI** —— Builder 精确锁定 ingot ABI 的 Module path、版本与源码身份；生产构建拒绝未锁定或被 MVS 升级的 ingot ABI。
+- **普通 Contract Module** —— Agent SDK 与领域 SDK 无需 Builder 配置，以普通 Go Type Identity 参与 Component Graph，并作为普通 Module 锁定。
 - **内容寻址身份** —— `ImageID` 标识完整构建输入，`ArtifactDigest` 标识最终可执行文件字节。
 - **可复现性检查** —— 重建一个已有 `ImageID` 时必须得到相同的产物摘要，而不是静默覆盖不同的二进制。
 - **事务式激活** —— `apply` 依次完成解析、构建、校验，最后原子切换 `current`；失败的构建不会替换当前运行镜像。
@@ -144,7 +145,7 @@ ingot apply
 
 | 路径 | 作用 |
 |---|---|
-| `builder.toml` | 有序 Capability SDK Module 及其请求版本。 |
+| `builder.toml` | Builder 配置（无 SDK 列表；ingot ABI 固定）。 |
 | `plugins.toml` | 期望的插件组合。 |
 | `plugins.lock` | 精确解析结果、源码哈希、Module 图和构建参数。 |
 | `config.toml` | 运行时值，包括 Provider 配置和密钥。 |
@@ -182,6 +183,7 @@ plugin      add | remove | update | reorder | list | inspect
 - [`builder.toml` 设计](./ingot_builder.toml_v0.1_设计方案.md)
 - [`plugins.lock` 设计](./ingot_plugins.lock_v0.1_设计方案.md)
 - [SDK 设计 v0.1](./ingot_SDK_v0.1_设计方案.md)
+- [ingot ABI 设计 v0.1](./ingot_ABI_v0.1_设计提案.md)
 - [`ingot init` 设计](./ingot_init_设计方案_v0.1.md)
 
 ## 仓库结构
@@ -194,7 +196,7 @@ plugin      add | remove | update | reorder | list | inspect
 - `plugins/` —— 官方插件集；每个目录都是独立 Go Module。
 - `scripts/` —— Unix 和 PowerShell 安装脚本。
 
-本地开发时，将 SDK 仓库放在本仓库同级目录；仓库内的 `go.work` 会通过 workspace replacement 选择它。
+本地开发时，将 ingot ABI 仓库放在本仓库同级目录；仓库内的 `go.work` 会通过 workspace replacement 选择它。
 
 ## 开发
 

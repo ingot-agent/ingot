@@ -9,9 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 
-	"github.com/ingot-agent/sdk"
-	"github.com/ingot-agent/sdk/config"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/session"
 )
 
@@ -30,6 +31,9 @@ var (
 	ErrInvalidQuery = errors.New("invalid session query")
 	// ErrStateDirLocked indicates that another writer owns the StateDir.
 	ErrStateDirLocked = errors.New("session state directory is locked")
+	// ErrInvalidDependencies indicates that required host dependencies are
+	// missing.
+	ErrInvalidDependencies = errors.New("invalid session.jsonl dependencies")
 	// ErrOwnerLockUnsupported indicates that this platform cannot provide the
 	// owner lock required by session.jsonl v0.1.
 	ErrOwnerLockUnsupported = errors.New("session state owner lock unsupported")
@@ -44,7 +48,11 @@ type Config struct {
 }
 
 // Dependencies contains the component's consumed capabilities.
-type Dependencies struct{}
+type Dependencies struct {
+	// State is the plugin-scoped persistent state directory assigned by the
+	// generated runtime.
+	State state.Scope
+}
 
 // Exports contains the component's provided capabilities.
 type Exports struct {
@@ -55,13 +63,16 @@ type Exports struct {
 func New(
 	ctx context.Context,
 	cfg Config,
-	_ Dependencies,
-) (Exports, sdk.Cleanup, error) {
+	deps Dependencies,
+) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, context.Canceled
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("State scope is required: %w", ErrInvalidDependencies)
 	}
 	durability := cfg.Durability
 	if durability == "" {
@@ -70,15 +81,12 @@ func New(
 	if durability != "sync" && durability != "flush" {
 		return Exports{}, nil, fmt.Errorf("durability %q, want sync or flush: %w", durability, ErrInvalidConfig)
 	}
-	stateDir, err := config.StateDir(ctx)
-	if err != nil {
-		return Exports{}, nil, fmt.Errorf("open session state: %w", err)
-	}
+	stateDir := deps.State.Dir()
 	created, release, err := openStore(ctx, stateDir, durability == "sync")
 	if err != nil {
 		return Exports{}, nil, err
 	}
-	cleanup := sdk.Cleanup(func(cleanupCtx context.Context) error {
+	cleanup := ingotabi.Cleanup(func(cleanupCtx context.Context) error {
 		releaseErr := release()
 		if cleanupCtx == nil {
 			return errors.Join(context.Canceled, releaseErr)
@@ -89,6 +97,19 @@ func New(
 		return releaseErr
 	})
 	return Exports{Store: created}, cleanup, nil
+}
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	v := reflect.ValueOf(value)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 func exactJSON(data []byte, output any) error {

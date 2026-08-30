@@ -13,16 +13,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ingot-agent/sdk"
-	"github.com/ingot-agent/sdk/config"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/session"
 )
+
+type testScope string
+
+func (s testScope) Dir() string { return string(s) }
+
+var _ state.Scope = testScope("")
 
 func newTestStore(t *testing.T) (*store, string) {
 	t.Helper()
 	root := t.TempDir()
-	ctx := config.WithStateDir(context.Background(), root)
-	exports, cleanup, err := New(ctx, Config{Durability: "sync"}, Dependencies{})
+	exports, cleanup, err := New(context.Background(), Config{Durability: "sync"}, Dependencies{State: testScope(root)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +39,7 @@ func newTestStore(t *testing.T) (*store, string) {
 
 func TestComponentContract(t *testing.T) {
 	t.Parallel()
-	var constructor func(context.Context, Config, Dependencies) (Exports, sdk.Cleanup, error) = New
+	var constructor func(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) = New
 	_ = constructor
 	created, _ := newTestStore(t)
 	var _ session.Store = created
@@ -44,15 +49,14 @@ func TestComponentContract(t *testing.T) {
 func TestRequiresStateScope(t *testing.T) {
 	t.Parallel()
 	_, _, err := New(context.Background(), Config{}, Dependencies{})
-	if !errors.Is(err, config.ErrStateDirUnavailable) {
-		t.Fatalf("error = %v, want ErrStateDirUnavailable", err)
+	if !errors.Is(err, ErrInvalidDependencies) {
+		t.Fatalf("error = %v, want ErrInvalidDependencies", err)
 	}
 }
 
 func TestStateDirOwnerLock(t *testing.T) {
 	root := t.TempDir()
-	ctx := config.WithStateDir(context.Background(), root)
-	first, firstCleanup, err := New(ctx, Config{}, Dependencies{})
+	first, firstCleanup, err := New(context.Background(), Config{}, Dependencies{State: testScope(root)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +64,7 @@ func TestStateDirOwnerLock(t *testing.T) {
 		t.Fatal("first store did not return store and cleanup")
 	}
 	defer func() { _ = firstCleanup(context.Background()) }()
-	if _, _, err := New(ctx, Config{}, Dependencies{}); !errors.Is(err, ErrStateDirLocked) {
+	if _, _, err := New(context.Background(), Config{}, Dependencies{State: testScope(root)}); !errors.Is(err, ErrStateDirLocked) {
 		t.Fatalf("second writer error = %v, want ErrStateDirLocked", err)
 	}
 }
@@ -335,8 +339,7 @@ func TestUnsupportedStateVersion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "state.json"), []byte(`{"schema_version":2}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx := config.WithStateDir(context.Background(), root)
-	_, _, err := New(ctx, Config{}, Dependencies{})
+	_, _, err := New(context.Background(), Config{}, Dependencies{State: testScope(root)})
 	if !errors.Is(err, ErrUnsupportedState) {
 		t.Fatalf("error = %v, want ErrUnsupportedState", err)
 	}

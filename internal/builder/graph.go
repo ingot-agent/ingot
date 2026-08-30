@@ -44,13 +44,15 @@ type Component struct {
 }
 
 type Dependency struct {
-	Name        string
-	Type        types.Type
-	TypeString  string
-	Cardinality Cardinality
-	Target      types.Type
-	WrapperSDK  string
-	Providers   []Provider
+	Name           string
+	Type           types.Type
+	TypeString     string
+	Cardinality    Cardinality
+	Target         types.Type
+	WrapperRuntime string
+	Providers      []Provider
+	Host           bool
+	HostType       string
 }
 
 type Export struct {
@@ -75,12 +77,8 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	if err := lock.Validate(); err != nil {
 		return nil, err
 	}
-	imports := []string{"context"}
-	sdkModules := make(map[string]bool, len(lock.SDKs))
-	for _, sdk := range lock.SDKs {
-		imports = append(imports, sdk.ModulePath)
-		sdkModules[sdk.ModulePath] = true
-	}
+	runtimeModules := map[string]bool{IngotABIModulePath: true}
+	imports := []string{"context", IngotABIModulePath, IngotABIModulePath + "/invocation", IngotABIModulePath + "/lifecycle", IngotABIModulePath + "/state"}
 	type componentLocation struct {
 		plugin        LockedPlugin
 		component     LockedComponent
@@ -120,25 +118,30 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	}
 	contextPackage := byPath["context"]
 	if contextPackage == nil {
-		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: "context and all configured SDK modules"}
+		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: "context and the ingot ABI module"}
 	}
-	cleanupTypes := make(map[string]*types.Named, len(lock.SDKs))
-	for _, sdk := range lock.SDKs {
-		sdkPackage := byPath[sdk.ModulePath]
-		if sdkPackage == nil {
-			return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: sdk.ModulePath}
-		}
-		cleanupType, typeErr := namedType(sdkPackage, "Cleanup")
-		if typeErr != nil {
-			return nil, typeErr
-		}
-		cleanupTypes[sdk.ModulePath] = cleanupType
+	runtimePackage := byPath[IngotABIModulePath]
+	if runtimePackage == nil {
+		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: IngotABIModulePath}
 	}
-	primaryCleanup := cleanupTypes[lock.SDKs[0].ModulePath]
-	for index, sdk := range lock.SDKs[1:] {
-		if !types.ConvertibleTo(cleanupTypes[sdk.ModulePath], primaryCleanup) {
-			return nil, &Error{Code: "INGOT-SDK-CLEANUP-INCOMPATIBLE", Field: fmt.Sprintf("sdks[%d]", index+1), Actual: types.TypeString(cleanupTypes[sdk.ModulePath], packageQualifier), Want: "Cleanup convertible to the primary SDK Cleanup"}
+	cleanupType, typeErr := namedType(runtimePackage, "Cleanup")
+	if typeErr != nil {
+		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: IngotABIModulePath + ".Cleanup", Err: typeErr}
+	}
+	hostTypes := make(map[string]types.Type, 3)
+	for hostName, hostPackage := range map[string]*packages.Package{
+		"invocation": byPath[IngotABIModulePath+"/invocation"],
+		"lifecycle":  byPath[IngotABIModulePath+"/lifecycle"],
+		"state":      byPath[IngotABIModulePath+"/state"],
+	} {
+		if hostPackage == nil {
+			return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: IngotABIModulePath + "/" + hostName}
 		}
+		hostType, hostErr := namedType(hostPackage, hostTypeName(hostName))
+		if hostErr != nil {
+			return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: IngotABIModulePath + "/" + hostName + "." + hostTypeName(hostName), Err: hostErr}
+		}
+		hostTypes[hostName] = hostType
 	}
 	contextType, err := namedType(contextPackage, "Context")
 	if err != nil {
@@ -169,13 +172,13 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 		}
 		component := &Component{ID: location.plugin.ID + "/" + location.component.Name, PluginID: location.plugin.ID, PluginName: location.plugin.Name, DirectIndex: location.direct, ComponentIndex: location.index,
 			ImportPath: location.importPath, PackageName: componentPackage.Name, ConfigImport: configPackage.PkgPath, Package: componentPackage, ConfigType: configType, Dependencies: dependencies, Exports: exports}
-		if err := validateFields(component, dependencies, true, implementationPackages, sdkModules); err != nil {
+		if err := validateFields(component, dependencies, true, implementationPackages, runtimeModules, hostTypes); err != nil {
 			return nil, err
 		}
-		if err := validateFields(component, exports, false, implementationPackages, sdkModules); err != nil {
+		if err := validateFields(component, exports, false, implementationPackages, runtimeModules, hostTypes); err != nil {
 			return nil, err
 		}
-		if err := validateNew(component, contextType, configType, dependencies, exports, cleanupTypes); err != nil {
+		if err := validateNew(component, contextType, configType, dependencies, exports, cleanupType); err != nil {
 			return nil, err
 		}
 		graph.Components[i] = component
@@ -228,7 +231,51 @@ func namedStruct(pkg *packages.Package, name, code string) (*types.Named, error)
 	return named, nil
 }
 
-func validateFields(component *Component, named *types.Named, dependencies bool, implementationPackages, sdkModules map[string]bool) error {
+func hostTypeName(host string) string {
+	switch host {
+	case "invocation":
+		return "Invocation"
+	case "lifecycle":
+		return "Controller"
+	case "state":
+		return "Scope"
+	default:
+		return ""
+	}
+}
+
+func hostTypeMatch(value types.Type, hostTypes map[string]types.Type) (string, bool) {
+	value = types.Unalias(value)
+	for name, hostType := range hostTypes {
+		if types.Identical(value, hostType) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// nestedHostTypeMatch recognizes ABI host identities hidden inside the
+// Component Graph's collection wrappers. Host capabilities are singletons
+// supplied directly by the generated runtime; wrapping one in Optional,
+// Named, or a slice must not turn it into an ordinary provider target.
+func nestedHostTypeMatch(value types.Type, runtimeModules map[string]bool, hostTypes map[string]types.Type) (string, bool) {
+	if name, ok := hostTypeMatch(value, hostTypes); ok {
+		return name, true
+	}
+	value = types.Unalias(value)
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Optional"); ok {
+		return nestedHostTypeMatch(argument, runtimeModules, hostTypes)
+	}
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Named"); ok {
+		return nestedHostTypeMatch(argument, runtimeModules, hostTypes)
+	}
+	if slice, ok := value.(*types.Slice); ok {
+		return nestedHostTypeMatch(slice.Elem(), runtimeModules, hostTypes)
+	}
+	return "", false
+}
+
+func validateFields(component *Component, named *types.Named, dependencies bool, implementationPackages, runtimeModules map[string]bool, hostTypes map[string]types.Type) error {
 	structure := named.Underlying().(*types.Struct)
 	for i := 0; i < structure.NumFields(); i++ {
 		field := structure.Field(i)
@@ -240,16 +287,30 @@ func validateFields(component *Component, named *types.Named, dependencies bool,
 			return &Error{Code: "INGOT-COMPONENT-FIELD", Plugin: component.ID, Field: kind + "." + field.Name(), Want: "top-level named exported non-embedded field"}
 		}
 		typeString := types.TypeString(field.Type(), packageQualifier)
+		if hostName, ok := hostTypeMatch(field.Type(), hostTypes); ok {
+			if !dependencies {
+				return &Error{Code: "INGOT-COMPONENT-HOST-PROVIDER", Plugin: component.ID, Field: "Exports." + field.Name(), Want: "runtime host types are injected by the generated runtime, not provided by Components"}
+			}
+			component.DependencyList = append(component.DependencyList, &Dependency{Name: field.Name(), Type: field.Type(), TypeString: typeString, Cardinality: CardinalityOne, Target: field.Type(), Host: true, HostType: hostName})
+			continue
+		}
+		if _, ok := nestedHostTypeMatch(field.Type(), runtimeModules, hostTypes); ok {
+			fieldPath := kind + "." + field.Name()
+			if dependencies {
+				return &Error{Code: "INGOT-COMPONENT-HOST-DEPENDENCY", Plugin: component.ID, Field: fieldPath, Actual: typeString, Want: "an exact host interface as a direct ONE dependency"}
+			}
+			return &Error{Code: "INGOT-COMPONENT-HOST-PROVIDER", Plugin: component.ID, Field: fieldPath, Actual: typeString, Want: "runtime host types must not be exported through collection wrappers"}
+		}
 		if dependencies {
-			cardinality, target, wrapperSDK, err := classifyDependency(field.Type(), sdkModules)
+			cardinality, target, wrapperRuntime, err := classifyDependency(field.Type(), runtimeModules)
 			if err != nil {
 				return &Error{Code: "INGOT-CAPABILITY-TYPE", Plugin: component.ID, Field: "Dependencies." + field.Name(), Actual: typeString, Err: err}
 			}
-			base := capabilityBase(target, sdkModules)
+			base := capabilityBase(target, runtimeModules)
 			if err := validateCapabilityBase(base, implementationPackages); err != nil {
 				return &Error{Code: "INGOT-CAPABILITY-TYPE", Plugin: component.ID, Field: "Dependencies." + field.Name(), Actual: typeString, Err: err}
 			}
-			component.DependencyList = append(component.DependencyList, &Dependency{Name: field.Name(), Type: field.Type(), TypeString: typeString, Cardinality: cardinality, Target: target, WrapperSDK: wrapperSDK})
+			component.DependencyList = append(component.DependencyList, &Dependency{Name: field.Name(), Type: field.Type(), TypeString: typeString, Cardinality: cardinality, Target: target, WrapperRuntime: wrapperRuntime})
 		} else {
 			component.ExportList = append(component.ExportList, &Export{Name: field.Name(), Type: field.Type(), TypeString: typeString, Index: i})
 		}
@@ -264,52 +325,52 @@ func packageQualifier(pkg *types.Package) string {
 	return pkg.Path()
 }
 
-func classifyDependency(value types.Type, sdkModules map[string]bool) (Cardinality, types.Type, string, error) {
+func classifyDependency(value types.Type, runtimeModules map[string]bool) (Cardinality, types.Type, string, error) {
 	value = types.Unalias(value)
-	if argument, sdkModule, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
-		return CardinalityOptional, argument, sdkModule, nil
+	if argument, runtimeModule, ok := runtimeWrapper(value, runtimeModules, "Optional"); ok {
+		return CardinalityOptional, argument, runtimeModule, nil
 	}
 	if slice, ok := value.(*types.Slice); ok {
 		return CardinalityMany, slice.Elem(), "", nil
 	}
-	if err := validateExpression(value, sdkModules); err != nil {
+	if err := validateExpression(value, runtimeModules); err != nil {
 		return "", nil, "", err
 	}
 	return CardinalityOne, value, "", nil
 }
 
-func validateExpression(value types.Type, sdkModules map[string]bool) error {
+func validateExpression(value types.Type, runtimeModules map[string]bool) error {
 	value = types.Unalias(value)
-	if argument, _, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
-		return validateExpression(argument, sdkModules)
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Optional"); ok {
+		return validateExpression(argument, runtimeModules)
 	}
-	if argument, _, ok := sdkWrapper(value, sdkModules, "Named"); ok {
-		return validateExpression(argument, sdkModules)
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Named"); ok {
+		return validateExpression(argument, runtimeModules)
 	}
 	if slice, ok := value.(*types.Slice); ok {
-		return validateExpression(slice.Elem(), sdkModules)
+		return validateExpression(slice.Elem(), runtimeModules)
 	}
 	return nil
 }
 
-func sdkWrapper(value types.Type, sdkModules map[string]bool, name string) (types.Type, string, bool) {
+func runtimeWrapper(value types.Type, runtimeModules map[string]bool, name string) (types.Type, string, bool) {
 	named, ok := types.Unalias(value).(*types.Named)
-	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || !sdkModules[named.Obj().Pkg().Path()] || named.Obj().Name() != name || named.TypeArgs() == nil || named.TypeArgs().Len() != 1 {
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || !runtimeModules[named.Obj().Pkg().Path()] || named.Obj().Name() != name || named.TypeArgs() == nil || named.TypeArgs().Len() != 1 {
 		return nil, "", false
 	}
 	return named.TypeArgs().At(0), named.Obj().Pkg().Path(), true
 }
 
-func capabilityBase(value types.Type, sdkModules map[string]bool) types.Type {
+func capabilityBase(value types.Type, runtimeModules map[string]bool) types.Type {
 	value = types.Unalias(value)
-	if argument, _, ok := sdkWrapper(value, sdkModules, "Optional"); ok {
-		return capabilityBase(argument, sdkModules)
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Optional"); ok {
+		return capabilityBase(argument, runtimeModules)
 	}
-	if argument, _, ok := sdkWrapper(value, sdkModules, "Named"); ok {
-		return capabilityBase(argument, sdkModules)
+	if argument, _, ok := runtimeWrapper(value, runtimeModules, "Named"); ok {
+		return capabilityBase(argument, runtimeModules)
 	}
 	if slice, ok := value.(*types.Slice); ok {
-		return capabilityBase(slice.Elem(), sdkModules)
+		return capabilityBase(slice.Elem(), runtimeModules)
 	}
 	return types.Unalias(value)
 }
@@ -331,7 +392,7 @@ func validateCapabilityBase(value types.Type, implementationPackages map[string]
 	return nil
 }
 
-func validateNew(component *Component, contextType, configType, dependencies, exports *types.Named, cleanupTypes map[string]*types.Named) error {
+func validateNew(component *Component, contextType, configType, dependencies, exports, cleanupType *types.Named) error {
 	object := component.Package.Types.Scope().Lookup("New")
 	function, ok := object.(*types.Func)
 	if !ok || !object.Exported() {
@@ -339,26 +400,13 @@ func validateNew(component *Component, contextType, configType, dependencies, ex
 	}
 	signature, ok := function.Type().(*types.Signature)
 	if !ok || signature.Variadic() || signature.Params().Len() != 3 || signature.Results().Len() != 3 {
-		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "func(context.Context, Config, Dependencies) (Exports, sdk.Cleanup, error)", Actual: types.TypeString(function.Type(), packageQualifier)}
+		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "func(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error)", Actual: types.TypeString(function.Type(), packageQualifier)}
 	}
-	wants := []types.Type{contextType, configType, dependencies, exports, nil, types.Universe.Lookup("error").Type()}
+	wants := []types.Type{contextType, configType, dependencies, exports, cleanupType, types.Universe.Lookup("error").Type()}
 	actual := []types.Type{signature.Params().At(0).Type(), signature.Params().At(1).Type(), signature.Params().At(2).Type(), signature.Results().At(0).Type(), signature.Results().At(1).Type(), signature.Results().At(2).Type()}
 	for i := range wants {
-		if i == 4 {
-			validCleanup := false
-			for _, cleanupType := range cleanupTypes {
-				if types.Identical(actual[i], cleanupType) {
-					validCleanup = true
-					break
-				}
-			}
-			if validCleanup {
-				continue
-			}
-			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "Cleanup from one configured SDK", Actual: types.TypeString(function.Type(), packageQualifier)}
-		}
 		if !types.Identical(actual[i], wants[i]) {
-			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "exact Component constructor signature", Actual: types.TypeString(function.Type(), packageQualifier)}
+			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "exact Component constructor signature with the ingot ABI Cleanup", Actual: types.TypeString(function.Type(), packageQualifier)}
 		}
 	}
 	return nil
@@ -376,6 +424,12 @@ func (graph *Graph) resolve() error {
 	}
 	for consumerIndex, consumer := range graph.Components {
 		for _, dependency := range consumer.DependencyList {
+			if dependency.Host {
+				// Host dependencies are injected by the generated runtime.
+				// They add no Component-to-Component edges and never
+				// participate in provider selection.
+				continue
+			}
 			var providers []Provider
 			for providerIndex, providerComponent := range graph.Components {
 				for _, export := range providerComponent.ExportList {

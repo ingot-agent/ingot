@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/usage"
 	usagedefault "github.com/ingot-agent/usage-default"
@@ -24,7 +24,7 @@ func (contractResolver) ResolveRequest(_ context.Context, request model.Request)
 
 func TestPublicComponentContract(t *testing.T) {
 	t.Parallel()
-	var constructor func(context.Context, usagedefault.Config, usagedefault.Dependencies) (usagedefault.Exports, sdk.Cleanup, error) = usagedefault.New
+	var constructor func(context.Context, usagedefault.Config, usagedefault.Dependencies) (usagedefault.Exports, ingotabi.Cleanup, error) = usagedefault.New
 	_ = constructor
 	exports, cleanup, err := usagedefault.New(context.Background(), usagedefault.Config{
 		Routes: []usagedefault.Route{{Provider: "provider", ModelPattern: "model", Profile: "unicode-estimate-v1"}},

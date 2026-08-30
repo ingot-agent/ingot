@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
@@ -79,7 +79,7 @@ type normalizedHook struct {
 }
 
 // New validates hook declarations and exports target-specific wrappers in declaration order.
-func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct interceptor.script: %w", ErrInvalidConfig)
 	}

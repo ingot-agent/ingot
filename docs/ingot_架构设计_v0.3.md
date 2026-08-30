@@ -24,7 +24,7 @@ ingot 将插件在构建期组合为静态 Component Graph，并生成专用的�
 | Plugin | 分发、版本、配置、所有权和用户认知边界 |
 | Component | 构造、依赖、导出和生命周期边界；Component Graph 的节点 |
 | Capability | Component 之间通过稳定 Go Contract 交换的能力 |
-| Runtime Instance | `New` 创建的独立运行实例；可由 `sdk.Named[T]` 提供名称 |
+| Runtime Instance | `New` 创建的独立运行实例；可由 `ingotabi.Named[T]` 提供名称 |
 
 常见插件包含一个 Component。需要跨越多个拓扑位置时，一个 Plugin 可显式声明多个 Component。Component identity 为：
 
@@ -131,7 +131,11 @@ flowchart TB
 | `~/.ingot/images/<ImageID>/manifest.json` | ImageID、ArtifactDigest 与 provenance |
 | `~/.ingot/current` | 当前 ImageID 的原子指针 |
 
-正常命令 `ingot chat` 读取 `current`，定位 image 并 `exec` 对应的 `ingot-runtime`。`chat` 是 `app.cli` runtime 命令：默认进入全屏 TUI，`--plain` 降级为可取消行输入（pipes/重定向）；运行时进程参数由 generated main 通过 `application.Process` 暴露给 Component。
+正常命令 `ingot chat` 读取 `current`，定位 image 并 `exec` 对应的
+`ingot-runtime`。`chat` 是 `app.cli` runtime 命令：默认进入全屏 TUI，
+`--plain` 降级为可取消行输入（pipes/重定向）。运行时进程参数和退出请求分别
+由 generated main 以显式 `invocation.Invocation` 与 `lifecycle.Controller`
+Dependencies 注入。
 
 ### 3.2 Builder
 
@@ -222,7 +226,7 @@ func New(
     ctx context.Context,
     cfg PluginConfig,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 `PluginConfig` 精确对应 Manifest root package 中导出的 `Config` 类型。Composite Plugin 的每个 Component 使用同一类型。
@@ -231,6 +235,11 @@ func New(
 
 Component 依赖稳定 Contract Module。官方 `github.com/ingot-agent/sdk/...` 提供标准 Contract；第三方可发布实现无关的 Contract Module。Dependency target 的 base type 具有 package-level nominal identity。
 
+Component ABI primitive 来自固定的 `github.com/ingot-agent/ingot-abi`。其中
+`invocation.Invocation`、`lifecycle.Controller` 与 `state.Scope` 是 Runtime
+保留的 host type：只能作为直接 ONE Dependency，由 generated runtime 注入；
+不得通过 Exports、`Optional`、`Named` 或 slice 参与普通 Provider 匹配。
+
 ## 6. Capability 组合
 
 ### 6.1 类型表达式
@@ -238,15 +247,15 @@ Component 依赖稳定 Contract Module。官方 `github.com/ingot-agent/sdk/...`
 Dependency field 按以下递归表达式解释：
 
 ```text
-Expr := Base | sdk.Optional[Expr] | []Expr | sdk.Named[Expr]
+Expr := Base | ingotabi.Optional[Expr] | []Expr | ingotabi.Named[Expr]
 ```
 
 最外层决定 cardinality：
 
 | 形式 | Cardinality | Provider 数量规则 |
 |---|---|---|
-| `T`、`sdk.Named[T]` | ONE | 恰好 1 个 |
-| `sdk.Optional[T]` | OPTIONAL | 0 个为 `None`，1 个为 `Some` |
+| `T`、`ingotabi.Named[T]` | ONE | 恰好 1 个 |
+| `ingotabi.Optional[T]` | OPTIONAL | 0 个为 `None`，1 个为 `Some` |
 | `[]T` | MANY | 收集全部匹配项，可为空 |
 
 递归解包后的 base target 可为：
@@ -271,12 +280,12 @@ ONE 与 OPTIONAL 在匹配数大于 1 时产生 ambiguity error。MANY 对 `[]T`
 
 | Dependency | 匹配语义 |
 |---|---|
-| `sdk.Optional[[]T]` | 0 或 1 个完整 `[]T` Provider |
-| `[]sdk.Optional[T]` | 聚合 `sdk.Optional[T]` scalar 或 slice |
+| `ingotabi.Optional[[]T]` | 0 或 1 个完整 `[]T` Provider |
+| `[]ingotabi.Optional[T]` | 聚合 `ingotabi.Optional[T]` scalar 或 slice |
 | `[][]T` | 聚合 `[]T` scalar 或 `[][]T` slice |
-| `sdk.Optional[sdk.Named[T]]` | 0 或 1 个 `sdk.Named[T]` Provider |
+| `ingotabi.Optional[ingotabi.Named[T]]` | 0 或 1 个 `ingotabi.Named[T]` Provider |
 
-`sdk.Named[T]` 表示 Runtime Instance Identity。它与普通 `T` 分别匹配，同一 Named collection 内的名称保持唯一。
+`ingotabi.Named[T]` 表示 Runtime Instance Identity。它与普通 `T` 分别匹配，同一 Named collection 内的名称保持唯一。
 
 ### 6.3 Self-loop 与 Cycle
 
@@ -322,7 +331,7 @@ Generated wiring 对已选 Capability 执行值校验：
 - ONE 与有效 OPTIONAL 的 nil/typed-nil value 产生 startup error；
 - nil 或 empty export slice 为 MANY 贡献 0 个元素；
 - MANY 中的 nil/typed-nil element 产生 startup error；
-- `sdk.Named[T]` 校验名称、唯一性和 `Value`；
+- `ingotabi.Named[T]` 校验名称、唯一性和 `Value`；
 - nested Optional、slice 与 Named 按完整 value path 递归校验。
 
 诊断包含 Provider Component、Export field、element index、Consumer Component、Dependency field 和 Capability type。
@@ -392,7 +401,10 @@ Runtime Config 按 `plugins.lock` 中的 canonical `id` 或作者 `name` 定位 
 
 ### 8.2 Persistent State
 
-Generated wiring 通过 Context 向 `config.StateDir(ctx)` 提供 Plugin-scoped path。同一 Composite Plugin 的 Component 共享目录。
+需要持久化位置的 Component 显式声明 `state.Scope` Dependency。Generated wiring
+只为这些 Component 创建并注入绝对、Plugin-scoped path；同一 Composite Plugin
+的 Component 共享目录。文件访问、schema detection 与 migration 仍由 Plugin
+负责。
 
 Manifest `[state]` 声明：
 
@@ -427,7 +439,7 @@ Resolve/fetch 流程负责联网与 lock 更新；normal locked build 使用已�
 Canonical BuildManifest 包含：
 
 - `ingot_version` 与 `builder_version`；
-- 有序 SDK module identity 与 selected version 列表（第一项为 primary SDK）；
+- 固定 ingot ABI 的 module path、exact version 与 source identity；
 - bundled Go toolchain exact version；
 - GOOS、GOARCH、target tuning、GOEXPERIMENT、CGO；
 - allowlisted Go environment 与 build flags；
@@ -443,14 +455,17 @@ Canonical BuildManifest 包含：
 
 Plugin 源码编译进 Runtime Image，按受信任代码管理。供应链完整性由 module source policy、checksum、私有仓库策略和代码审查共同保证。Runtime chokepoint 提供一致的控制流、拦截和可观测性。
 
-## 10. SDK 边界
+## 10. ABI 与 SDK 边界
 
-SDK 提供：
+固定的 ingot ABI v0.1 提供：
 
-- `sdk.Cleanup`、`sdk.Optional[T]`、`sdk.Named[T]`；
-- typed pipeline Interceptor；
-- `httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`interaction`、`agent` Contract（含 `agent.History`）与 `application.Process`（SDK v0.1.2 起正式发布）；`session.MutableStore` 自 SDK v0.1.3 起提供，消费该能力的 Plugin 依赖 v0.1.3；
-- Context、错误、并发与 ownership 语义。
+- `ingotabi.Cleanup`、`ingotabi.Optional[T]`、`ingotabi.Named[T]`；
+- `invocation.Invocation`、`lifecycle.Controller` 与 `state.Scope` host Contract。
+
+可选的 Agent SDK v0.1.6 提供 typed pipeline helper，以及 `httpx`、
+`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`usage`、
+`interaction`、`agent` 等可替换能力 Contract。领域 SDK 或 Plugin 自有 Contract
+可通过普通 Go import 与它并存，均不需要 Builder 配置。
 
 Runtime 的主要 chokepoint：
 
@@ -459,7 +474,8 @@ Runtime 的主要 chokepoint：
 - Model stream 调用进入 `model.StreamingRuntime`；
 - Agent turn 进入 `agent.Runtime`。
 
-SDK 详细 API 与语义见《ingot SDK v0.1 设计方案》。
+ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 语义见
+《ingot SDK v0.1 设计方案》。
 
 ## 11. 首批官方 Plugin
 
@@ -467,7 +483,7 @@ SDK 详细 API 与语义见《ingot SDK v0.1 设计方案》。
 |---|---|---|
 | `http.default` | 共享 HTTP client | Export `httpx.Client` |
 | `filesystem.local` | workspace-relative filesystem | Export `filesystem.FS` |
-| `model.openai-compatible` | OpenAI-compatible providers | Consume `httpx.Client`; export `[]sdk.Named[model.Provider]` |
+| `model.openai-compatible` | OpenAI-compatible providers | Consume `httpx.Client`; export `[]ingotabi.Named[model.Provider]` |
 | `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes |
 | `tool.shell` | shell tool | Export `[]tool.Tool` |
 | `tool.fs` | file tools | Consume `filesystem.FS`; export `[]tool.Tool` |

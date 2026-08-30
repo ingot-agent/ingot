@@ -289,7 +289,10 @@ Reader window 为：
 [min_reader_version, schema_version]
 ```
 
-Plugin 通过 `config.StateDir(ctx)` 获得 Plugin-scoped directory，并负责 format detection、reader validation 与 migration。
+需要该持久化位置的 Component 通过显式 `state.Scope` Dependency 获得
+Plugin-scoped absolute directory，并负责 format detection、reader validation
+与 migration。`state.Scope` 由 generated runtime 注入，不参与普通 Provider
+匹配。
 
 省略 `[state]` 时，lock 将 State absence materialize 为：
 
@@ -357,7 +360,7 @@ func New(
     ctx context.Context,
     cfg PluginConfig,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 Builder 验证：
@@ -371,7 +374,7 @@ Builder 验证：
 | `New` parameter 2 | `config_package.Config` |
 | `New` parameter 3 | 当前 package 的 `Dependencies` |
 | `New` result 1 | 当前 package 的 `Exports` |
-| `New` result 2 | `sdk.Cleanup` |
+| `New` result 2 | `ingotabi.Cleanup` |
 | `New` result 3 | `error` |
 
 Embedded field 与 unexported field 产生 Component Contract Error。

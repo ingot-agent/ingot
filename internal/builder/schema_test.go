@@ -165,16 +165,17 @@ func TestLockRequiresMaterializedFalseFields(t *testing.T) {
 	t.Parallel()
 	file := filepath.Join(t.TempDir(), "plugins.lock")
 	writeTestFile(t, file, strings.TrimSpace(`
-lock_version=2
+lock_version=3
 plugins_digest="sha256:0000000000000000000000000000000000000000000000000000000000000000"
 ingot_version="0.3.0"
 builder_version="0.3.0"
 replacements=[]
 plugins=[]
 modules=[]
-[[sdks]]
-module_path="github.com/ingot-agent/sdk"
+[runtime]
+module_path="github.com/ingot-agent/ingot-abi"
 version="v0.1.0"
+sum="h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 [toolchain]
 version="go1.26.2"
 [target]
@@ -242,14 +243,13 @@ func TestImageIDUsesContentIdentityAndDirectOrder(t *testing.T) {
 	}
 }
 
-func TestImageIDIncludesOrderedSDKList(t *testing.T) {
+func TestImageIDIncludesRuntimeABI(t *testing.T) {
 	t.Parallel()
 	first := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
-	first.SDKs = append(first.SDKs, SDKLock{ModulePath: "example.com/extra-sdk", Version: "v1.2.3"})
-	first.Modules = append([]LockedModule{{Path: "example.com/extra-sdk", Version: "v1.2.3", Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}}, first.Modules...)
+	first.Modules[1] = LockedModule{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: "h1:QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
 	second := *first
-	second.SDKs = append([]SDKLock(nil), first.SDKs...)
-	second.SDKs[0], second.SDKs[1] = second.SDKs[1], second.SDKs[0]
+	second.Modules = append([]LockedModule(nil), first.Modules...)
+	second.Modules[1] = LockedModule{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: "h1:Q0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0M=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
 	firstID, err := first.ImageID()
 	if err != nil {
 		t.Fatal(err)
@@ -259,6 +259,56 @@ func TestImageIDIncludesOrderedSDKList(t *testing.T) {
 		t.Fatal(err)
 	}
 	if firstID == secondID {
-		t.Fatal("primary SDK order did not enter ImageID")
+		t.Fatal("Runtime support module identity did not enter ImageID")
+	}
+}
+
+func TestLockAcceptsMVSUpgradeOfGeneratedConfigDecoder(t *testing.T) {
+	t.Parallel()
+	lock := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
+	lock.Modules = append([]LockedModule(nil), lock.Modules...)
+	lock.Modules[1].Version = "v2.2.5"
+	if err := lock.Validate(); err != nil {
+		t.Fatalf("newer generated config decoder was rejected: %v", err)
+	}
+	root := t.TempDir()
+	if err := lock.RestoreRootModule(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), RuntimeSupportTOMLModule+" v2.2.5") {
+		t.Fatalf("restored go.mod did not retain the MVS-selected decoder:\n%s", data)
+	}
+}
+
+func TestImageIDIncludesRuntimeSum(t *testing.T) {
+	t.Parallel()
+	first := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
+	second := *first
+	second.Runtime.Sum = "h1:QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI="
+	second.Modules = append([]LockedModule(nil), first.Modules...)
+	second.Modules[0] = LockedModule{Path: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}
+	firstID, err := first.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := second.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstID == secondID {
+		t.Fatal("Runtime ABI sum did not enter ImageID")
+	}
+}
+
+func TestLockRejectsUnpinnedRuntimeABI(t *testing.T) {
+	t.Parallel()
+	lock := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
+	lock.Runtime.Version = "v0.2.0"
+	if _, err := lock.MarshalTOML(); err == nil || !strings.Contains(err.Error(), "INGOT-LOCK-RUNTIME-VERSION") {
+		t.Fatalf("unpinned Runtime version error = %v", err)
 	}
 }

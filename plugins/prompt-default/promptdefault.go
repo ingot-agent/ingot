@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/tool"
@@ -58,7 +58,7 @@ type renderer struct {
 }
 
 // New validates configuration and snapshots the contributor collection.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct prompt.default: %w", ErrInvalidConfig)
 	}

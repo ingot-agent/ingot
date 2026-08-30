@@ -10,14 +10,14 @@ import (
 	"time"
 
 	"github.com/ingot-agent/http-default"
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/httpx"
 )
 
 func TestComponentContract(t *testing.T) {
 	t.Parallel()
 
-	var constructor func(context.Context, httpdefault.Config, httpdefault.Dependencies) (httpdefault.Exports, sdk.Cleanup, error) = httpdefault.New
+	var constructor func(context.Context, httpdefault.Config, httpdefault.Dependencies) (httpdefault.Exports, ingotabi.Cleanup, error) = httpdefault.New
 	_ = constructor
 
 	exports, cleanup, err := httpdefault.New(context.Background(), httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{})

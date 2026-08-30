@@ -2,7 +2,7 @@
 
 > 状态：Implemented v0.1
 > Dependencies：`httpx.Client`  
-> Exports：`[]sdk.Named[model.Provider]`
+> Exports：`[]ingotabi.Named[model.Provider]`
 
 ## 1. 定位
 
@@ -16,7 +16,7 @@ type Dependencies struct {
 }
 
 type Exports struct {
-    Providers []sdk.Named[model.Provider]
+    Providers []ingotabi.Named[model.Provider]
 }
 ```
 

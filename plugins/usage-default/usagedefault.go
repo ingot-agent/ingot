@@ -12,7 +12,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/usage"
 )
@@ -88,7 +88,7 @@ type counter struct {
 }
 
 // New validates all routes and constructs an independent counter instance.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct usage.default: nil context: %w", ErrInvalidConfig)
 	}
@@ -114,7 +114,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, sdk.Clean
 		capacity = defaultCacheEntries
 	}
 	instance := newCounter(deps.Resolver, routes, capacity)
-	cleanup := sdk.Cleanup(func(cleanupCtx context.Context) error {
+	cleanup := ingotabi.Cleanup(func(cleanupCtx context.Context) error {
 		if cleanupCtx == nil {
 			return errors.New("cleanup usage.default: nil context")
 		}

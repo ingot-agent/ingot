@@ -36,7 +36,7 @@ ingot 的核心是 Plugin/Component 组合系统，但最终产品不应只是�
 `ingot init` 建议负责以下事情：
 
 1. 创建 standard ingot home 目录结构；
-2. 生成一份默认 `builder.toml`，声明 Builder 使用的有序 SDK 列表；
+2. 生成一份默认 `builder.toml` 配置 scaffold（v0.1 仅含 schema version）；
 3. 生成一份可用的 `plugins.toml`，内容为官方默认插件集合；
 4. 生成一份默认 `config.toml`，包含运行所需配置的占位或默认值；
 5. 可选：自动执行一次 `resolve`，生成 `plugins.lock`；
@@ -126,7 +126,7 @@ ingot init --no-build
 
 | 文件 | init 的行为 |
 |---|---|
-| `~/.ingot/builder.toml` | 写入默认有序 SDK 配置 |
+| `~/.ingot/builder.toml` | 写入默认 Builder 配置 scaffold |
 | `~/.ingot/plugins.toml` | 写入默认 Direct Plugin Set |
 | `~/.ingot/plugins.lock` | 由 resolve/build 生成 |
 | `~/.ingot/config.toml` | 写入默认运行配置模板 |

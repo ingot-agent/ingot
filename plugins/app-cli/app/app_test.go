@@ -9,8 +9,8 @@ import (
 	"time"
 
 	appcli "github.com/ingot-agent/app-cli"
+	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/sdk/agent"
-	applicationruntime "github.com/ingot-agent/sdk/application"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -180,16 +180,16 @@ func (f *fakeModel) Complete(_ context.Context, request model.Request) (model.Re
 type fakeProcess struct {
 	mu        sync.Mutex
 	arguments []string
-	check     bool
+	mode      invocation.Mode
 	requested bool
 	err       error
 	done      chan struct{}
 }
 
-func (f *fakeProcess) Arguments() []string { return append([]string(nil), f.arguments...) }
-func (f *fakeProcess) Check() bool         { return f.check }
+func (f *fakeProcess) Arguments() []string   { return append([]string(nil), f.arguments...) }
+func (f *fakeProcess) Mode() invocation.Mode { return f.mode }
 
-func (f *fakeProcess) Shutdown(err error) {
+func (f *fakeProcess) RequestShutdown(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.requested {
@@ -205,7 +205,7 @@ func (f *fakeProcess) Shutdown(err error) {
 func testApplication(frontend *fakeFrontend, runtime *fakeAgent, store *fakeStore, process *fakeProcess) *application {
 	return &application{
 		agent: runtime, history: runtime, model: &fakeModel{}, interaction: frontend, frontend: frontend,
-		store: store, process: process, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
+		store: store, invocationData: process, lifecycle: process, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
 	}
 }
 
@@ -244,11 +244,10 @@ func TestNewReturnsPromptlyAndCleanupCancelsOnlyOwnedLoop(t *testing.T) {
 	parent, parentCancel := context.WithCancel(context.Background())
 	defer parentCancel()
 	process := &fakeProcess{}
-	parent = applicationruntime.WithProcess(parent, process)
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
 	start := time.Now()
-	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,24 +415,29 @@ func TestNewRejectsTypedNilDependenciesAndMissingProcess(t *testing.T) {
 		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: nilFrontend, Store: &fakeStore{}},
 		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: nilStore},
 	}
-	ctx := applicationruntime.WithProcess(context.Background(), &fakeProcess{})
+	process := &fakeProcess{}
 	for index, deps := range tests {
-		if _, _, err := New(ctx, appcli.Config{}, deps); !errors.Is(err, ErrInvalidConfig) {
+		deps.Invocation = process
+		deps.Lifecycle = process
+		if _, _, err := New(context.Background(), appcli.Config{}, deps); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("case %d New() error=%v", index, err)
 		}
 	}
-	valid := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}}
-	if _, _, err := New(context.Background(), appcli.Config{}, valid); !errors.Is(err, ErrInvalidConfig) {
-		t.Fatalf("missing process error=%v", err)
+	valid := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process}
+	missingHosts := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}}
+	if _, _, err := New(context.Background(), appcli.Config{}, missingHosts); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing host dependency error=%v", err)
+	}
+	if _, _, err := New(context.Background(), appcli.Config{}, valid); err != nil {
+		t.Fatalf("valid dependencies error=%v", err)
 	}
 }
 
 func TestCheckModeValidatesGraphWithoutStartingLoop(t *testing.T) {
-	process := &fakeProcess{check: true}
-	ctx := applicationruntime.WithProcess(context.Background(), process)
+	process := &fakeProcess{mode: invocation.ModeCheck}
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(context.Background(), appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
 	if err != nil || cleanup != nil {
 		t.Fatalf("cleanup=%v err=%v", cleanup, err)
 	}
@@ -442,10 +446,9 @@ func TestCheckModeValidatesGraphWithoutStartingLoop(t *testing.T) {
 func TestFatalLoopErrorRequestsProcessShutdownAndCleanupReturnsIt(t *testing.T) {
 	wantErr := errors.New("terminal failed")
 	process := &fakeProcess{done: make(chan struct{})}
-	ctx := applicationruntime.WithProcess(context.Background(), process)
 	frontend := &fakeFrontend{readErr: wantErr}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(ctx, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}})
+	_, cleanup, err := New(context.Background(), appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
 	if err != nil {
 		t.Fatal(err)
 	}

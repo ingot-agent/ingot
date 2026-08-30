@@ -13,6 +13,9 @@ import (
 	"github.com/ingot-agent/ingot/internal/layout"
 )
 
+const tomlSum = "h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4="
+const tomlGoModSum = "h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY="
+
 func TestLoadGraphStableManyOrderAndGenerate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration test")
@@ -24,8 +27,12 @@ func TestLoadGraphStableManyOrderAndGenerate(t *testing.T) {
 	if sdkRoot == "" {
 		sdkRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "sdk"))
 	}
-	if _, err := os.Stat(filepath.Join(sdkRoot, "go.mod")); err != nil {
-		t.Skip("local SDK checkout not found; set INGOT_SDK_ROOT to run this test")
+	ingotABIRoot := os.Getenv("INGOT_ABI_ROOT")
+	if ingotABIRoot == "" {
+		ingotABIRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "ingot-abi"))
+	}
+	if _, err := os.Stat(filepath.Join(ingotABIRoot, "go.mod")); err != nil {
+		t.Skip("local ingot ABI checkout not found; set INGOT_ABI_ROOT to run this test")
 	}
 	providerA := filepath.Join(root, "provider-a")
 	providerB := filepath.Join(root, "provider-b")
@@ -41,22 +48,18 @@ require (
 	example.com/consumer v0.0.0
 	example.com/provider-a v0.0.0
 	example.com/provider-b v0.0.0
-	github.com/ingot-agent/sdk v0.1.0
-	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/ingot-agent/ingot-abi v0.1.0
+	github.com/ingot-agent/sdk v0.1.6
+	github.com/pelletier/go-toml/v2 v2.2.4
 )
 
 replace example.com/consumer => ./consumer
 replace example.com/provider-a => ./provider-a
 replace example.com/provider-b => ./provider-b
+replace github.com/ingot-agent/ingot-abi => ` + filepath.ToSlash(ingotABIRoot) + `
 replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	writeTestFile(t, filepath.Join(root, "go.mod"), rootGoMod)
-	sdkSums, err := os.ReadFile(filepath.Join(sdkRoot, "go.sum"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "go.sum"), sdkSums, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, filepath.Join(root, "go.sum"), fmt.Sprintf("%s %s %s\n%s %s/go.mod %s\n", RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlSum, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlGoModSum))
 
 	lock := fixtureGraphLock(providerA, providerB, consumer)
 	graph, err := LoadGraph(context.Background(), root, lock, LoadOptions{})
@@ -77,8 +80,25 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if len(providers) != 2 || providers[0].Component.PluginID != "example.com/provider-b" || providers[1].Component.PluginID != "example.com/provider-a" || !providers[0].Flatten || !providers[1].Flatten {
 		t.Fatalf("MANY providers = %#v", providers)
 	}
+	hostDependencies := consumerComponent.DependencyList[2:]
+	if len(hostDependencies) != 3 || !hostDependencies[0].Host || hostDependencies[0].HostType != "invocation" || !hostDependencies[1].Host || hostDependencies[1].HostType != "lifecycle" || !hostDependencies[2].Host || hostDependencies[2].HostType != "state" {
+		t.Fatalf("host dependencies = %#v", hostDependencies)
+	}
+	if len(hostDependencies[0].Providers) != 0 || len(hostDependencies[1].Providers) != 0 || len(hostDependencies[2].Providers) != 0 {
+		t.Fatalf("host dependencies must not participate in provider selection: %#v", hostDependencies)
+	}
+	if _, _, inspectedHost := inspectGraph(graph); len(inspectedHost) != 1 || len(inspectedHost["example.com/consumer/default"]) != 3 {
+		t.Fatalf("inspection host dependencies = %#v", inspectedHost)
+	}
 	if err := Generate(root, lock, graph); err != nil {
 		t.Fatal(err)
+	}
+	wiringData, err := os.ReadFile(filepath.Join(root, "wiring_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(wiringData), "os.MkdirAll(stateDir"); count != 1 {
+		t.Fatalf("generated state directory creation count = %d, want only the state-consuming Component", count)
 	}
 	runtimePath := filepath.Join(root, layout.RuntimeExecutableName(runtime.GOOS))
 	command := exec.Command("go", "build", "-mod=readonly", "-o", runtimePath, ".")
@@ -106,6 +126,12 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	}
 	if string(cleanupBytes) != "consumer\nprovider_a\nprovider_b\n" {
 		t.Fatalf("cleanup order = %q", cleanupBytes)
+	}
+	relativeCheck := exec.Command(runtimePath, "--ingot-check")
+	relativeCheck.Dir = root
+	relativeCheck.Env = replaceEnvironment(os.Environ(), map[string]string{"INGOT_CONFIG": configPath, "INGOT_STATE_ROOT": "relative-state"})
+	if output, err := relativeCheck.CombinedOutput(); err != nil {
+		t.Fatalf("relative state root was not normalized: %v\n%s", err, output)
 	}
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -144,6 +170,58 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 		t.Fatalf("runtime usage exit = %v", err)
 	}
 
+	// Shutdown semantics: RequestShutdown(nil) is a normal completion, a
+	// non-nil cause survives a later nil request, and both exit 0/1
+	// deterministically with full reverse cleanup.
+	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"ok\"\n", cleanupLog, cleanupLog, cleanupLog))
+	okRun := exec.Command(runtimePath)
+	okRun.Env = check.Env
+	if err := okRun.Run(); err != nil {
+		t.Fatalf("normal shutdown run exit = %v", err)
+	}
+	cleanupBytes, err = os.ReadFile(cleanupLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cleanupBytes) != "consumer\nprovider_a\nprovider_b\n" {
+		t.Fatalf("normal shutdown cleanup order = %q", cleanupBytes)
+	}
+	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"fatal\"\n", cleanupLog, cleanupLog, cleanupLog))
+	fatalRun := exec.Command(runtimePath)
+	fatalRun.Env = check.Env
+	if err := fatalRun.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
+		t.Fatalf("fatal shutdown run exit = %v", err)
+	}
+	cleanupBytes, err = os.ReadFile(cleanupLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cleanupBytes) != "consumer\nprovider_a\nprovider_b\n" {
+		t.Fatalf("fatal shutdown cleanup order = %q", cleanupBytes)
+	}
+	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"late-fatal\"\n", cleanupLog, cleanupLog, cleanupLog))
+	lateFatalRun := exec.Command(runtimePath)
+	lateFatalRun.Env = check.Env
+	if err := lateFatalRun.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
+		t.Fatalf("late fatal shutdown run exit = %v", err)
+	}
+	cleanupBytes, err = os.ReadFile(cleanupLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(cleanupBytes) != "consumer\nprovider_a\nprovider_b\n" {
+		t.Fatalf("late fatal shutdown cleanup order = %q", cleanupBytes)
+	}
+
 	dependency := consumerComponent.DependencyList[0]
 	originalCardinality, originalTarget := dependency.Cardinality, dependency.Target
 	dependency.Cardinality, dependency.Target = CardinalityOne, dependency.Type
@@ -158,9 +236,92 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	}
 }
 
+func TestComponentCannotWrapOrExportHostType(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	t.Parallel()
+	tests := []struct {
+		name         string
+		dependencies string
+		exports      string
+		wantCode     string
+	}{
+		{name: "direct export", exports: "Invocation invocation.Invocation", wantCode: "INGOT-COMPONENT-HOST-PROVIDER"},
+		{name: "slice export", exports: "Invocations []invocation.Invocation", wantCode: "INGOT-COMPONENT-HOST-PROVIDER"},
+		{name: "optional export", exports: "Invocation ingotabi.Optional[invocation.Invocation]", wantCode: "INGOT-COMPONENT-HOST-PROVIDER"},
+		{name: "slice dependency", dependencies: "Invocations []invocation.Invocation", wantCode: "INGOT-COMPONENT-HOST-DEPENDENCY"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := loadInvalidHostComponent(t, test.dependencies, test.exports)
+			if err == nil || !strings.Contains(err.Error(), test.wantCode) {
+				t.Fatalf("host type error = %v, want %s", err, test.wantCode)
+			}
+		})
+	}
+}
+
+func loadInvalidHostComponent(t *testing.T, dependencies, exports string) error {
+	t.Helper()
+	root := t.TempDir()
+	_, sourceFile, _, _ := runtime.Caller(0)
+	ingotABIRoot := os.Getenv("INGOT_ABI_ROOT")
+	if ingotABIRoot == "" {
+		ingotABIRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "ingot-abi"))
+	}
+	if _, err := os.Stat(filepath.Join(ingotABIRoot, "go.mod")); err != nil {
+		t.Skip("local ingot ABI checkout not found; set INGOT_ABI_ROOT to run this test")
+	}
+	hostProvider := filepath.Join(root, "host-provider")
+	writeTestFile(t, filepath.Join(hostProvider, "go.mod"), "module example.com/host-provider\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/ingot-abi v0.1.0\n")
+	writeTestFile(t, filepath.Join(hostProvider, "component.go"), `package hostprovider
+
+import (
+	"context"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/invocation"
+)
+
+type Config struct{}
+type Dependencies struct {
+	`+dependencies+`
+}
+type Exports struct {
+	`+exports+`
+}
+func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+	return Exports{}, nil, nil
+}
+`)
+	writeTestFile(t, filepath.Join(root, "go.mod"), `module ingot.local/runtime-image
+
+go 1.24.0
+
+require (
+	example.com/host-provider v0.0.0
+	github.com/ingot-agent/ingot-abi v0.1.0
+	github.com/pelletier/go-toml/v2 v2.2.4
+)
+
+replace example.com/host-provider => ./host-provider
+replace github.com/ingot-agent/ingot-abi => `+filepath.ToSlash(ingotABIRoot)+"\n")
+	writeTestFile(t, filepath.Join(root, "go.sum"), fmt.Sprintf("%s %s %s\n%s %s/go.mod %s\n", RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlSum, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlGoModSum))
+	lock := fixtureGraphLock("/placeholder-a", "/placeholder-b", "/placeholder-c")
+	lock.Plugins = []LockedPlugin{{ID: "example.com/host-provider", Name: "host-provider", SourceKind: "dev", ManifestDigest: "sha256:" + strings.Repeat("0", 64), RootPackage: ".", Components: []LockedComponent{{Name: "default", Package: "."}}}}
+	lock.Runtime.Sum = ""
+	lock.Modules = lock.Modules[1:]
+	lock.Replacements = []Replacement{
+		{ModulePath: "example.com/host-provider", SyntheticVersion: "v0.0.0", DevPath: hostProvider, ContentSHA256: "sha256:" + strings.Repeat("0", 64)},
+		{ModulePath: IngotABIModulePath, SyntheticVersion: IngotABIVersion, DevPath: ingotABIRoot, ContentSHA256: "sha256:" + strings.Repeat("0", 64)},
+	}
+	_, err := LoadGraph(context.Background(), root, lock, LoadOptions{})
+	return err
+}
+
 func writeProviderFixture(t *testing.T, root, modulePath, packageName string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/sdk v0.1.0\n")
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/ingot-abi v0.1.0\n")
 	writeTestFile(t, filepath.Join(root, "component.go"), `package `+packageName+`
 
 import (
@@ -168,7 +329,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"github.com/ingot-agent/sdk"
+	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/httpx"
 )
 
@@ -180,7 +341,7 @@ type Dependencies struct{}
 type Exports struct { Clients []httpx.Client }
 type client struct{}
 func (*client) Do(context.Context, *http.Request) (*http.Response, error) { return nil, nil }
-func New(_ context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
+func New(_ context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
 	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "`+packageName+`"); return err }
 	if cfg.Null { var value *client; return Exports{Clients: []httpx.Client{value}}, cleanup, nil }
 	return Exports{Clients: []httpx.Client{&client{}}}, cleanup, nil
@@ -190,7 +351,7 @@ func New(_ context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, e
 
 func writeConsumerFixture(t *testing.T, root string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/consumer\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/sdk v0.1.0\n")
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/consumer\n\ngo 1.24.0\n\nrequire (\n\tgithub.com/ingot-agent/ingot-abi v0.1.0\n\tgithub.com/ingot-agent/sdk v0.1.6\n)\n")
 	writeTestFile(t, filepath.Join(root, "component.go"), `package consumer
 
 import (
@@ -198,7 +359,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"github.com/ingot-agent/sdk"
+	"path/filepath"
+	"time"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/invocation"
+	"github.com/ingot-agent/ingot-abi/lifecycle"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/filesystem"
 	"github.com/ingot-agent/sdk/httpx"
 )
@@ -206,14 +372,36 @@ import (
 type Config struct {
 	Log string `+"`toml:\"log\"`"+`
 	Fail bool `+"`toml:\"fail\"`"+`
+	Shutdown string `+"`toml:\"shutdown\"`"+`
 }
 type Dependencies struct {
 	Clients []httpx.Client
-	OptionalFS sdk.Optional[filesystem.FS]
+	OptionalFS ingotabi.Optional[filesystem.FS]
+	Invocation invocation.Invocation
+	Lifecycle lifecycle.Controller
+	State state.Scope
 }
 type Exports struct{}
-func New(_ context.Context, cfg Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
-	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "consumer"); return err }
+func New(_ context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+	if !filepath.IsAbs(deps.State.Dir()) { return Exports{}, nil, errors.New("state scope is not absolute") }
+	cleanup := func(context.Context) error { if cfg.Shutdown == "late-fatal" { time.Sleep(100 * time.Millisecond) }; file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "consumer"); return err }
+	if cfg.Shutdown != "" {
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			if cfg.Shutdown == "fatal" {
+				deps.Lifecycle.RequestShutdown(errors.New("fatal frontend failure"))
+				deps.Lifecycle.RequestShutdown(nil)
+				return
+			}
+			if cfg.Shutdown == "late-fatal" {
+				deps.Lifecycle.RequestShutdown(nil)
+				time.Sleep(25 * time.Millisecond)
+				deps.Lifecycle.RequestShutdown(errors.New("late fatal frontend failure"))
+				return
+			}
+			deps.Lifecycle.RequestShutdown(nil)
+		}()
+	}
 	if cfg.Fail { return Exports{}, cleanup, errors.New("requested constructor failure") }
 	return Exports{}, cleanup, nil
 }
@@ -226,12 +414,16 @@ func fixtureGraphLock(providerA, providerB, consumer string) *Lock {
 		return LockedPlugin{ID: id, Name: name, SourceKind: "dev", ManifestDigest: digest, RootPackage: ".", Components: []LockedComponent{{Name: "default", Package: "."}}}
 	}
 	return &Lock{
-		LockVersion: 2, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
-		SDKs: []SDKLock{{ModulePath: "github.com/ingot-agent/sdk", Version: "v0.1.0"}}, Toolchain: ToolchainLock{Version: runtime.Version()},
+		LockVersion: 3, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
+		Runtime:     RuntimeLock{ModulePath: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		Toolchain:   ToolchainLock{Version: runtime.Version()},
 		Target:      TargetLock{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: defaultTuning(runtime.GOARCH)},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"}, Build: BuildLock{Trimpath: true, BuildVCS: false, Tags: []string{}, LDFlags: []string{}, GCFlags: []string{}, ASMFlags: []string{}},
 		Plugins: []LockedPlugin{plugin("example.com/provider-b", "provider-b", providerB), plugin("example.com/provider-a", "provider-a", providerA), plugin("example.com/consumer", "consumer", consumer)},
-		Modules: []LockedModule{{Path: "github.com/ingot-agent/sdk", Version: "v0.1.0", Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}},
+		Modules: []LockedModule{
+			{Path: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+			{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: tomlSum, GoModSum: tomlGoModSum},
+		},
 		Replacements: []Replacement{
 			{ModulePath: "example.com/consumer", SyntheticVersion: "v0.0.0", DevPath: consumer, ContentSHA256: digest},
 			{ModulePath: "example.com/provider-a", SyntheticVersion: "v0.0.0", DevPath: providerA, ContentSHA256: digest},

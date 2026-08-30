@@ -43,7 +43,7 @@ package httpdefault
 import (
     "context"
 
-    "github.com/ingot-agent/sdk"
+    ingotabi "github.com/ingot-agent/ingot-abi"
     "github.com/ingot-agent/sdk/httpx"
 )
 
@@ -57,7 +57,7 @@ func New(
     ctx context.Context,
     cfg Config,
     deps Dependencies,
-) (Exports, sdk.Cleanup, error)
+) (Exports, ingotabi.Cleanup, error)
 ```
 
 `New` 不发起探测请求。它只校验配置、创建 Plugin-owned `http.Transport` 和 `http.Client`，因此初始化必须有界并及时返回。

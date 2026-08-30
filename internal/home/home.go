@@ -39,6 +39,7 @@ type Inspection struct {
 	DirectPlugins          []PluginInspection  `json:"direct_plugins"`
 	ComponentCreationOrder []string            `json:"component_creation_order"`
 	ManyOrder              map[string][]string `json:"many_order"`
+	HostDependencies       map[string][]string `json:"host_dependencies,omitempty"`
 }
 
 type PluginInspection struct {
@@ -124,15 +125,15 @@ func (home *Home) Resolve(ctx context.Context, options builder.ResolveOptions) (
 }
 
 func (home *Home) resolveCandidate(ctx context.Context, desired *builder.DesiredPlugins, options builder.ResolveOptions) (*builder.Lock, error) {
+	// builder.toml intentionally remains the stable Builder configuration
+	// entry point even while v0.1 has no configurable fields beyond its schema
+	// version. Always parse it so malformed or unsupported configuration is
+	// not silently ignored.
+	if _, err := builder.LoadBuilderConfig(home.BuilderConfigPath()); err != nil {
+		return nil, err
+	}
 	if options.GOMODCACHE == "" {
 		options.GOMODCACHE = filepath.Join(home.Root, "cache", "gomod")
-	}
-	if len(options.SDKs) == 0 {
-		config, err := builder.LoadBuilderConfig(home.BuilderConfigPath())
-		if err != nil {
-			return nil, err
-		}
-		options.SDKs = append([]builder.SDKConfig(nil), config.SDKs...)
 	}
 	return builder.Resolve(ctx, desired, options)
 }
@@ -481,14 +482,16 @@ func (home *Home) Status() (Status, error) {
 		status.LockedDigest = lock.PluginsDigest
 		status.LockedImageID, _ = lock.ImageID()
 		status.LockedSources = true
-		sdkModules := make(map[string]bool, len(lock.SDKs))
-		for _, sdk := range lock.SDKs {
-			sdkModules[sdk.ModulePath] = true
+		devPlugins := map[string]bool{}
+		for _, plugin := range lock.Plugins {
+			if plugin.SourceKind == "dev" {
+				devPlugins[plugin.ID] = true
+			}
 		}
 		for _, replacement := range lock.Replacements {
-			digest, digestErr := builder.DevSourceDigest(replacement.DevPath)
-			if sdkModules[replacement.ModulePath] {
-				digest, digestErr = builder.ModuleSourceDigest(replacement.DevPath)
+			digest, digestErr := builder.ModuleSourceDigest(replacement.DevPath)
+			if devPlugins[replacement.ModulePath] {
+				digest, digestErr = builder.DevSourceDigest(replacement.DevPath)
 			}
 			if digestErr != nil || digest != replacement.ContentSHA256 {
 				status.LockedSources = false
@@ -538,6 +541,7 @@ func (home *Home) Inspect(reference string) (Inspection, error) {
 		var manifest builder.ImageManifest
 		if json.Unmarshal(data, &manifest) == nil {
 			inspection.ComponentCreationOrder, inspection.ManyOrder = manifest.ComponentCreationOrder, manifest.ManyOrder
+			inspection.HostDependencies = manifest.HostDependencies
 		}
 	}
 	return inspection, nil

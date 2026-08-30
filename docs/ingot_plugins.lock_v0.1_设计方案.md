@@ -1,6 +1,6 @@
 # ingot `plugins.lock` v0.1 设计方案
 
-> 状态：Draft  
+> 状态：Implemented
 > 目标文件：`plugins.lock`  
 > 关联规范：架构 v0.3、Plugin Manifest v0.1、SDK v0.1
 
@@ -32,19 +32,21 @@ Runtime Config value、secret、用户输入与 Runtime State 使用独立存储
 
 ## 3. Exact Schema
 
-以下示例包含一个 remote Plugin 和一个 Local Dev Plugin。lock v2 schema 之外的字段均产生 Lock Validation Error。
+以下示例包含一个 remote Plugin 和一个 Local Dev Plugin。lock v3 schema 之外的字段均产生 Lock Validation Error。
 
 ```toml
-lock_version = 2
+lock_version = 3
+plugins_digest = "sha256:..."
 ingot_version = "0.3.0"
 builder_version = "0.3.0"
 replacements = [
   { module_path = "github.com/example/ingot-local-tool", synthetic_version = "v0.0.0", dev_path = "/workspace/ingot-local-tool", content_sha256 = "sha256:..." }
 ]
 
-[[sdks]]
-module_path = "github.com/ingot-agent/sdk"
+[runtime]
+module_path = "github.com/ingot-agent/ingot-abi"
 version = "v0.1.0"
+sum = "h1:..."
 
 [toolchain]
 version = "go1.21.13"
@@ -101,8 +103,14 @@ state_min_reader_version = 0
   package = "."
 
 [[modules]]
-path = "github.com/ingot-agent/sdk"
+path = "github.com/ingot-agent/ingot-abi"
 version = "v0.1.0"
+sum = "h1:..."
+go_mod_sum = "h1:..."
+
+[[modules]]
+path = "github.com/pelletier/go-toml/v2"
+version = "v2.2.4"
 sum = "h1:..."
 go_mod_sum = "h1:..."
 
@@ -119,9 +127,10 @@ go_mod_sum = "h1:..."
 
 ```text
 lock_version
+plugins_digest
 ingot_version
 builder_version
-sdks
+runtime
 toolchain
 target
 environment
@@ -131,21 +140,32 @@ modules
 replacements
 ```
 
-空集合使用空 TOML array。`plugins` 与 `sdks` 至少包含一个条目；每个 remote SDK 都必须出现在 `modules`（SDK 为本地开发源码时除外，见4.2）。
+空集合使用空 TOML array。`plugins` 至少包含一个条目。远程 ingot ABI 必须以
+相同 version 与 sum 出现在 `modules`；开发 workspace replacement 则进入
+`replacements`，并从 `modules` 排除。
 
 ### 4.1 Version
 
 | Field | 语义 |
 |---|---|
-| `lock_version` | schema major，固定为 integer `2` |
+| `lock_version` | schema major，固定为 integer `3` |
 | `ingot_version` | distribution/runtime protocol 的 exact canonical SemVer，也是 Manifest `ingot` range 的求值版本 |
 | `builder_version` | 实际执行 resolve、codegen 和 build 的 Builder exact canonical SemVer |
 
 `ingot_version` 与 `builder_version` 分别 materialize，任一变化都会改变 ImageID。
 
-### 4.2 SDK 与 Toolchain
+### 4.2 Runtime ABI 与 Toolchain
 
-有序 `[[sdks]]` 保存 generated wiring 同时使用的 SDK module path 与 exact selected version，第一项是 primary SDK。默认情况下每个 SDK module 同时出现在 `[[modules]]`；若 SDK 来自 `builder.toml` 的 `path` 或最近 `go.work` 的等价无版本 `replace`，该 SDK 不出现在 `[[modules]]`，改由 `[[replacements]]` 中的 SDK 条目表示：`module_path` 为 SDK path、`synthetic_version` 等于对应 `sdks[*].version`（selected exact version，而不是从 path 推导的 synthetic version）、`content_sha256` 为 ModuleSourceDigest。
+`[runtime]` 单独保存 Builder 固定的 ingot ABI identity：
+
+- `module_path` 必须精确等于 `github.com/ingot-agent/ingot-abi`；
+- `version` 必须等于当前 Builder 支持的 exact ABI version；
+- 远程 module 的 `sum` 必须与 `modules` 中同一节点一致；
+- 开发 workspace replacement 的 `sum` 为空，源码身份由对应 replacement 的
+  `content_sha256` 固定。
+
+Agent SDK 与领域 Contract Module 不具有特殊 lock record；它们是普通
+`modules` 或 workspace `replacements`。
 
 `[toolchain].version` 使用带 `go` 前缀的 exact version，例如 `go1.21.13`。
 
@@ -263,7 +283,8 @@ go_mod_sum
 
 ### 6.2 Replacements
 
-v0.1 replacement 表示两类本地开发源码：direct Local Dev Plugin 与本地开发 SDK。
+v0.1 replacement 表示三类本地开发源码：direct Local Dev Plugin、ingot ABI
+workspace checkout，以及普通 Contract Module workspace checkout。
 
 ```text
 module_path
@@ -272,13 +293,16 @@ dev_path
 content_sha256
 ```
 
-`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从 module path 推导；SDK 条目使用对应 `sdks[*].version`（selected exact version）。
+`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从
+module path 推导；ingot ABI 使用 Builder 固定版本；普通 Contract Module 使用
+Go 首轮选择出的 canonical version。
 
 | Module path | Synthetic version |
 |---|---|
 | 无 `/vN`，`N >= 2` | `v0.0.0` |
 | 以 `/vN` 结束，`N >= 2` | `vN.0.0` |
-| SDK 本地开发条目 | 对应 `sdks[*].version`（selected exact version） |
+| ingot ABI 本地开发条目 | Builder 固定的 exact ABI version |
+| 普通 Contract Module 本地开发条目 | Go selected canonical version |
 
 条目按 `module_path` 排序。
 
@@ -298,7 +322,9 @@ content_sha256
 
 Canonical record stream：
 
-同算法应用于非 Plugin module（如本地开发 SDK）时使用 ModuleSourceDigest：root 只需包含 `go.mod`（不要求 `ingot.plugin.toml`），其余步骤相同。
+同算法应用于非 Plugin module（如 ingot ABI 或本地 Contract Module）时使用
+ModuleSourceDigest：root 只需包含 `go.mod`（不要求 `ingot.plugin.toml`），其余
+步骤相同。
 
 ```text
 ASCII "INGOT-DEV-SOURCE-DIGEST-V1\n"
@@ -366,21 +392,20 @@ manifest_digest = "sha256:" + lowercase_hex(
 )
 ```
 
-## 8. Canonical BuildManifest v2
+## 8. Canonical BuildManifest v3
 
 Lock Semantic Model 生成以下 exact JSON shape，并使用 RFC 8785 JCS：
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "ingot_version": "0.3.0",
   "builder_version": "0.3.0",
-  "sdks": [
-    {
-      "module_path": "github.com/ingot-agent/sdk",
-      "version": "v0.1.0"
-    }
-  ],
+  "runtime": {
+    "module_path": "github.com/ingot-agent/ingot-abi",
+    "version": "v0.1.0",
+    "sum": "h1:..."
+  },
   "toolchain": {
     "go_version": "go1.21.13"
   },
@@ -473,7 +498,7 @@ BuildManifest replacement：
 
 ```text
 ImageID = "sha256:" + lowercase_hex(
-    SHA256(JCS(CanonicalBuildManifestV1))
+    SHA256(JCS(CanonicalBuildManifestV3))
 )
 ```
 
@@ -501,9 +526,10 @@ Root `go.mod` materialization：
 |---|---|
 | remote direct Plugin | `require <plugin.id> <exact version>` |
 | Local Dev direct Plugin | `require <plugin.id> <synthetic version>` |
-| SDK/generated wiring direct import（远程） | `require <module path> <selected exact version>` |
-| 本地开发 SDK | `require <module path> <对应 sdks[*].version>` |
-| Local Dev replacement（Plugin/SDK） | `replace <module path> => <dev_path>` |
+| ingot ABI | `require github.com/ingot-agent/ingot-abi <Builder 固定版本>` |
+| generated config decoder | `require <module path> <MVS selected locked version>` |
+| 其他 immutable module | `require <module path> <selected exact version>` |
+| Local Dev replacement（Plugin/ABI/Contract Module） | `replace <module path> => <dev_path>` |
 
 Root `go.sum` 仅由 `[[modules]]` 中非空 `sum` 与 `go_mod_sum` 生成。
 
@@ -532,7 +558,7 @@ flowchart TD
 - module cache verification；
 - replacement 或 synthetic version；
 - DevSourceDigest；
-- SDK record；
+- ingot ABI record；
 - Manifest digest 与 materialized Plugin record。
 
 Normal build 保持 lock、root module 与 selected graph readonly。Dependency fetch、版本选择和 lock rewrite 由显式 resolve 流程执行。

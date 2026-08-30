@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/httpx"
 )
 
@@ -59,7 +59,7 @@ func New(
 	ctx context.Context,
 	cfg Config,
 	_ Dependencies,
-) (Exports, sdk.Cleanup, error) {
+) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct http.default: %w", ErrInvalidConfig)
 	}
@@ -84,7 +84,7 @@ func New(
 	}
 
 	client := &client{client: &http.Client{Transport: transport}}
-	cleanup := sdk.Cleanup(func(context.Context) error {
+	cleanup := ingotabi.Cleanup(func(context.Context) error {
 		transport.CloseIdleConnections()
 		return nil
 	})

@@ -75,6 +75,21 @@ func TestSwitchRejectsTraversalAndCorruptArtifact(t *testing.T) {
 	}
 }
 
+func TestResolveCandidateValidatesBuilderConfig(t *testing.T) {
+	t.Parallel()
+	home, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(home.BuilderConfigPath(), []byte("builder_config_version = 1\nunknown = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	desired := builder.NewDesired(home.DesiredPath(), nil)
+	if _, err := home.resolveCandidate(context.Background(), desired, builder.ResolveOptions{}); err == nil || !strings.Contains(err.Error(), "INGOT-BUILDER-CONFIG-PARSE") {
+		t.Fatalf("invalid builder.toml error = %v", err)
+	}
+}
+
 func TestOpenRecoversPluginPairTransaction(t *testing.T) {
 	t.Parallel()
 	home, err := Open(t.TempDir())

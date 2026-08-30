@@ -14,11 +14,11 @@
 ```go
 type Dependencies struct {
     Model        model.Runtime
-    Streaming    sdk.Optional[model.StreamingRuntime]
+    Streaming    ingotabi.Optional[model.StreamingRuntime]
     Tools        tool.Runtime
     Store        session.Store
     Prompt       prompt.Renderer
-    Compactor    sdk.Optional[contextwindow.Compactor]
+    Compactor    ingotabi.Optional[contextwindow.Compactor]
     Interceptors []agent.Interceptor
 }
 

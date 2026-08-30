@@ -19,7 +19,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	appcli "github.com/ingot-agent/app-cli"
-	applicationruntime "github.com/ingot-agent/sdk/application"
+	"github.com/ingot-agent/ingot-abi/invocation"
+	"github.com/ingot-agent/ingot-abi/lifecycle"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -39,7 +40,8 @@ var ErrTerminalRequired = errors.New("full-screen TUI requires terminal stdin an
 type tuiFrontend struct {
 	runCtx       context.Context
 	cancel       context.CancelFunc
-	process      applicationruntime.Process
+	invocation   invocation.Invocation
+	lifecycle    lifecycle.Controller
 	program      *tea.Program
 	inputGate    chan struct{}
 	interrupts   chan appcli.Interrupt
@@ -156,7 +158,7 @@ type beginAskMsg struct {
 
 type cancelInputMsg struct{ id uint64 }
 
-func newTUI(ctx context.Context, cfg appcli.Config, process applicationruntime.Process) (Exports, func(context.Context) error, error) {
+func newTUI(ctx context.Context, cfg appcli.Config, invocationValue invocation.Invocation, lifecycleValue lifecycle.Controller) (Exports, func(context.Context) error, error) {
 	if !term.IsTerminal(int(os.Stdin.Fd())) || !term.IsTerminal(int(os.Stdout.Fd())) {
 		return Exports{}, nil, ErrTerminalRequired
 	}
@@ -170,7 +172,7 @@ func newTUI(ctx context.Context, cfg appcli.Config, process applicationruntime.P
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	frontend := &tuiFrontend{
-		runCtx: runCtx, cancel: cancel, process: process,
+		runCtx: runCtx, cancel: cancel, invocation: invocationValue, lifecycle: lifecycleValue,
 		inputGate: make(chan struct{}, 1), interrupts: make(chan appcli.Interrupt, 4),
 		ready: make(chan struct{}), done: make(chan struct{}), releaseLease: releaseLease,
 	}
@@ -184,7 +186,7 @@ func newTUI(ctx context.Context, cfg appcli.Config, process applicationruntime.P
 		}
 		frontend.finish(runErr)
 		if runErr != nil && ctx.Err() == nil {
-			process.Shutdown(fmt.Errorf("run terminal UI: %w", runErr))
+			lifecycleValue.RequestShutdown(fmt.Errorf("run terminal UI: %w", runErr))
 		}
 	}()
 	select {

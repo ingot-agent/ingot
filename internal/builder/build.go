@@ -32,6 +32,7 @@ type BuildResult struct {
 	BinaryPath             string
 	ComponentCreationOrder []string
 	ManyOrder              map[string][]string
+	HostDependencies       map[string][]string
 }
 
 type ImageManifest struct {
@@ -42,6 +43,7 @@ type ImageManifest struct {
 	DirectPlugins          []string            `json:"direct_plugins"`
 	ComponentCreationOrder []string            `json:"component_creation_order"`
 	ManyOrder              map[string][]string `json:"many_order"`
+	HostDependencies       map[string][]string `json:"host_dependencies"`
 }
 
 func (options BuildOptions) defaults() (BuildOptions, error) {
@@ -192,12 +194,12 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 		return nil, err
 	}
 	buildManifest := expectedBuildManifest
-	creationOrder, manyOrder := inspectGraph(graph)
+	creationOrder, manyOrder, hostDependencies := inspectGraph(graph)
 	directPlugins := make([]string, len(lock.Plugins))
 	for i, plugin := range lock.Plugins {
 		directPlugins[i] = plugin.ID
 	}
-	imageManifest := ImageManifest{SchemaVersion: 1, ImageID: imageID, ArtifactDigest: artifactDigest, BuildManifest: buildManifest, DirectPlugins: directPlugins, ComponentCreationOrder: creationOrder, ManyOrder: manyOrder}
+	imageManifest := ImageManifest{SchemaVersion: 2, ImageID: imageID, ArtifactDigest: artifactDigest, BuildManifest: buildManifest, DirectPlugins: directPlugins, ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies}
 	manifestData, err := json.MarshalIndent(imageManifest, "", "  ")
 	if err != nil {
 		return nil, err
@@ -237,7 +239,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	}
 	committed = true
 	_ = syncDirectory(imagesDirectory)
-	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, runtimeName), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder}, nil
+	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, runtimeName), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies}, nil
 }
 
 func verifySelectedGraph(lock *Lock, selected []resolvedModule, devDirs map[string]string) error {
@@ -327,30 +329,43 @@ func verifyLockedSources(lock *Lock, selected []resolvedModule) error {
 			return &Error{Code: "INGOT-BUILD-MANIFEST-DRIFT", Plugin: plugin.ID, Want: plugin.ManifestDigest, Actual: digest}
 		}
 	}
-	for _, sdk := range lock.SDKs {
-		if replacement, ok := replacementByPath[sdk.ModulePath]; ok {
-			item, exists := selectedByPath[sdk.ModulePath]
-			if !exists || item.Replace == nil {
-				return &Error{Code: "INGOT-BUILD-SDK-REPLACEMENT", Plugin: sdk.ModulePath}
-			}
-			root := item.Replace.Dir
-			digest, err := ModuleSourceDigest(root)
-			if err != nil {
-				return err
-			}
-			if digest != replacement.ContentSHA256 {
-				return &Error{Code: "INGOT-BUILD-DEV-DIGEST", Plugin: sdk.ModulePath, Want: replacement.ContentSHA256, Actual: digest}
-			}
-			identity, err := moduleIdentity(filepath.Join(root, "go.mod"))
-			if err != nil {
-				return err
-			}
-			if identity != sdk.ModulePath {
-				return &Error{Code: "INGOT-BUILD-MODULE-IDENTITY", Plugin: sdk.ModulePath, Want: sdk.ModulePath, Actual: identity}
-			}
+	// Every non-plugin replacement is a Builder-owned or workspace-contract
+	// module (the ingot ABI or a locally replaced contract module). Its
+	// source digest and identity must match the lock exactly.
+	for _, replacement := range lock.Replacements {
+		if plugin, ok := pluginByID(lock, replacement.ModulePath); ok && plugin.SourceKind == "dev" {
+			continue
+		}
+		item, exists := selectedByPath[replacement.ModulePath]
+		if !exists || item.Replace == nil {
+			return &Error{Code: "INGOT-BUILD-REPLACEMENT-GRAPH", Plugin: replacement.ModulePath}
+		}
+		root := item.Replace.Dir
+		digest, err := ModuleSourceDigest(root)
+		if err != nil {
+			return err
+		}
+		if digest != replacement.ContentSHA256 {
+			return &Error{Code: "INGOT-BUILD-DEV-DIGEST", Plugin: replacement.ModulePath, Want: replacement.ContentSHA256, Actual: digest}
+		}
+		identity, err := moduleIdentity(filepath.Join(root, "go.mod"))
+		if err != nil {
+			return err
+		}
+		if identity != replacement.ModulePath {
+			return &Error{Code: "INGOT-BUILD-MODULE-IDENTITY", Plugin: replacement.ModulePath, Want: replacement.ModulePath, Actual: identity}
 		}
 	}
 	return nil
+}
+
+func pluginByID(lock *Lock, id string) (LockedPlugin, bool) {
+	for _, plugin := range lock.Plugins {
+		if plugin.ID == id {
+			return plugin, true
+		}
+	}
+	return LockedPlugin{}, false
 }
 
 func sameComponents(left []ManifestComponent, right []LockedComponent) bool {
@@ -365,14 +380,19 @@ func sameComponents(left []ManifestComponent, right []LockedComponent) bool {
 	return true
 }
 
-func inspectGraph(graph *Graph) ([]string, map[string][]string) {
+func inspectGraph(graph *Graph) ([]string, map[string][]string, map[string][]string) {
 	creation := make([]string, len(graph.CreationOrder))
 	for i, component := range graph.CreationOrder {
 		creation[i] = component.ID
 	}
 	many := map[string][]string{}
+	hostDependencies := map[string][]string{}
 	for _, component := range graph.Components {
 		for _, dependency := range component.DependencyList {
+			if dependency.Host {
+				hostDependencies[component.ID] = append(hostDependencies[component.ID], "Dependencies."+dependency.Name)
+				continue
+			}
 			if dependency.Cardinality != CardinalityMany {
 				continue
 			}
@@ -385,7 +405,7 @@ func inspectGraph(graph *Graph) ([]string, map[string][]string) {
 			}
 		}
 	}
-	return creation, many
+	return creation, many, hostDependencies
 }
 
 func fileDigest(path string) (string, error) {
@@ -415,7 +435,7 @@ func readExistingImage(directory, imageID string, expectedBuildManifest []byte) 
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return nil, err
 	}
-	if manifest.SchemaVersion != 1 || manifest.ImageID != imageID {
+	if (manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2) || manifest.ImageID != imageID {
 		return nil, &Error{Code: "INGOT-IMAGE-ID", Path: directory, Want: imageID, Actual: manifest.ImageID}
 	}
 	canonicalStored, err := canonicalJSON(manifest.BuildManifest)
@@ -436,7 +456,7 @@ func readExistingImage(directory, imageID string, expectedBuildManifest []byte) 
 	if digest != manifest.ArtifactDigest {
 		return nil, &Error{Code: "INGOT-IMAGE-ARTIFACT", Path: directory, Want: manifest.ArtifactDigest, Actual: digest}
 	}
-	return &BuildResult{ImageID: imageID, ArtifactDigest: digest, ImageDirectory: directory, BinaryPath: filepath.Join(directory, runtimeName), ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder}, nil
+	return &BuildResult{ImageID: imageID, ArtifactDigest: digest, ImageDirectory: directory, BinaryPath: filepath.Join(directory, runtimeName), ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder, HostDependencies: manifest.HostDependencies}, nil
 }
 
 // VerifyImage verifies an immutable image's identity, provenance, and binary

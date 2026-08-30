@@ -51,7 +51,7 @@ type InitResult struct {
 //     the executable) and materializes it under <home>/bundled-plugins/
 //     (idempotent);
 //  2. it writes a default plugins.toml for the selected profile;
-//  3. it writes the default builder.toml SDK configuration;
+//  3. it writes the default builder.toml configuration scaffold;
 //  4. it writes a default config.toml template.
 //
 // Init never modifies an existing plugins.toml, builder.toml, or config.toml

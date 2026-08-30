@@ -20,4 +20,4 @@ use (
 	./plugins/usage-default
 )
 
-replace github.com/ingot-agent/sdk => ../sdk
+replace github.com/ingot-agent/ingot-abi => ../ingot-abi

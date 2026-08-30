@@ -17,8 +17,9 @@ import (
 	"unicode/utf8"
 
 	appcli "github.com/ingot-agent/app-cli"
-	"github.com/ingot-agent/sdk"
-	applicationruntime "github.com/ingot-agent/sdk/application"
+	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/invocation"
+	"github.com/ingot-agent/ingot-abi/lifecycle"
 	"github.com/ingot-agent/sdk/interaction"
 )
 
@@ -35,8 +36,16 @@ var (
 	ErrInvalidInput = appcli.ErrInvalidInput
 )
 
-// Dependencies contains no consumed capabilities.
-type Dependencies struct{}
+// Dependencies contains the runtime host capabilities consumed by the
+// terminal component.
+type Dependencies struct {
+	// Invocation is the runtime invocation metadata injected by the
+	// generated runtime.
+	Invocation invocation.Invocation
+	// Lifecycle is the runtime shutdown request interface injected by the
+	// generated runtime.
+	Lifecycle lifecycle.Controller
+}
 
 // Exports contains the terminal interaction channel and CLI line input.
 type Exports struct {
@@ -75,36 +84,35 @@ var processTerminalLease struct {
 }
 
 // New initializes terminal state and returns promptly without reading input.
-func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.Cleanup, error) {
+func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct app.cli interaction: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	process, err := applicationruntime.FromContext(ctx)
-	if err != nil {
-		return Exports{}, nil, fmt.Errorf("construct app.cli interaction: %w: %w", ErrInvalidConfig, err)
+	if isNil(deps.Invocation) || isNil(deps.Lifecycle) {
+		return Exports{}, nil, fmt.Errorf("construct app.cli interaction: %w", ErrInvalidConfig)
 	}
 	normalized, err := normalizeConfig(cfg.Interaction)
 	if err != nil {
 		return Exports{}, nil, err
 	}
-	if process.Check() {
+	if deps.Invocation.Mode() == invocation.ModeCheck {
 		runCtx, cancel := context.WithCancel(ctx)
 		instance := &channel{
 			runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
 			stdout: io.Discard, stderr: io.Discard, maxLine: normalized.maxLine, askPrompt: normalized.askPrompt,
 		}
 		instance.inputGate <- struct{}{}
-		return Exports{Channel: instance, Frontend: instance}, sdk.Cleanup(instance.cleanup), nil
+		return Exports{Channel: instance, Frontend: instance}, ingotabi.Cleanup(instance.cleanup), nil
 	}
-	mode, err := appcli.ParseArguments(process.Arguments())
+	mode, err := appcli.ParseArguments(deps.Invocation.Arguments())
 	if err != nil {
 		return Exports{}, nil, err
 	}
 	if mode != appcli.ModePlain {
-		return newTUI(ctx, cfg, process)
+		return newTUI(ctx, cfg, deps.Invocation, deps.Lifecycle)
 	}
 	releaseLease, ok := acquireTerminalLease()
 	if !ok {
@@ -125,7 +133,7 @@ func New(ctx context.Context, cfg appcli.Config, _ Dependencies) (Exports, sdk.C
 	}
 	instance.driver = driver
 	instance.releaseLease = releaseLease
-	cleanup := sdk.Cleanup(instance.cleanup)
+	cleanup := ingotabi.Cleanup(instance.cleanup)
 	return Exports{Channel: instance, Frontend: instance}, cleanup, nil
 }
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	agentdefault "github.com/ingot-agent/agent-default"
-	"github.com/ingot-agent/sdk"
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
@@ -51,7 +51,7 @@ func (contextCompactor) Compact(context.Context, contextwindow.CompactionRequest
 func TestComponentContractIncludesOptionalCompactor(t *testing.T) {
 	exports, cleanup, err := agentdefault.New(context.Background(), agentdefault.Config{}, agentdefault.Dependencies{
 		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Prompt: promptRenderer{},
-		Compactor: sdk.Some[contextwindow.Compactor](contextCompactor{}),
+		Compactor: ingotabi.Some[contextwindow.Compactor](contextCompactor{}),
 	})
 	if err != nil {
 		t.Fatal(err)
