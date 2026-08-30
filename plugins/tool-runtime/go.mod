@@ -13,5 +13,3 @@ require (
 	github.com/ingot-agent/ingot-abi v0.1.0
 	golang.org/x/text v0.27.0 // indirect
 )
-
-replace github.com/ingot-agent/ingot-abi => ../../../ingot-abi

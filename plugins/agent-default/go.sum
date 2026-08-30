@@ -1,2 +1,4 @@
+github.com/ingot-agent/ingot-abi v0.1.0 h1:P5w/7whzw0H9Mjc8lE8cLxG7ok0ZBYYXUSfjV2U1ayU=
+github.com/ingot-agent/ingot-abi v0.1.0/go.mod h1:9Os7FNoCpTBXZz1D/Llkk80LbDWmFFpC7RtRzjT1vIc=
 github.com/ingot-agent/sdk v0.1.6 h1:vXVER5GYXh/A+g0KANq10y5wEsO23tw1PyWfd7XBtnM=
 github.com/ingot-agent/sdk v0.1.6/go.mod h1:na/8IQFNRbXR8odIKIZvFOfWR8nf1I735wGvYZ7zm2M=

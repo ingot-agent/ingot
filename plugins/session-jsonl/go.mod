@@ -8,5 +8,3 @@ require (
 )
 
 require github.com/ingot-agent/ingot-abi v0.1.0
-
-replace github.com/ingot-agent/ingot-abi => ../../../ingot-abi

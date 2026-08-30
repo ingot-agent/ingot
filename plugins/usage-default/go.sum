@@ -5,6 +5,8 @@ github.com/dlclark/regexp2 v1.12.0 h1:0j4c5qQmnC6XOWNjP3PIXURXN2gWx76rd3KvgdPkCz
 github.com/dlclark/regexp2 v1.12.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
 github.com/emirpasic/gods v1.18.1 h1:FXtiHYKDGKCW2KzwZKx0iC0PQmdlorYgdFG9jPXJ1Bc=
 github.com/emirpasic/gods v1.18.1/go.mod h1:8tpGGwCnJ5H4r6BWwaV6OrWmMoPhUl5jm/FMNAnJvWQ=
+github.com/ingot-agent/ingot-abi v0.1.0 h1:P5w/7whzw0H9Mjc8lE8cLxG7ok0ZBYYXUSfjV2U1ayU=
+github.com/ingot-agent/ingot-abi v0.1.0/go.mod h1:9Os7FNoCpTBXZz1D/Llkk80LbDWmFFpC7RtRzjT1vIc=
 github.com/ingot-agent/sdk v0.1.6 h1:vXVER5GYXh/A+g0KANq10y5wEsO23tw1PyWfd7XBtnM=
 github.com/ingot-agent/sdk v0.1.6/go.mod h1:na/8IQFNRbXR8odIKIZvFOfWR8nf1I735wGvYZ7zm2M=
 github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db h1:62I3jR2EmQ4l5rM/4FEfDWcRD+abF5XlKShorW5LRoQ=
