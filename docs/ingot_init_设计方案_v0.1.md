@@ -198,14 +198,15 @@ ingot init --no-build
 
 | Profile | 插件数 | 内容 |
 |---|---|---|
-| `default` | 13 | 骨架（`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.jsonl`、`agent.default`、`app.cli`） |
-| `minimal` | 8 | 最小可运行集：骨架 + 一个模型 Provider + 其 HTTP 依赖 |
+| `default` | 14 | 骨架（`asset.local`、`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.jsonl`、`agent.default`、`app.cli`） |
+| `minimal` | 9 | 最小组合：骨架 + 一个模型 Provider + 其 HTTP 与 Asset 依赖 |
 
 ### 9.5 默认配置模板
 
 生成的 `config.toml` 为每个插件写一个 `[plugins."<short-name>"]` 表（运行时要求每个锁定插件恰好一个表），并为需要机器相关值的插件提供可用默认值：
 
 - `model.openai-compatible`：示例 Provider（占位 `base_url`/`api_key`，格式校验可通过，真实调用需用户填写）；
+- `asset.local`：默认使用应用 State 目录，配置中提供对象大小、总容量与 I/O 并发的注释示例；
 - `filesystem.local`：`root = "."`（以启动 `ingot chat` 的工作目录为工作区）；
 - `tool.shell`：`working_directory` 与 `shell` 使用 init 时的本机值（绝对路径，保证 `--ingot-check` 通过）。
 

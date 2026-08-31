@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
 )
@@ -197,7 +198,7 @@ func extendChain(parent chainState, checkpoint persistedCheckpoint) (chainState,
 	}
 }
 
-func decodeCheckpoint(raw json.RawMessage) (persistedCheckpoint, error) {
+func decodeCheckpoint(raw []byte) (persistedCheckpoint, error) {
 	var checkpoint persistedCheckpoint
 	if err := exactJSON(raw, &checkpoint); err != nil {
 		return persistedCheckpoint{}, fmt.Errorf("decode checkpoint: %w: %w", ErrCorruptCheckpoint, err)
@@ -237,21 +238,21 @@ func materializeMessages(layout messageLayout, chain chainState) ([]model.Messag
 	result = append(result, cloneMessages(layout.system)...)
 	result = append(result, cloneMessages(layout.conversation[:layout.anchorEnd])...)
 	for _, checkpoint := range chain.active {
-		result = append(result, model.Message{Role: model.RoleAssistant, Content: summaryMessage(checkpoint.Summary)})
+		result = append(result, model.Message{Role: model.RoleAssistant, Content: content.FromText(summaryMessage(checkpoint.Summary))})
 		switch checkpoint.Mode {
 		case checkpointModeRollup:
-			content, err := snapshotMessage(checkpoint.Revision, checkpoint.StateSnapshot)
+			rendered, err := snapshotMessage(checkpoint.Revision, checkpoint.StateSnapshot)
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, model.Message{Role: model.RoleAssistant, Content: content})
+			result = append(result, model.Message{Role: model.RoleAssistant, Content: content.FromText(rendered)})
 		case checkpointModeSegment:
 			if len(checkpoint.Operations) > 0 {
-				content, err := deltaMessage(checkpoint.BaseRevision, checkpoint.Revision, checkpoint.Operations)
+				rendered, err := deltaMessage(checkpoint.BaseRevision, checkpoint.Revision, checkpoint.Operations)
 				if err != nil {
 					return nil, err
 				}
-				result = append(result, model.Message{Role: model.RoleAssistant, Content: content})
+				result = append(result, model.Message{Role: model.RoleAssistant, Content: content.FromText(rendered)})
 			}
 		}
 	}

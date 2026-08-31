@@ -13,8 +13,8 @@ import (
 func TestDeepSeekV4OfficialSimpleVector(t *testing.T) {
 	t.Parallel()
 	request := model.Request{Messages: []model.Message{
-		{Role: model.RoleSystem, Content: "You are a helpful assistant."},
-		{Role: model.RoleUser, Content: "Hello"},
+		{Role: model.RoleSystem, Content: textContent("You are a helpful assistant.")},
+		{Role: model.RoleUser, Content: textContent("Hello")},
 	}}
 	prompt, err := renderDeepSeekV4Prompt(context.Background(), request)
 	if err != nil {
@@ -89,13 +89,13 @@ func TestDeepSeekV4OfficialToolVector(t *testing.T) {
 	t.Parallel()
 	request := model.Request{
 		Messages: []model.Message{
-			{Role: model.RoleSystem, Content: "You are helpful."},
-			{Role: model.RoleUser, Content: "Weather?"},
+			{Role: model.RoleSystem, Content: textContent("You are helpful.")},
+			{Role: model.RoleUser, Content: textContent("Weather?")},
 			{Role: model.RoleAssistant, ToolCalls: []tool.Call{{
 				ID: "call_a", Name: "weather", Arguments: []byte(`{"city":"北京","days":2}`),
 			}}},
-			{Role: model.RoleTool, ToolCallID: "call_a", Content: "晴，25°C"},
-			{Role: model.RoleUser, Content: "Thanks"},
+			{Role: model.RoleTool, ToolCallID: "call_a", Content: textContent("晴，25°C")},
+			{Role: model.RoleUser, Content: textContent("Thanks")},
 		},
 		Tools: []tool.Definition{{
 			Name:        "weather",

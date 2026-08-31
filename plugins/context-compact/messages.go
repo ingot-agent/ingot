@@ -8,6 +8,7 @@ import (
 	"math"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -123,9 +124,30 @@ func groupTurns(messages []model.Message) ([]turnRange, error) {
 }
 
 func validateMessage(message model.Message) error {
-	if !utf8.ValidString(string(message.Role)) || !utf8.ValidString(message.Content) ||
+	if !utf8.ValidString(string(message.Role)) ||
 		!utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
 		return fmt.Errorf("invalid UTF-8: %w", ErrInvalidHistory)
+	}
+	if err := content.Validate(message.Content); err != nil {
+		return fmt.Errorf("invalid content: %w: %w", ErrInvalidHistory, err)
+	}
+	for i, part := range message.Content {
+		if part.Kind == content.KindText {
+			continue
+		}
+		if !utf8.ValidString(part.Media.MIMEType) {
+			return fmt.Errorf("content part %d MIME type is invalid UTF-8: %w", i, ErrInvalidHistory)
+		}
+		switch part.Media.Source.Kind {
+		case content.SourceURI:
+			if !utf8.ValidString(part.Media.Source.URI) {
+				return fmt.Errorf("content part %d URI is invalid UTF-8: %w", i, ErrInvalidHistory)
+			}
+		case content.SourceAsset:
+			if !utf8.ValidString(part.Media.Source.Asset.ID) {
+				return fmt.Errorf("content part %d asset ID is invalid UTF-8: %w", i, ErrInvalidHistory)
+			}
+		}
 	}
 	switch message.Role {
 	case model.RoleSystem, model.RoleUser:
@@ -172,7 +194,7 @@ type requestProjection struct {
 
 type messageProjection struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content"`
+	Content    content.Content  `json:"content"`
 	Name       string           `json:"name"`
 	ToolCallID string           `json:"tool_call_id"`
 	ToolCalls  []callProjection `json:"tool_calls"`
@@ -210,7 +232,7 @@ func projectMessages(messages []model.Message) []messageProjection {
 			calls[j] = callProjection{ID: call.ID, Name: call.Name, Arguments: cloneRaw(call.Arguments)}
 		}
 		result[i] = messageProjection{
-			Role: string(message.Role), Content: message.Content, Name: message.Name,
+			Role: string(message.Role), Content: content.Clone(message.Content), Name: message.Name,
 			ToolCallID: message.ToolCallID, ToolCalls: calls,
 		}
 	}
@@ -241,6 +263,7 @@ func cloneMessages(messages []model.Message) []model.Message {
 	}
 	result := make([]model.Message, len(messages))
 	for i, message := range messages {
+		message.Content = content.Clone(message.Content)
 		message.ToolCalls = cloneCalls(message.ToolCalls)
 		result[i] = message
 	}

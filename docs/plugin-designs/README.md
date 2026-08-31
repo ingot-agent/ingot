@@ -7,7 +7,7 @@
 Plugin 设计必须遵循：
 
 1. `../ingot_架构设计_v0.3.md` 中的静态 Component Graph 和生命周期模型；
-2. `../ingot_SDK_v0.1_设计方案.md` 及 `../../../sdk/` 中已经实现的公共 Contract；
+2. `../ingot_SDK_v0.1_设计方案.md`、`../../../ingot_SDK_多模态协议迁移方案.md` 及 `../../../sdk/` 中已经实现的公共 Contract；
 3. `../ingot.plugin.toml_设计方案_v0.1.md` 中的 Plugin Manifest 与 Component package 约定。
 
 本目录不会重新定义 SDK interface。若 Plugin 需求无法通过现有 SDK 表达，应先提出 SDK Contract 变更，不能在具体实现中通过隐藏的全局注册表或字符串服务定位绕过 Component Graph。
@@ -16,6 +16,7 @@ Plugin 设计必须遵循：
 
 | Plugin | 状态 | Exports | 主要验证目标 |
 |---|---|---|---|
+| [`asset.local`](./asset.local_v0.1.md) | Implemented v0.1 | `asset.Store`（同时满足 `asset.Resolver`） | immutable blob、原子发布、容量与并发边界、重启恢复 |
 | [`http.default`](./http.default_v0.1.md) | Implemented v0.1 | `httpx.Client` | Context authority、请求不可变、共享连接池 |
 | [`filesystem.local`](./filesystem.local_v0.1.md) | Implemented v0.1 | `filesystem.FS` | workspace boundary、安全路径、原子文件操作 |
 | [`session.jsonl`](./session.jsonl_v0.1.md) | Implemented v0.1 | `session.MutableStore` | append total order、原子标题更新、持久化格式、State compatibility |
@@ -33,12 +34,12 @@ Plugin 设计必须遵循：
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
 | [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel` + `appcli.Frontend`（app Component无导出） | TUI/plain双前端、一次性AI会话标题、turn取消与受控进程退出 |
 
-共16个Plugin、17个Component；`app.cli`包含`interaction`和`app`两个Component。
+共17个Plugin、18个Component；`app.cli`包含`interaction`和`app`两个Component。
 
 ## 依赖与建议实施批次
 
 ```text
-Batch 1  http.default / filesystem.local / session.jsonl
+Batch 1  asset.local / http.default / filesystem.local / session.jsonl
 Batch 2  tool.shell / tool.fs / tool.ask / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
@@ -50,15 +51,16 @@ instance-owned 后台 loop 并及时返回，Cleanup 取消并 join。frontend �
 ABI 的 `lifecycle.Controller.RequestShutdown` 向 generated main 报告结束意图，
 调用元数据通过 `invocation.Invocation` 读取；二者均为显式 host Dependencies。
 Component 不新增 Builder root 特例，不调用 `os.Exit`，也不使用隐藏全局
-channel。官方 Plugin 的 Agent Contract 统一依赖 SDK v0.1.6，Component ABI 与
-host Contract 依赖 ingot ABI v0.1.0。
+channel。多模态迁移覆盖的官方 Plugin 依赖 SDK v0.2.0，Component ABI 与 host
+Contract 依赖 ingot ABI v0.1.0。`app.cli` 按当前迁移决议暂时保持 SDK v0.1.3
+源码不变，等待后续完整重写，因此不属于本批 v0.2.0 构建验收范围。
 
 `app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
 
 ## 共同实现约定
 
 - 一个 Plugin 对应一个独立 Go Module；canonical Plugin ID 来自其 `go.mod` module path。
-- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余14个Plugin均只有`default` Component。
+- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余16个Plugin均只有`default` Component。
 - Component package 提供当前 package 的 `Dependencies`、`Exports` 和精确签名的 `New`。
 - `New` 可重复、可并发调用，每次创建独立实例，不使用 package-level mutable singleton。
 - Config 只读；需要保留 slice、map、pointer 或 bytes 时先复制。
@@ -69,4 +71,4 @@ host Contract 依赖 ingot ABI v0.1.0。
 
 ## 文档状态
 
-16个官方Plugin均已有v0.1实现；文档中的“v0.1实现决策”记录首版实际选择。后续变更继续以顶层架构和已经实现的SDK Contract为准。
+17个官方Plugin均已有实现；各 `v0.1` 文档记录首版实现决策。多模态后的公共内容、Asset、streaming 与 capability 语义以迁移方案和当前 SDK Contract 为准。

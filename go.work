@@ -4,6 +4,7 @@ use (
 	.
 	./plugins/agent-default
 	./plugins/app-cli
+	./plugins/asset-local
 	./plugins/context-compact
 	./plugins/filesystem-local
 	./plugins/http-default

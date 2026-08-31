@@ -21,6 +21,7 @@ import (
 	"os/exec"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -286,7 +287,7 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 			return tool.Result{}, waitErr
 		}
 	}
-	return tool.Result{Content: collector.format(exitCode(waitErr))}, nil
+	return tool.Result{Content: content.FromText(collector.format(exitCode(waitErr)))}, nil
 }
 
 func shellCommandArgs(command string) []string {

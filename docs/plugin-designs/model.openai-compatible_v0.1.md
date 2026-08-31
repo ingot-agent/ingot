@@ -1,7 +1,7 @@
 # `model.openai-compatible` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Dependencies：`httpx.Client`  
+> Dependencies：`httpx.Client`、`asset.Resolver`
 > Exports：`[]ingotabi.Named[model.Provider]`
 
 ## 1. 定位
@@ -12,7 +12,8 @@
 
 ```go
 type Dependencies struct {
-    HTTP httpx.Client
+    HTTP   httpx.Client
+    Assets asset.Resolver
 }
 
 type Exports struct {
@@ -20,7 +21,7 @@ type Exports struct {
 }
 ```
 
-每个导出的 Value 实现 `model.StreamingProvider`，因此也满足 `model.Provider`。
+每个导出的 Value 实现 `model.StreamingProvider`和`model.CapabilityProvider`，因此也满足`model.Provider`。
 
 ## 2. Config
 
@@ -39,6 +40,8 @@ type ProviderConfig struct {
     DefaultHeaders     map[string]string `toml:"default_headers"`
     MaxResponseBytes   int               `toml:"max_response_bytes"`
     MaxErrorBodyBytes  int               `toml:"max_error_body_bytes"`
+    MaxAssetBytes      int               `toml:"max_asset_bytes"`
+    AssetConcurrency   int               `toml:"asset_concurrency"`
 }
 ```
 
@@ -51,7 +54,7 @@ type ProviderConfig struct {
 - models 去重且非空；empty 表示 pass-through 任意非空 model；非空时作为 allowlist；
 - default headers 的 key 按 HTTP 大小写不敏感规则判重；不得覆盖 Plugin-owned 的 `Authorization`、`Content-Type`、`Accept`、`OpenAI-Organization`、`OpenAI-Project` 和 `User-Agent`；配置中自身出现大小写不同的重复 key 也是 Config Error；
 - default header name 必须是 RFC token，所有 header value 以及 API key、Organization、Project 不得包含 HTTP 非法控制字符；
-- response/error limits 分别默认 16 MiB/64 KiB且必须为正数。
+- response/error/asset limits 分别默认16 MiB/64 KiB/20 MiB且必须为正数；asset concurrency默认4且必须为正数。
 
 Config bytes、map 和 slice 在 `New` 时深拷贝。API key 不进入错误文本或 Tool/Interaction event。
 
@@ -66,7 +69,7 @@ POST <base_url>/chat/completions
 请求映射：
 
 - `Request.Model` required；allowlist 存在且不匹配时返回包装 `model.ErrModelNotFound`；
-- Messages 映射 role、content、name、tool_call_id 和 tool_calls；
+- Messages 映射 role、content、name、tool_call_id 和 tool_calls；纯文本Content继续编码为JSON string，包含媒体时编码为Chat Completions content parts；
 - Tools 映射为 function tools，`Definition.InputSchema` 原样嵌入 parameters；
 - `Temperature`、`MaxTokens`、`Stop` 保持 pointer/presence 语义；
 - Complete 使用 `stream:false`，Stream 使用 `stream:true` 和 usage inclusion；
@@ -74,7 +77,15 @@ POST <base_url>/chat/completions
 - `Content-Type` 固定为 `application/json`；Complete 的 `Accept` 为 `application/json`，Stream 的 `Accept` 为 `text/event-stream`；API key 非空时设置 `Authorization: Bearer <key>`，Organization/Project 非空时分别设置 `OpenAI-Organization`/`OpenAI-Project`，`User-Agent` 使用固定的 Plugin 版本标识；
 - HTTP Context 精确使用 Provider 方法参数 ctx。
 
-v0.1 只支持 SDK text/tool calling 范围；图像、音频、JSON mode、reasoning parameters 和 vendor extension 需要新的 typed Contract 或明确 extension map，不能偷偷塞入 Content string。
+Provider支持所有role的text以及user message中的image：
+
+- inline image和Asset Reference通过`data:<media-type>;base64,...`发送；MIME type必须可解析且为`image/*`，bytes不得超过`max_asset_bytes`；
+- Asset读取先`Stat`校验大小，再受`asset_concurrency`限制执行`Open`，读取长度必须与immutable metadata一致，并在完成或Context取消时关闭body；
+- URI image只接受absolute `http`/`https` URI并原样传递；拒绝`file:`、裸路径、`data:`、非法UTF-8及其他scheme，防止绕过asset大小和MIME边界；
+- audio、video、file及非user image返回包装`content.ErrUnsupportedContent`，并携带message/part位置；
+- `Capabilities`报告上述稳定输入子集、assistant text输出和text streaming output；配置了model allowlist时同样按model scope校验。
+
+JSON mode、reasoning parameters和vendor extension仍需要新的typed Contract或明确extension map。
 
 ## 4. Complete
 
@@ -106,9 +117,9 @@ Provider 不在 v0.1 自动 retry。重试、fallback和速率策略应由 Model
 
 ## 6. 并发、生命周期和错误
 
-Provider config immutable，Complete/Stream concurrent-safe。不同 Named Provider 共享依赖的 HTTP capability，但不共享 mutable request state。
+Provider config immutable，Complete/Stream concurrent-safe。不同 Named Provider共享依赖的HTTP和Asset capability，但不共享mutable request state；每个Provider独立限制并发Asset读取。
 
-Plugin 不拥有 HTTP Transport，因此 Cleanup 不关闭 HTTP dependency；无其他资源时返回 nil Cleanup。
+Plugin不拥有HTTP Transport或Asset Resolver，因此Cleanup不关闭依赖；无其他资源时返回nil Cleanup。
 
 建议 typed error：`ProviderHTTPError`、`ProviderProtocolError`、`ResponseLimitError`。错误包装保留 Context、I/O 和 SDK sentinel。
 
@@ -129,7 +140,8 @@ package = "."
 
 - Config、name/base URL/header 负例、Named order/uniqueness和 deep copy；
 - request JSON/header golden、大小写重复header和 secret redaction；
-- all SDK role、tools、optional fields；
+- all SDK role、tools、optional fields，以及text/image content-parts mapping；
+- inline/URI/Asset image、MIME/size/scheme/role负例、capabilities、asset close与取消阻塞读取；
 - HTTP status 在错误 body 截断后仍保留、API key redaction、protocol/size/context errors；
 - Complete mapping和 ownership；
 - SSE fragmentation、LF/CRLF、multi-data line、heartbeat、required DONE、total size limit、tool-call accumulation、handler error；

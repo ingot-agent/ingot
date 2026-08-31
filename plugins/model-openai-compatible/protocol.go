@@ -2,12 +2,19 @@ package openaicompat
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
+	"mime"
+	"net/url"
+	"strings"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -28,11 +35,21 @@ type streamOption struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    string         `json:"content"`
-	Name       string         `json:"name,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	Name       string          `json:"name,omitempty"`
+	ToolCallID string          `json:"tool_call_id,omitempty"`
+	ToolCalls  []chatToolCall  `json:"tool_calls,omitempty"`
+}
+
+type chatContentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
+}
+
+type chatImageURL struct {
+	URL string `json:"url"`
 }
 
 type chatTool struct {
@@ -75,10 +92,10 @@ type chatUsage struct {
 	TotalTokens  *int `json:"total_tokens"`
 }
 
-func encodeChatRequest(request model.Request, stream bool) ([]byte, error) {
+func (p *provider) encodeChatRequest(ctx context.Context, request model.Request, stream bool) ([]byte, error) {
 	messages := make([]chatMessage, len(request.Messages))
 	for i, message := range request.Messages {
-		mapped, err := encodeMessage(message)
+		mapped, err := p.encodeMessage(ctx, i, message)
 		if err != nil {
 			return nil, fmt.Errorf("messages[%d]: %w", i, err)
 		}
@@ -128,18 +145,30 @@ func validateSDKRequest(request model.Request) error {
 		}
 	}
 	for i, message := range request.Messages {
-		if _, err := encodeMessage(message); err != nil {
-			return fmt.Errorf("messages[%d]: %w", i, err)
+		if !validRole(message.Role) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
+			return fmt.Errorf("messages[%d] has invalid fields: %w", i, ErrInvalidRequest)
+		}
+		if err := content.Validate(message.Content); err != nil {
+			return fmt.Errorf("messages[%d] content: %w: %w", i, ErrInvalidRequest, err)
+		}
+		if message.Role == model.RoleTool && message.ToolCallID == "" {
+			return fmt.Errorf("messages[%d] tool message requires tool_call_id: %w", i, ErrInvalidRequest)
+		}
+		for j, call := range message.ToolCalls {
+			if call.ID == "" || call.Name == "" || !utf8.ValidString(call.ID) || !utf8.ValidString(call.Name) || !json.Valid(call.Arguments) {
+				return fmt.Errorf("messages[%d].tool_calls[%d]: %w", i, j, ErrInvalidRequest)
+			}
 		}
 	}
 	return nil
 }
 
-func encodeMessage(message model.Message) (chatMessage, error) {
-	if !validRole(message.Role) || !utf8.ValidString(message.Content) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
-		return chatMessage{}, ErrInvalidRequest
+func (p *provider) encodeMessage(ctx context.Context, messageIndex int, message model.Message) (chatMessage, error) {
+	wireContent, err := p.encodeContent(ctx, messageIndex, message)
+	if err != nil {
+		return chatMessage{}, err
 	}
-	result := chatMessage{Role: string(message.Role), Content: message.Content, Name: message.Name, ToolCallID: message.ToolCallID}
+	result := chatMessage{Role: string(message.Role), Content: wireContent, Name: message.Name, ToolCallID: message.ToolCallID}
 	result.ToolCalls = make([]chatToolCall, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
 		if call.ID == "" || call.Name == "" || !utf8.ValidString(call.ID) || !utf8.ValidString(call.Name) || !json.Valid(call.Arguments) {
@@ -147,10 +176,80 @@ func encodeMessage(message model.Message) (chatMessage, error) {
 		}
 		result.ToolCalls[i] = chatToolCall{ID: call.ID, Type: "function", Function: chatFunction{Name: call.Name, Arguments: string(call.Arguments)}}
 	}
-	if message.Role == model.RoleTool && message.ToolCallID == "" {
-		return chatMessage{}, fmt.Errorf("tool message requires tool_call_id: %w", ErrInvalidRequest)
-	}
 	return result, nil
+}
+
+func (p *provider) encodeContent(ctx context.Context, messageIndex int, message model.Message) (json.RawMessage, error) {
+	if text, ok := content.TextOnly(message.Content); ok {
+		return json.Marshal(text)
+	}
+	parts := make([]chatContentPart, 0, len(message.Content))
+	for partIndex, part := range message.Content {
+		switch part.Kind {
+		case content.KindText:
+			parts = append(parts, chatContentPart{Type: "text", Text: part.Text})
+		case content.KindImage:
+			if message.Role != model.RoleUser {
+				return nil, unsupported(messageIndex, partIndex, part, "image content is only supported for user messages")
+			}
+			imageURL, err := p.imageURL(ctx, part)
+			if err != nil {
+				var unsupportedError *content.UnsupportedError
+				if errors.As(err, &unsupportedError) {
+					unsupportedError.MessageIndex = messageIndex
+					unsupportedError.PartIndex = partIndex
+					unsupportedError.Kind = part.Kind
+					unsupportedError.MIMEType = part.Media.MIMEType
+				}
+				return nil, err
+			}
+			parts = append(parts, chatContentPart{Type: "image_url", ImageURL: &chatImageURL{URL: imageURL}})
+		default:
+			return nil, unsupported(messageIndex, partIndex, part, "modality is not supported by this provider")
+		}
+	}
+	return json.Marshal(parts)
+}
+
+func (p *provider) imageURL(ctx context.Context, part content.Part) (string, error) {
+	switch part.Media.Source.Kind {
+	case content.SourceURI:
+		if !utf8.ValidString(part.Media.Source.URI) {
+			return "", &content.UnsupportedError{Reason: "image URI must be valid UTF-8"}
+		}
+		parsed, err := url.Parse(part.Media.Source.URI)
+		if err != nil || !parsed.IsAbs() {
+			return "", &content.UnsupportedError{Reason: "image URI must be an absolute remote URI"}
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https":
+			return part.Media.Source.URI, nil
+		default:
+			return "", &content.UnsupportedError{Reason: "image URI scheme is not supported"}
+		}
+	case content.SourceInline, content.SourceAsset:
+		mediaType, _, err := mime.ParseMediaType(part.Media.MIMEType)
+		if err != nil || !strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+			return "", &content.UnsupportedError{Reason: "inline and asset images require an image MIME type"}
+		}
+		data := part.Media.Source.Data
+		if part.Media.Source.Kind == content.SourceAsset {
+			data, err = p.readAsset(ctx, part.Media.Source.Asset)
+			if err != nil {
+				return "", err
+			}
+		}
+		if len(data) > p.maxAssetBytes {
+			return "", &content.UnsupportedError{Reason: "image exceeds provider input limit"}
+		}
+		return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	default:
+		return "", &content.UnsupportedError{Reason: "image source is not supported"}
+	}
+}
+
+func unsupported(messageIndex, partIndex int, part content.Part, reason string) error {
+	return &content.UnsupportedError{MessageIndex: messageIndex, PartIndex: partIndex, Kind: part.Kind, MIMEType: part.Media.MIMEType, Reason: reason}
 }
 
 func validRole(role model.Role) bool {
@@ -201,10 +300,14 @@ func decodeComplete(raw []byte, providerName string) (model.Response, error) {
 
 func decodeMessage(message chatMessage) (model.Message, error) {
 	role := model.Role(message.Role)
-	if !validRole(role) || !utf8.ValidString(message.Content) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
+	if !validRole(role) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
 		return model.Message{}, protocolError("invalid message fields")
 	}
-	result := model.Message{Role: role, Content: message.Content, Name: message.Name, ToolCallID: message.ToolCallID}
+	decodedContent, err := decodeContent(message.Content)
+	if err != nil {
+		return model.Message{}, err
+	}
+	result := model.Message{Role: role, Content: decodedContent, Name: message.Name, ToolCallID: message.ToolCallID}
 	result.ToolCalls = make([]tool.Call, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
 		if call.ID == "" || call.Function.Name == "" || call.Type != "function" || !json.Valid([]byte(call.Function.Arguments)) {
@@ -213,6 +316,20 @@ func decodeMessage(message chatMessage) (model.Message, error) {
 		result.ToolCalls[i] = tool.Call{ID: call.ID, Name: call.Function.Name, Arguments: json.RawMessage(call.Function.Arguments)}
 	}
 	return result, nil
+}
+
+func decodeContent(raw json.RawMessage) (content.Content, error) {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return nil, &content.UnsupportedError{MessageIndex: 0, PartIndex: 0, Reason: "provider returned non-text content"}
+	}
+	if !utf8.ValidString(text) {
+		return nil, protocolError("message content is not valid UTF-8")
+	}
+	return content.FromText(text), nil
 }
 
 func decodeUsage(value *chatUsage) (model.Usage, error) {

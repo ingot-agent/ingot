@@ -145,7 +145,7 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 
 | 选项 | 含义 |
 |---|---|
-| `--profile` | `default`（骨架 + 常用适配器，13 个插件）或 `minimal`（最小可运行集，8 个插件），默认 `default`。 |
+| `--profile` | `default`（骨架 + 常用适配器，14 个插件）或 `minimal`（最小可运行集，9 个插件），默认 `default`；两者都包含管理不可变多模态数据的 `asset.local`。 |
 | `--bundle` | 指向官方插件集目录（默认按可执行文件位置自动定位）。 |
 | `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
 | `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |

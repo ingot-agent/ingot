@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -35,7 +36,7 @@ func (*queueChannel) Clear(context.Context, string) error           { return nil
 func terminal(counter *int) pipeline.Next[tool.Call, tool.Result] {
 	return func(_ context.Context, _ tool.Call) (tool.Result, error) {
 		*counter++
-		return tool.Result{Content: "ok"}, nil
+		return tool.Result{Content: content.FromText("ok")}, nil
 	}
 }
 
@@ -48,7 +49,7 @@ func TestApprovalActionsAndRules(t *testing.T) {
 	var count int
 	next := terminal(&count)
 	result, err := exports.Interceptors[0].Invoke(context.Background(), tool.Call{Name: "safe"}, next)
-	if err != nil || result.Content != "ok" || count != 1 {
+	if text, ok := content.TextOnly(result.Content); err != nil || !ok || text != "ok" || count != 1 {
 		t.Fatalf("allow result=%#v err=%v count=%d", result, err, count)
 	}
 	_, err = exports.Interceptors[0].Invoke(context.Background(), tool.Call{Name: "blocked"}, next)
@@ -56,7 +57,7 @@ func TestApprovalActionsAndRules(t *testing.T) {
 		t.Fatalf("deny error=%v count=%d", err, count)
 	}
 	result, err = exports.Interceptors[0].Invoke(context.Background(), tool.Call{ID: "c1", Name: "danger", Arguments: []byte("{\"path\":\"x\"}")}, next)
-	if err != nil || result.Content != "ok" || len(channel.prompts) != 2 {
+	if text, ok := content.TextOnly(result.Content); err != nil || !ok || text != "ok" || len(channel.prompts) != 2 {
 		t.Fatalf("ask result=%#v err=%v prompts=%d", result, err, len(channel.prompts))
 	}
 	if !strings.Contains(channel.prompts[0], "danger") || !strings.Contains(channel.prompts[0], "c1") || !strings.Contains(channel.prompts[0], "{\"path\":\"x\"}") {

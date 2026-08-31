@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/ingot-agent/sdk/usage"
@@ -105,7 +106,10 @@ type deepSeekUserBlock struct {
 }
 
 func renderDeepSeekV4Prompt(ctx context.Context, request model.Request) (string, error) {
-	messages := mergeDeepSeekToolMessages(request.Messages)
+	messages, err := mergeDeepSeekToolMessages(request.Messages)
+	if err != nil {
+		return "", err
+	}
 	firstSystem := -1
 	for i, message := range messages {
 		if message.role == model.RoleSystem {
@@ -190,29 +194,33 @@ func renderDeepSeekV4Prompt(ctx context.Context, request model.Request) (string,
 	return prompt.String(), nil
 }
 
-func mergeDeepSeekToolMessages(messages []model.Message) []deepSeekMessage {
+func mergeDeepSeekToolMessages(messages []model.Message) ([]deepSeekMessage, error) {
 	merged := make([]deepSeekMessage, 0, len(messages))
 	for _, message := range messages {
+		messageText, ok := content.TextOnly(message.Content)
+		if !ok {
+			return nil, usage.ErrUnsupportedModel
+		}
 		switch message.Role {
 		case model.RoleTool:
-			block := deepSeekUserBlock{toolResult: true, toolCallID: message.ToolCallID, content: message.Content}
+			block := deepSeekUserBlock{toolResult: true, toolCallID: message.ToolCallID, content: messageText}
 			if len(merged) != 0 && merged[len(merged)-1].role == model.RoleUser {
 				merged[len(merged)-1].blocks = append(merged[len(merged)-1].blocks, block)
 			} else {
 				merged = append(merged, deepSeekMessage{role: model.RoleUser, blocks: []deepSeekUserBlock{block}})
 			}
 		case model.RoleUser:
-			block := deepSeekUserBlock{content: message.Content}
+			block := deepSeekUserBlock{content: messageText}
 			if len(merged) != 0 && merged[len(merged)-1].role == model.RoleUser {
 				merged[len(merged)-1].blocks = append(merged[len(merged)-1].blocks, block)
 			} else {
 				merged = append(merged, deepSeekMessage{role: model.RoleUser, blocks: []deepSeekUserBlock{block}})
 			}
 		default:
-			merged = append(merged, deepSeekMessage{role: message.Role, content: message.Content, toolCalls: message.ToolCalls})
+			merged = append(merged, deepSeekMessage{role: message.Role, content: messageText, toolCalls: message.ToolCalls})
 		}
 	}
-	return merged
+	return merged, nil
 }
 
 func sortDeepSeekToolResults(messages []deepSeekMessage) {

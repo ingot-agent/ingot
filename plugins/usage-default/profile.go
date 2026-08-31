@@ -6,6 +6,7 @@ import (
 	"math"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/usage"
 )
@@ -45,7 +46,11 @@ func (unicodeEstimateProfile) CountInput(ctx context.Context, request model.Requ
 		if err != nil {
 			return 0, err
 		}
-		for _, value := range []string{string(message.Role), message.Content, message.Name, message.ToolCallID} {
+		messageText, ok := content.TextOnly(message.Content)
+		if !ok {
+			return 0, usage.ErrUnsupportedModel
+		}
+		for _, value := range []string{string(message.Role), messageText, message.Name, message.ToolCallID} {
 			estimated, estimateErr := estimateText(ctx, value)
 			if estimateErr != nil {
 				return 0, estimateErr

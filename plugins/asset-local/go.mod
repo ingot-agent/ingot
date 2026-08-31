@@ -1,4 +1,4 @@
-module github.com/ingot-agent/prompt-default
+module github.com/ingot-agent/asset-local
 
 go 1.24.0
 

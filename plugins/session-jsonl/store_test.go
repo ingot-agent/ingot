@@ -1,6 +1,7 @@
 package sessionjsonl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,6 +97,33 @@ func TestCreateAppendLoadAndOwnership(t *testing.T) {
 	}
 	if string(again[0].Payload) != `{"message":"hello"}` {
 		t.Fatalf("second load payload = %s", again[0].Payload)
+	}
+}
+
+func TestPayloadRoundTripsArbitraryBytes(t *testing.T) {
+	t.Parallel()
+	created, root := newTestStore(t)
+	id, err := created.Create(context.Background(), session.Metadata{Title: "binary", CreatedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{0x00, 0xff, 0x80, '\n', '{'}
+	if err := created.Append(context.Background(), id, session.Entry{Kind: "opaque", Version: 1, Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := created.Load(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !reflect.DeepEqual(entries[0].Payload, payload) {
+		t.Fatalf("payload = %v, want %v", entries, payload)
+	}
+	disk, err := os.ReadFile(filepath.Join(root, "sessions", string(id), "entries.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(disk, payload) {
+		t.Fatalf("opaque payload was written directly instead of encoded in the JSONL envelope: %q", disk)
 	}
 }
 

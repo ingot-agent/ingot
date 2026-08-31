@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/tool"
@@ -106,8 +107,13 @@ func (r *renderer) Render(ctx context.Context, request prompt.Request) ([]model.
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !utf8.ValidString(request.Input) {
-		return nil, fmt.Errorf("input is invalid UTF-8: %w", ErrInvalidRequest)
+	if err := content.Validate(request.Input); err != nil {
+		return nil, fmt.Errorf("input: %w: %w", ErrInvalidRequest, err)
+	}
+	for i, message := range request.History {
+		if err := content.Validate(message.Content); err != nil {
+			return nil, fmt.Errorf("history[%d]: %w: %w", i, ErrInvalidRequest, err)
+		}
 	}
 	original := cloneRequest(request)
 	blocks := make([]prompt.Block, 0)
@@ -126,10 +132,13 @@ func (r *renderer) Render(ctx context.Context, request prompt.Request) ([]model.
 			if block.Name == "" || !utf8.ValidString(block.Name) || strings.ContainsAny(block.Name, "\r\n") {
 				return nil, fmt.Errorf("contributor %d block %d name: %w", i, j, ErrInvalidBlock)
 			}
-			if !utf8.ValidString(block.Content) || len([]byte(block.Content)) > r.maxBlock {
+			if err := content.Validate(block.Content); err != nil {
+				return nil, fmt.Errorf("contributor %d block %d content: %w: %w", i, j, ErrInvalidBlock, err)
+			}
+			if contentBytes(block.Content) > r.maxBlock {
 				return nil, fmt.Errorf("contributor %d block %d content: %w", i, j, ErrInvalidBlock)
 			}
-			blocks = append(blocks, prompt.Block{Name: block.Name, Content: block.Content})
+			blocks = append(blocks, prompt.Block{Name: block.Name, Content: content.Clone(block.Content)})
 		}
 	}
 
@@ -138,7 +147,7 @@ func (r *renderer) Render(ctx context.Context, request prompt.Request) ([]model.
 		return nil, err
 	}
 	result := make([]model.Message, 0, len(original.History)+2)
-	if system != "" {
+	if len(system) != 0 {
 		result = append(result, model.Message{Role: model.RoleSystem, Content: system})
 	}
 	result = append(result, cloneMessages(original.History)...)
@@ -146,42 +155,39 @@ func (r *renderer) Render(ctx context.Context, request prompt.Request) ([]model.
 	return result, nil
 }
 
-func (r *renderer) formatSystem(blocks []prompt.Block) (string, error) {
-	sections := make([]string, 0, len(blocks)+1)
-	if r.systemPrompt != "" {
-		sections = append(sections, r.systemPrompt)
-	}
-	for _, block := range blocks {
-		sections = append(sections, "## "+block.Name+"\n"+block.Content)
-	}
-	if len(sections) == 0 {
-		return "", nil
-	}
+func (r *renderer) formatSystem(blocks []prompt.Block) (content.Content, error) {
+	result := make(content.Content, 0, len(blocks)*2+1)
 	total := 0
-	for i, section := range sections {
-		if i > 0 {
-			if total > r.maxSystem-2 {
-				return "", ErrSystemLimit
-			}
-			total += 2
+	if r.systemPrompt != "" {
+		value := r.systemPrompt
+		if len(blocks) != 0 {
+			value += "\n\n"
 		}
-		if len(section) > r.maxSystem-total {
-			return "", ErrSystemLimit
-		}
-		total += len(section)
+		result = append(result, content.Text(value))
+		total += len(value)
 	}
-	var builder strings.Builder
-	builder.Grow(total)
-	for i, section := range sections {
+	for i, block := range blocks {
+		title := "## " + block.Name + "\n"
 		if i > 0 {
-			builder.WriteString("\n\n")
+			title = "\n\n" + title
 		}
-		builder.WriteString(section)
+		if total > r.maxSystem-len(title) {
+			return nil, ErrSystemLimit
+		}
+		result = append(result, content.Text(title))
+		total += len(title)
+		blockBytes := contentBytes(block.Content)
+		if blockBytes > r.maxSystem-total {
+			return nil, ErrSystemLimit
+		}
+		result = append(result, content.Clone(block.Content)...)
+		total += blockBytes
 	}
-	return builder.String(), nil
+	return result, nil
 }
 
 func cloneRequest(request prompt.Request) prompt.Request {
+	request.Input = content.Clone(request.Input)
 	request.History = cloneMessages(request.History)
 	return request
 }
@@ -189,14 +195,29 @@ func cloneRequest(request prompt.Request) prompt.Request {
 func cloneMessages(messages []model.Message) []model.Message {
 	result := make([]model.Message, len(messages))
 	for i, message := range messages {
+		message.Content = content.Clone(message.Content)
 		calls := message.ToolCalls
-		message.ToolCalls = make([]tool.Call, len(calls))
-		for j, call := range calls {
-			message.ToolCalls[j] = tool.Call{ID: call.ID, Name: call.Name, Arguments: append(json.RawMessage(nil), call.Arguments...)}
+		if calls != nil {
+			message.ToolCalls = make([]tool.Call, len(calls))
+			for j, call := range calls {
+				message.ToolCalls[j] = tool.Call{ID: call.ID, Name: call.Name, Arguments: append(json.RawMessage(nil), call.Arguments...)}
+			}
 		}
 		result[i] = message
 	}
 	return result
+}
+
+func contentBytes(value content.Content) int {
+	total := 0
+	for _, part := range value {
+		if part.Kind == content.KindText {
+			total += len(part.Text)
+		} else if part.Media.Source.Kind == content.SourceInline {
+			total += len(part.Media.Source.Data)
+		}
+	}
+	return total
 }
 
 func isNil(value any) bool {

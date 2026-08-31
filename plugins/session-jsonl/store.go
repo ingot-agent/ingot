@@ -39,9 +39,9 @@ type metadataFile struct {
 }
 
 type persistedEntry struct {
-	Kind    string          `json:"kind"`
-	Version int             `json:"version"`
-	Payload json.RawMessage `json:"payload"`
+	Kind    string `json:"kind"`
+	Version int    `json:"version"`
+	Payload []byte `json:"payload"`
 }
 
 type entryRecord struct {
@@ -255,7 +255,7 @@ func (s *store) Append(ctx context.Context, id session.ID, entry session.Entry) 
 	if _, _, err := s.readRecords(ctx, entriesPath, true); err != nil {
 		return err
 	}
-	payload := append(json.RawMessage(nil), entry.Payload...)
+	payload := append([]byte(nil), entry.Payload...)
 	record := entryRecord{
 		RecordVersion: recordVersion,
 		AppendedAt:    s.now().UTC(),
@@ -456,7 +456,7 @@ func (s *store) readRecords(ctx context.Context, path string, recoverTail bool) 
 		}
 		entry := session.Entry{
 			Kind: record.Entry.Kind, Version: record.Entry.Version,
-			Payload: append(json.RawMessage(nil), record.Entry.Payload...),
+			Payload: append([]byte(nil), record.Entry.Payload...),
 		}
 		if err := validateEntry(entry); err != nil {
 			return nil, time.Time{}, fmt.Errorf("invalid JSONL entry at line %d: %w: %w", index+1, ErrCorruptState, err)
@@ -515,8 +515,8 @@ func validateSessionID(id session.ID) error {
 }
 
 func validateEntry(entry session.Entry) error {
-	if entry.Kind == "" || !utf8.ValidString(entry.Kind) || entry.Version <= 0 || !json.Valid(entry.Payload) {
-		return fmt.Errorf("kind must be UTF-8 and non-empty, version positive, payload valid JSON: %w", ErrInvalidEntry)
+	if entry.Kind == "" || !utf8.ValidString(entry.Kind) || entry.Version <= 0 {
+		return fmt.Errorf("kind must be UTF-8 and non-empty and version positive: %w", ErrInvalidEntry)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -34,7 +35,7 @@ func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Name: "ask_user", Arguments: []byte("{\"prompt\":\"Continue?\"}")})
-	if err != nil || result.Content != "approved" || channel.request.Name != requestName || channel.request.Description != "Continue?" {
+	if text, ok := content.TextOnly(result.Content); err != nil || !ok || text != "approved" || channel.request.Name != requestName || channel.request.Description != "Continue?" {
 		t.Fatalf("result=%#v err=%v request=%#v", result, err, channel.request)
 	}
 	if len(channel.request.Fields) != 1 || channel.request.Fields[0].Name != answerFieldName || channel.request.Fields[0].Kind != interaction.FieldString || channel.request.Fields[0].Options != nil {
@@ -53,7 +54,7 @@ func TestAskUserPassesOptionsAndEnablesFreeText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Content != "a custom answer" || len(channel.request.Fields) != 1 {
+	if text, ok := content.TextOnly(result.Content); !ok || text != "a custom answer" || len(channel.request.Fields) != 1 {
 		t.Fatalf("result=%#v request=%#v", result, channel.request)
 	}
 	want := []interaction.Option{

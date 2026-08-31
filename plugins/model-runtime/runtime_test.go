@@ -8,8 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	modelruntime "github.com/ingot-agent/model-runtime"
 	"github.com/ingot-agent/ingot-abi"
+	modelruntime "github.com/ingot-agent/model-runtime"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -32,7 +33,7 @@ type countingProvider struct {
 
 func (p *countingProvider) Complete(context.Context, model.Request) (model.Response, error) {
 	p.calls.Add(1)
-	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "ok"}}, nil
+	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("ok")}}, nil
 }
 
 func (p *fakeProvider) Complete(_ context.Context, request model.Request) (model.Response, error) {
@@ -41,7 +42,7 @@ func (p *fakeProvider) Complete(_ context.Context, request model.Request) (model
 	if len(request.Messages) != 0 && len(request.Messages[0].ToolCalls) != 0 && len(request.Messages[0].ToolCalls[0].Arguments) != 0 {
 		request.Messages[0].ToolCalls[0].Arguments[0] = 'X'
 	}
-	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "ok"}}, nil
+	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("ok")}}, nil
 }
 
 type interceptorFunc func(context.Context, model.Request, pipeline.Next[model.Request, model.Response]) (model.Response, error)
@@ -54,10 +55,52 @@ type streamingProvider struct{ fakeProvider }
 
 func (p *streamingProvider) Stream(ctx context.Context, request model.Request, handler model.StreamHandler) (model.Response, error) {
 	p.request = request
-	if err := handler(model.StreamChunk{TextDelta: "chunk"}); err != nil {
+	if err := handler(model.StreamEvent{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText}); err != nil {
 		return model.Response{}, err
 	}
-	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "chunk"}}, nil
+	if err := handler(model.StreamEvent{Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "chunk"}); err != nil {
+		return model.Response{}, err
+	}
+	if err := handler(model.StreamEvent{Kind: model.StreamPartEnd, PartIndex: 0}); err != nil {
+		return model.Response{}, err
+	}
+	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("chunk")}}, nil
+}
+
+type eventStreamingProvider struct {
+	events   []model.StreamEvent
+	response model.Response
+}
+
+func (p *eventStreamingProvider) Complete(context.Context, model.Request) (model.Response, error) {
+	return p.response, nil
+}
+
+func (p *eventStreamingProvider) Stream(_ context.Context, _ model.Request, handler model.StreamHandler) (model.Response, error) {
+	for _, event := range p.events {
+		if err := handler(event); err != nil {
+			return model.Response{}, err
+		}
+		for i := range event.DataDelta {
+			event.DataDelta[i] = 0xff
+		}
+	}
+	return p.response, nil
+}
+
+type capabilityProvider struct {
+	modelName    string
+	capabilities model.Capabilities
+	err          error
+}
+
+func (p *capabilityProvider) Complete(context.Context, model.Request) (model.Response, error) {
+	return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
+}
+
+func (p *capabilityProvider) Capabilities(_ context.Context, modelName string) (model.Capabilities, error) {
+	p.modelName = modelName
+	return p.capabilities, p.err
 }
 
 type streamInterceptorFunc func(context.Context, model.Request, model.StreamHandler, model.StreamNext) (model.Response, error)
@@ -237,11 +280,55 @@ func TestResolverMaterializesDefaultsWithoutInvocation(t *testing.T) {
 	}
 }
 
+func TestCapabilityResolverAppliesDefaultsAndReturnsOwnedData(t *testing.T) {
+	provider := &capabilityProvider{capabilities: model.Capabilities{
+		Input: []model.ContentCapability{{
+			Kind: content.KindImage, Sources: []content.SourceKind{content.SourceInline, content.SourceAsset}, Roles: []model.Role{model.RoleUser},
+		}},
+		Output:          []model.ContentCapability{{Kind: content.KindText, Roles: []model.Role{model.RoleAssistant}}},
+		StreamingOutput: []content.Kind{content.KindText},
+	}}
+	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "vision"}, modelruntime.Dependencies{
+		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := exports.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.modelName != "vision" || len(first.Input) != 1 || len(first.Input[0].Sources) != 2 {
+		t.Fatalf("model=%q capabilities=%#v", provider.modelName, first)
+	}
+	first.Input[0].Sources[0] = 0
+	first.Input[0].Roles[0] = "mutated"
+	first.StreamingOutput[0] = 0
+	if provider.capabilities.Input[0].Sources[0] != content.SourceInline || provider.capabilities.Input[0].Roles[0] != model.RoleUser || provider.capabilities.StreamingOutput[0] != content.KindText {
+		t.Fatalf("resolver returned aliases to provider data: %#v", provider.capabilities)
+	}
+
+	plain, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+		Providers: []ingotabi.Named[model.Provider]{{Name: "plain", Value: &fakeProvider{}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plain.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{}); !errors.Is(err, model.ErrCapabilitiesUnavailable) {
+		t.Fatalf("unavailable error=%v", err)
+	}
+
+	provider.capabilities.Input[0].Kind = 0
+	if _, err := exports.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{}); !errors.Is(err, model.ErrCapabilitiesUnavailable) {
+		t.Fatalf("invalid capability error=%v", err)
+	}
+}
+
 func TestShortCircuitIsNotSourceNormalizedAndCallerIsOwned(t *testing.T) {
 	provider := &fakeProvider{}
 	shortArguments := json.RawMessage(`{"cached":true}`)
 	short := interceptorFunc(func(context.Context, model.Request, pipeline.Next[model.Request, model.Response]) (model.Response, error) {
-		return model.Response{Message: model.Message{Content: "cached", ToolCalls: []tool.Call{{Arguments: shortArguments}}}}, nil
+		return model.Response{Provider: "cache", Model: "cache", Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("cached"), ToolCalls: []tool.Call{{ID: "cached", Name: "cached", Arguments: shortArguments}}}}, nil
 	})
 	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}, Interceptors: []model.Interceptor{short},
@@ -253,7 +340,7 @@ func TestShortCircuitIsNotSourceNormalizedAndCallerIsOwned(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider.calls != 0 || response.Provider != "" || response.Model != "" || response.Message.Content != "cached" {
+	if text, ok := content.TextOnly(response.Message.Content); provider.calls != 0 || response.Provider != "cache" || response.Model != "cache" || !ok || text != "cached" {
 		t.Fatalf("calls=%d response=%#v", provider.calls, response)
 	}
 	shortArguments[0] = 'X'
@@ -282,9 +369,10 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 	messageArguments := json.RawMessage(`{"message":true}`)
 	toolSchema := json.RawMessage(`{"type":"object"}`)
 	stop := []string{"done"}
+	inline := []byte("image")
 	request := model.Request{
 		Messages: []model.Message{
-			{Role: model.RoleUser, ToolCalls: make([]tool.Call, 0)},
+			{Role: model.RoleUser, Content: content.Content{content.Inline(content.KindImage, "image/png", "x.png", inline)}, ToolCalls: make([]tool.Call, 0)},
 			{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call", Name: "tool", Arguments: messageArguments}}},
 		},
 		Tools:       []tool.Definition{{Name: "tool", InputSchema: toolSchema}},
@@ -296,6 +384,7 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 		if received.Messages[0].ToolCalls == nil {
 			t.Fatal("non-nil empty message tool calls became nil")
 		}
+		received.Messages[0].Content[0].Media.Source.Data[0] = 'X'
 		received.Messages[1].ToolCalls[0].Arguments[0] = 'X'
 		received.Tools[0].InputSchema[0] = 'X'
 		received.Stop[0] = "changed"
@@ -312,7 +401,7 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 	if _, err = exports.Runtime.Complete(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if string(messageArguments) != `{"message":true}` || string(toolSchema) != `{"type":"object"}` || stop[0] != "done" || temperature != 0.25 || maxTokens != 128 {
+	if string(inline) != "image" || string(messageArguments) != `{"message":true}` || string(toolSchema) != `{"type":"object"}` || stop[0] != "done" || temperature != 0.25 || maxTokens != 128 {
 		t.Fatalf("caller request was mutated: arguments=%s schema=%s stop=%v temperature=%v maxTokens=%v", messageArguments, toolSchema, stop, temperature, maxTokens)
 	}
 
@@ -347,7 +436,7 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = exports.Runtime.Complete(context.Background(), model.Request{
-		Messages: []model.Message{{ToolCalls: []tool.Call{{Arguments: make(json.RawMessage, 0)}}}},
+		Messages: []model.Message{{Role: model.RoleUser, ToolCalls: []tool.Call{{Arguments: make(json.RawMessage, 0)}}}},
 		Tools:    []tool.Definition{{InputSchema: make(json.RawMessage, 0)}},
 	}); err != nil {
 		t.Fatal(err)
@@ -356,9 +445,11 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 
 func TestResponseClonePreservesOwnershipAndPresence(t *testing.T) {
 	arguments := json.RawMessage(`{"x":1}`)
+	inline := []byte("image")
 	provider := providerFunc(func(context.Context, model.Request) (model.Response, error) {
 		return model.Response{Message: model.Message{
 			Role:      model.RoleAssistant,
+			Content:   content.Content{content.Inline(content.KindImage, "image/png", "x.png", inline)},
 			ToolCalls: []tool.Call{{ID: "call", Name: "tool", Arguments: arguments}},
 		}}, nil
 	})
@@ -373,7 +464,8 @@ func TestResponseClonePreservesOwnershipAndPresence(t *testing.T) {
 		t.Fatal(err)
 	}
 	arguments[0] = 'X'
-	if string(response.Message.ToolCalls[0].Arguments) != `{"x":1}` {
+	inline[0] = 'X'
+	if string(response.Message.Content[0].Media.Source.Data) != "image" || string(response.Message.ToolCalls[0].Arguments) != `{"x":1}` {
 		t.Fatalf("caller response aliases provider data: %s", response.Message.ToolCalls[0].Arguments)
 	}
 
@@ -426,7 +518,9 @@ func TestTerminalRejectsInvalidResponses(t *testing.T) {
 		mutate func(*model.Response)
 	}{
 		{name: "invalid UTF-8 model", mutate: func(response *model.Response) { response.Model = string([]byte{0xff}) }},
-		{name: "invalid UTF-8 content", mutate: func(response *model.Response) { response.Message.Content = string([]byte{0xff}) }},
+		{name: "invalid UTF-8 content", mutate: func(response *model.Response) {
+			response.Message.Content = content.Content{{Kind: content.KindText, Text: string([]byte{0xff})}}
+		}},
 		{name: "negative usage", mutate: func(response *model.Response) { response.Usage.InputTokens = -1 }},
 		{name: "inconsistent usage", mutate: func(response *model.Response) { response.Usage.TotalTokens = 2 }},
 		{name: "invalid tool call id", mutate: func(response *model.Response) {
@@ -465,7 +559,7 @@ func TestStreamingUnsupportedAndProviderErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.Streaming.Stream(context.Background(), model.Request{}, func(model.StreamChunk) error { return nil })
+	_, err = exports.Streaming.Stream(context.Background(), model.Request{}, func(model.StreamEvent) error { return nil })
 	if !errors.Is(err, model.ErrStreamingUnsupported) {
 		t.Fatalf("streaming error=%v", err)
 	}
@@ -497,8 +591,10 @@ func TestStreamingChainIsIndependentAndOrdered(t *testing.T) {
 		t.Fatal(err)
 	}
 	var chunks []string
-	response, err := exports.Streaming.Stream(context.Background(), model.Request{}, func(chunk model.StreamChunk) error {
-		chunks = append(chunks, chunk.TextDelta)
+	response, err := exports.Streaming.Stream(context.Background(), model.Request{}, func(event model.StreamEvent) error {
+		if event.Kind == model.StreamPartDelta {
+			chunks = append(chunks, event.TextDelta)
+		}
 		return nil
 	})
 	if err != nil {
@@ -515,6 +611,75 @@ func TestStreamingChainIsIndependentAndOrdered(t *testing.T) {
 	}
 }
 
+func TestStreamingValidatesMultipleTextAndMediaParts(t *testing.T) {
+	firstData := []byte{1, 2}
+	secondData := []byte{3, 4}
+	provider := &eventStreamingProvider{
+		events: []model.StreamEvent{
+			{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText},
+			{Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "he"},
+			{Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "llo"},
+			{Kind: model.StreamPartEnd, PartIndex: 0},
+			{Kind: model.StreamPartStart, PartIndex: 1, PartKind: content.KindImage, MIMEType: "image/png", Name: "x.png"},
+			{Kind: model.StreamPartDelta, PartIndex: 1, DataDelta: firstData},
+			{Kind: model.StreamPartDelta, PartIndex: 1, DataDelta: secondData},
+			{Kind: model.StreamPartEnd, PartIndex: 1},
+		},
+		response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.Content{
+			content.Text("hello"), content.Inline(content.KindImage, "image/png", "x.png", []byte{1, 2, 3, 4}),
+		}}},
+	}
+	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received []model.StreamEvent
+	response, err := exports.Streaming.Stream(context.Background(), model.Request{}, func(event model.StreamEvent) error {
+		received = append(received, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(received) != len(provider.events) || len(response.Message.Content) != 2 || string(response.Message.Content[1].Media.Source.Data) != string([]byte{1, 2, 3, 4}) {
+		t.Fatalf("events=%#v response=%#v", received, response)
+	}
+	if string(received[5].DataDelta) != string([]byte{1, 2}) || string(received[6].DataDelta) != string([]byte{3, 4}) {
+		t.Fatalf("handler data aliases provider buffers: %#v", received)
+	}
+}
+
+func TestStreamingRejectsInvalidLifecycleAndFinalMismatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		events  []model.StreamEvent
+		content content.Content
+	}{
+		{name: "delta before start", events: []model.StreamEvent{{Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "x"}}},
+		{name: "noncontiguous start", events: []model.StreamEvent{{Kind: model.StreamPartStart, PartIndex: 1, PartKind: content.KindText}}},
+		{name: "text data delta", events: []model.StreamEvent{{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText}, {Kind: model.StreamPartDelta, PartIndex: 0, DataDelta: []byte{1}}}},
+		{name: "media text delta", events: []model.StreamEvent{{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindImage}, {Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "x"}}},
+		{name: "incomplete", events: []model.StreamEvent{{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText}}},
+		{name: "final mismatch", events: []model.StreamEvent{{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText}, {Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: "x"}, {Kind: model.StreamPartEnd, PartIndex: 0}}, content: content.FromText("y")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &eventStreamingProvider{events: test.events, response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: test.content}}}
+			exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+				Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := exports.Streaming.Stream(context.Background(), model.Request{}, func(model.StreamEvent) error { return nil }); !errors.Is(err, modelruntime.ErrInvalidResponse) {
+				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
 func TestStreamPropagatesHandlerError(t *testing.T) {
 	provider := &streamingProvider{}
 	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
@@ -524,7 +689,7 @@ func TestStreamPropagatesHandlerError(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantErr := errors.New("stop chunks")
-	_, err = exports.Streaming.Stream(context.Background(), model.Request{}, func(model.StreamChunk) error { return wantErr })
+	_, err = exports.Streaming.Stream(context.Background(), model.Request{}, func(model.StreamEvent) error { return wantErr })
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Stream() error = %v, want handler error", err)
 	}

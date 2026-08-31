@@ -6,6 +6,7 @@ import (
 	"math"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -32,8 +33,11 @@ func validateRequest(request model.Request, requireTarget bool) error {
 		if !validRole(message.Role) {
 			return fmt.Errorf("messages[%d] has unsupported role %q: %w", i, message.Role, ErrInvalidRequest)
 		}
-		if !utf8.ValidString(message.Content) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
+		if !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
 			return fmt.Errorf("messages[%d] contains invalid UTF-8: %w", i, ErrInvalidRequest)
+		}
+		if err := content.Validate(message.Content); err != nil {
+			return fmt.Errorf("messages[%d] content is invalid: %w: %w", i, ErrInvalidRequest, err)
 		}
 		for j, call := range message.ToolCalls {
 			if call.ID == "" || call.Name == "" || !utf8.ValidString(call.ID) || !utf8.ValidString(call.Name) || !json.Valid(call.Arguments) {
@@ -63,6 +67,7 @@ func cloneRequest(request model.Request) model.Request {
 		messages := make([]model.Message, len(request.Messages))
 		for i, message := range request.Messages {
 			messages[i] = message
+			messages[i].Content = content.Clone(message.Content)
 			if message.ToolCalls != nil {
 				messages[i].ToolCalls = make([]tool.Call, len(message.ToolCalls))
 				for j, call := range message.ToolCalls {

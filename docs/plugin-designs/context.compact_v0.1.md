@@ -71,7 +71,7 @@ Config、Dependencies 和 fixed summary protocol共同进入 `policy_digest`。�
 Invocation aggregate immutable。实现先 deep-copy并验证：
 
 - SessionID 非空；
-- 所有 string valid UTF-8；
+- role、name、tool linkage、Provider、Model和Stop等协议string必须valid UTF-8；JSON投影无法无损表示的非UTF-8 MIME type、URI或Asset ID由本Plugin显式拒绝，不允许`encoding/json`静默替换；
 - ToolCall Arguments 与 Tool InputSchema 是 valid JSON；
 - system messages只能构成 leading prefix；
 - system prefix 后第一条 conversation message必须是user；
@@ -130,6 +130,8 @@ User: compact JSON containing current materialized state and source turns
 - 模型输出只提出Delta，Plugin负责严格验证和应用。
 
 每个新segment冻结后不再重写。Model context中的summary使用synthetic assistant message，并带固定前缀说明它是historical data而非新的system instruction。State snapshot和Delta也使用固定、确定性的synthetic assistant JSON message。
+
+含media part的turn可以保留在anchor或recent raw区域，但v0.1不把它发送给摘要模型；选段在第一个media turn前停止。若最旧eligible turn即含media且仍需压缩，返回`ErrContextUncompactable`，不丢弃或只总结其文本子集。
 
 ## 7. State snapshot、Delta 与 rollup
 

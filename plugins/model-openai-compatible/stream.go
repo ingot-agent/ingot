@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -47,6 +48,7 @@ type streamAccumulator struct {
 	model        string
 	role         model.Role
 	content      strings.Builder
+	contentOpen  bool
 	toolCalls    []tool.Call
 	finishReason string
 	usage        model.Usage
@@ -59,7 +61,7 @@ func (p *provider) Stream(ctx context.Context, request model.Request, handler mo
 	if handler == nil {
 		return model.Response{}, fmt.Errorf("nil stream handler: %w", ErrInvalidRequest)
 	}
-	body, err := encodeChatRequest(request, true)
+	body, err := p.encodeChatRequest(ctx, request, true)
 	if err != nil {
 		return model.Response{}, err
 	}
@@ -153,6 +155,9 @@ func (p *provider) decodeStream(ctx context.Context, response *http.Response, ha
 	if !done {
 		return model.Response{}, protocolError("stream ended before [DONE]")
 	}
+	if err := accumulator.finish(handler); err != nil {
+		return model.Response{}, err
+	}
 	return accumulator.response()
 }
 
@@ -189,9 +194,15 @@ func (a *streamAccumulator) add(chunk streamResponse, handler model.StreamHandle
 		if !utf8.ValidString(*choice.Delta.Content) {
 			return protocolError("stream text delta is invalid UTF-8")
 		}
+		if !a.contentOpen {
+			if err := handler(model.StreamEvent{Kind: model.StreamPartStart, PartIndex: 0, PartKind: content.KindText}); err != nil {
+				return err
+			}
+			a.contentOpen = true
+		}
 		a.content.WriteString(*choice.Delta.Content)
 		if *choice.Delta.Content != "" {
-			if err := handler(model.StreamChunk{TextDelta: *choice.Delta.Content}); err != nil {
+			if err := handler(model.StreamEvent{Kind: model.StreamPartDelta, PartIndex: 0, TextDelta: *choice.Delta.Content}); err != nil {
 				return err
 			}
 		}
@@ -237,6 +248,13 @@ func (a *streamAccumulator) add(chunk streamResponse, handler model.StreamHandle
 	return nil
 }
 
+func (a *streamAccumulator) finish(handler model.StreamHandler) error {
+	if !a.contentOpen {
+		return nil
+	}
+	return handler(model.StreamEvent{Kind: model.StreamPartEnd, PartIndex: 0})
+}
+
 func (a *streamAccumulator) response() (model.Response, error) {
 	if a.model == "" || a.role != model.RoleAssistant || a.finishReason == "" {
 		return model.Response{}, protocolError("stream is missing model, assistant role, or finish reason")
@@ -248,8 +266,12 @@ func (a *streamAccumulator) response() (model.Response, error) {
 		}
 		calls[i] = tool.Call{ID: call.ID, Name: call.Name, Arguments: append(json.RawMessage(nil), call.Arguments...)}
 	}
+	var messageContent content.Content
+	if a.contentOpen {
+		messageContent = content.FromText(a.content.String())
+	}
 	return model.Response{
-		Message:      model.Message{Role: model.RoleAssistant, Content: a.content.String(), ToolCalls: calls},
+		Message:      model.Message{Role: model.RoleAssistant, Content: messageContent, ToolCalls: calls},
 		FinishReason: a.finishReason, Usage: a.usage, Provider: a.provider, Model: a.model,
 	}, nil
 }

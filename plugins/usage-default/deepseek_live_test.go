@@ -22,8 +22,8 @@ func TestDeepSeekV4LiveCalibration(t *testing.T) {
 		t.Skip("DEEPSEEK_API_KEY is not set")
 	}
 	request := model.Request{Messages: []model.Message{
-		{Role: model.RoleSystem, Content: "You are a helpful assistant."},
-		{Role: model.RoleUser, Content: "Hello"},
+		{Role: model.RoleSystem, Content: textContent("You are a helpful assistant.")},
+		{Role: model.RoleUser, Content: textContent("Hello")},
 	}}
 	profile, err := newDeepSeekV4Profile()
 	if err != nil {
@@ -55,38 +55,38 @@ func TestDeepSeekV4LiveCalibrationVectors(t *testing.T) {
 		{
 			name: "user-only",
 			request: model.Request{Messages: []model.Message{
-				{Role: model.RoleUser, Content: "Count this user-only calibration request."},
+				{Role: model.RoleUser, Content: textContent("Count this user-only calibration request.")},
 			}},
 		},
 		{
 			name: "multilingual",
 			request: model.Request{Messages: []model.Message{
-				{Role: model.RoleSystem, Content: "你是一个严谨的助手。"},
-				{Role: model.RoleUser, Content: "请计算 token：你好，世界！こんにちは、世界！こんにちは。"},
+				{Role: model.RoleSystem, Content: textContent("你是一个严谨的助手。")},
+				{Role: model.RoleUser, Content: textContent("请计算 token：你好，世界！こんにちは、世界！こんにちは。")},
 			}},
 		},
 		{
 			name: "multi-turn",
 			request: model.Request{Messages: []model.Message{
-				{Role: model.RoleSystem, Content: "Answer concisely."},
-				{Role: model.RoleUser, Content: "What is 2 + 2?"},
-				{Role: model.RoleAssistant, Content: "It is 4."},
-				{Role: model.RoleUser, Content: "Now explain why in one sentence."},
+				{Role: model.RoleSystem, Content: textContent("Answer concisely.")},
+				{Role: model.RoleUser, Content: textContent("What is 2 + 2?")},
+				{Role: model.RoleAssistant, Content: textContent("It is 4.")},
+				{Role: model.RoleUser, Content: textContent("Now explain why in one sentence.")},
 			}},
 		},
 		{
 			name: "long-text",
 			request: model.Request{Messages: []model.Message{
-				{Role: model.RoleSystem, Content: "Summarize the supplied text."},
-				{Role: model.RoleUser, Content: strings.Repeat("Token calibration keeps the request deterministic. ", 80)},
+				{Role: model.RoleSystem, Content: textContent("Summarize the supplied text.")},
+				{Role: model.RoleUser, Content: textContent(strings.Repeat("Token calibration keeps the request deterministic. ", 80))},
 			}},
 		},
 		{
 			name: "tool-schema",
 			request: model.Request{
 				Messages: []model.Message{
-					{Role: model.RoleSystem, Content: "You are a helpful assistant."},
-					{Role: model.RoleUser, Content: "What is the weather in Beijing?"},
+					{Role: model.RoleSystem, Content: textContent("You are a helpful assistant.")},
+					{Role: model.RoleUser, Content: textContent("What is the weather in Beijing?")},
 				},
 				Tools: []tool.Definition{{
 					Name:        "get_weather",
@@ -99,13 +99,13 @@ func TestDeepSeekV4LiveCalibrationVectors(t *testing.T) {
 			name: "tool-call-and-result",
 			request: model.Request{
 				Messages: []model.Message{
-					{Role: model.RoleSystem, Content: "You are helpful."},
-					{Role: model.RoleUser, Content: "Weather?"},
+					{Role: model.RoleSystem, Content: textContent("You are helpful.")},
+					{Role: model.RoleUser, Content: textContent("Weather?")},
 					{Role: model.RoleAssistant, ToolCalls: []tool.Call{{
 						ID: "call_a", Name: "weather", Arguments: []byte(`{"city":"北京","days":2}`),
 					}}},
-					{Role: model.RoleTool, ToolCallID: "call_a", Content: "晴，25°C"},
-					{Role: model.RoleUser, Content: "Thanks"},
+					{Role: model.RoleTool, ToolCallID: "call_a", Content: textContent("晴，25°C")},
+					{Role: model.RoleUser, Content: textContent("Thanks")},
 				},
 				Tools: []tool.Definition{{
 					Name:        "weather",
@@ -165,7 +165,7 @@ func requestDeepSeekPromptTokens(key string, request model.Request) (int64, erro
 	}
 	messages := make([]wireMessage, len(request.Messages))
 	for i, message := range request.Messages {
-		wire := wireMessage{Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID}
+		wire := wireMessage{Role: message.Role, Content: messageText(message), ToolCallID: message.ToolCallID}
 		if len(message.ToolCalls) != 0 {
 			wire.ToolCalls = make([]wireToolCall, len(message.ToolCalls))
 			for callIndex, call := range message.ToolCalls {

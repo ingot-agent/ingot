@@ -21,6 +21,7 @@ ingot 是一个面向 Agent 的构建期组合系统。它不把 Agent 看成只
 | 应用 / UI | `app.cli` | HTTP 或 WebSocket 网关、客服系统连接器、聊天平台适配器 |
 | Agent Loop | `agent.default` | 分诊工作流、领域专用 Loop、确定性编排流程 |
 | 模型访问 | `http.default`、`model.openai-compatible`、`model.runtime` | 企业网络传输、其他 Provider、自定义路由或故障转移 |
+| 二进制 Asset | `asset.local` | 对象存储、共享媒体服务、加密或远程不可变 Blob |
 | 工具 | `tool.shell`、`tool.fs`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
 | 策略 | `interceptor.approval`、`interceptor.script` | 审计、鉴权、限流、组织专用安全策略 |
 | 状态与上下文 | `session.jsonl`、`context.compact`、`prompt.default` | 数据库存储、检索、自定义记忆与 Prompt |
@@ -183,6 +184,7 @@ plugin      add | remove | update | reorder | list | inspect
 - [`builder.toml` 设计](./ingot_builder.toml_v0.1_设计方案.md)
 - [`plugins.lock` 设计](./ingot_plugins.lock_v0.1_设计方案.md)
 - [SDK 设计 v0.1](./ingot_SDK_v0.1_设计方案.md)
+- [SDK 多模态 v0.2 迁移方案](../../ingot_SDK_多模态协议迁移方案.md)
 - [ingot ABI 设计 v0.1](./ingot_ABI_v0.1_设计提案.md)
 - [`ingot init` 设计](./ingot_init_设计方案_v0.1.md)
 
@@ -205,10 +207,17 @@ plugin      add | remove | update | reorder | list | inspect
 ```sh
 go test -race ./...
 for plugin_dir in plugins/*; do
-  (cd "$plugin_dir" && go test -race ./...)
+  if [ "$plugin_dir" = plugins/app-cli ]; then
+    (cd "$plugin_dir" && GOWORK=off go test -race ./...)
+  else
+    (cd "$plugin_dir" && go test -race ./...)
+  fi
 done
 (cd ../sdk && go test -race ./...)
 ```
+
+`app-cli` 在后续完整重写前保持 SDK v0.1.3，因此它的 legacy suite 与 v0.2
+workspace 显式隔离运行。
 
 ## 路线图
 

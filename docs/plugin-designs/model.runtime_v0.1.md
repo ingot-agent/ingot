@@ -1,7 +1,7 @@
 # `model.runtime` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`model.Runtime`、`model.StreamingRuntime`、`model.RequestResolver`
+> Exports：`model.Runtime`、`model.StreamingRuntime`、`model.RequestResolver`、`model.CapabilityResolver`
 
 ## 1. 定位与 Contract
 
@@ -15,9 +15,10 @@ type Dependencies struct {
 }
 
 type Exports struct {
-    Runtime   model.Runtime
-    Streaming model.StreamingRuntime
-    Resolver  model.RequestResolver
+    Runtime      model.Runtime
+    Streaming    model.StreamingRuntime
+    Resolver     model.RequestResolver
+    Capabilities model.CapabilityResolver
 }
 ```
 
@@ -40,6 +41,8 @@ type Config struct {
 Provider/Model，并验证最终选择；不会调用 Provider 或执行 Model
 Interceptor。它与 Complete/Stream 共用同一份 immutable provider/default
 registry，供 `usage.default` 等调用前能力使用。
+
+`Capabilities.ResolveCapabilities`复用相同的默认值物化与Provider lookup，再要求选中Provider实现`model.CapabilityProvider`；缺失时返回`model.ErrCapabilitiesUnavailable`。Runtime验证Provider返回的kind/source/role枚举并deep-copy aggregate，调用方修改结果不得污染后续查询。
 
 ## 3. Startup
 
@@ -70,7 +73,8 @@ Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或改写
 - 不在 Runtime 隐式 fallback或 retry；相关能力通过显式 Interceptor实现；
 - `Messages`、`Tools`、`Stop`、所有 RawMessage和指针字段递归深拷贝，避免默认填充或恶意 Interceptor修改 caller aggregate；复制必须保留 `nil` 与“非 nil 空值”的 presence 差异，不能把 caller 明确提供的空 slice/RawMessage折叠为 `nil`；
 - 只有 terminal 实际调用 Provider 后才执行来源归一化：`Response.Provider` 强制设为最终选中的 Named Provider，`Response.Model` 非空时保留 Provider报告的实际模型，空时填入最终 Request.Model；
-- terminal 成功响应必须具有 assistant role、非空 Provider/Model、合法 UTF-8文本、非负且满足 `TotalTokens == InputTokens + OutputTokens` 的 Usage；每个 ToolCall必须有非空且合法 UTF-8的 ID/Name和合法 JSON Arguments，否则包装 `ErrInvalidResponse`；
+- terminal成功响应必须具有assistant role、非空Provider/Model、通过`content.Validate`的Content、非负且满足`TotalTokens == InputTokens + OutputTokens`的Usage；每个ToolCall必须有非空且合法UTF-8的ID/Name和合法JSON Arguments，否则包装`ErrInvalidResponse`；
+- Stream逐part验证start/delta/end序列，text只接受UTF-8 text delta，media只接受data delta；最终重建Content必须与Provider返回的final Message.Content byte-exact一致；
 - Interceptor short-circuit 返回的 Response 不冒充某次 Provider调用，不填充或覆盖其 Provider/Model，只做 ownership deep-copy；
 - Response aggregate 在返回前归一化为独立值，Provider或Interceptor在返回后不得影响 caller持有的数据。
 
@@ -93,6 +97,6 @@ name = "default"
 package = "."
 ```
 
-测试覆盖 Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Resolver 默认值物化/校验/不调用 Provider、Interceptor改写后不二次补默认值、unknown provider/model、request/response deep copy与 presence保留、错误路径 partial response ownership、terminal响应校验、complete/stream interceptor完整 trace、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发 Provider选择和 race test。
+测试覆盖Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Resolver默认值物化/校验/不调用Provider、Capabilities lookup/validation/ownership、Interceptor改写后不二次补默认值、unknown provider/model、multimodal request/response deep copy与presence保留、错误路径partial response ownership、terminal响应校验、complete/stream interceptor完整trace、stream part状态机/final一致性、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发Provider选择和race test。
 
 验收要求 Complete 与 Stream 行为对称但 chain独立；Runtime 不包含任何 OpenAI-specific logic。

@@ -44,6 +44,7 @@ var profiles = map[string]*Profile{
 		// last so that MANY aggregation and creation order are stable and
 		// readable.
 		Plugins: []string{
+			"asset-local",
 			"http-default",
 			"model-openai-compatible",
 			"model-runtime",
@@ -64,6 +65,7 @@ var profiles = map[string]*Profile{
 		// Exactly the runtime skeleton plus one model provider and the HTTP
 		// client it requires. No tools, no filesystem, no approvals.
 		Plugins: []string{
+			"asset-local",
 			"http-default",
 			"model-openai-compatible",
 			"model-runtime",

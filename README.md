@@ -34,6 +34,7 @@ the graph.
 | Application / UI | `app.cli` | HTTP or WebSocket gateway, customer-service connector, chat platform adapter |
 | Agent loop | `agent.default` | Triage workflow, domain-specific loop, deterministic orchestration |
 | Model access | `http.default`, `model.openai-compatible`, `model.runtime` | Enterprise transport, another provider, custom routing or failover |
+| Binary assets | `asset.local` | Object storage, shared media service, encrypted or remote immutable blobs |
 | Tools | `tool.shell`, `tool.fs`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
 | Policy | `interceptor.approval`, `interceptor.script` | Audit, authorization, rate limits, organization-specific guardrails |
 | State and context | `session.jsonl`, `context.compact`, `prompt.default` | Database-backed sessions, retrieval, custom memory and prompting |
@@ -245,6 +246,7 @@ See the [Usage Guide](./docs/USAGE.md) or
 - [`builder.toml` design](./docs/ingot_builder.toml_v0.1_设计方案.md) (Chinese)
 - [`plugins.lock` design](./docs/ingot_plugins.lock_v0.1_设计方案.md) (Chinese)
 - [SDK design v0.1](./docs/ingot_SDK_v0.1_设计方案.md) (Chinese)
+- [SDK multimodal v0.2 migration](../ingot_SDK_多模态协议迁移方案.md) (Chinese)
 - [ingot ABI design v0.1](./docs/ingot_ABI_v0.1_设计提案.md) (Chinese)
 - [`ingot init` design](./docs/ingot_init_设计方案_v0.1.md) (Chinese)
 
@@ -270,10 +272,17 @@ Run the Builder, integration, SDK, and plugin tests from this directory:
 ```sh
 go test -race ./...
 for plugin_dir in plugins/*; do
-  (cd "$plugin_dir" && go test -race ./...)
+  if [ "$plugin_dir" = plugins/app-cli ]; then
+    (cd "$plugin_dir" && GOWORK=off go test -race ./...)
+  else
+    (cd "$plugin_dir" && go test -race ./...)
+  fi
 done
 (cd ../sdk && go test -race ./...)
 ```
+
+`app-cli` remains on SDK v0.1.3 until its planned rewrite, so its legacy suite
+is intentionally isolated from the v0.2 workspace.
 
 ## Roadmap
 

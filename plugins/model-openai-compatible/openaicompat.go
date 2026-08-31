@@ -16,6 +16,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/asset"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/httpx"
 	"github.com/ingot-agent/sdk/model"
 )
@@ -23,6 +25,8 @@ import (
 const (
 	defaultMaxResponseBytes  = 16 * 1024 * 1024
 	defaultMaxErrorBodyBytes = 64 * 1024
+	defaultMaxAssetBytes     = 20 * 1024 * 1024
+	defaultAssetConcurrency  = 4
 	userAgent                = "ingot-model-openai-compatible/0.1"
 	maxProviderNameBytes     = 64
 )
@@ -97,11 +101,15 @@ type ProviderConfig struct {
 	DefaultHeaders    map[string]string `toml:"default_headers"`
 	MaxResponseBytes  int               `toml:"max_response_bytes"`
 	MaxErrorBodyBytes int               `toml:"max_error_body_bytes"`
+	MaxAssetBytes     int               `toml:"max_asset_bytes"`
+	AssetConcurrency  int               `toml:"asset_concurrency"`
 }
 
-// Dependencies contains the shared HTTP capability.
+// Dependencies contains shared HTTP and immutable asset resolution
+// capabilities.
 type Dependencies struct {
-	HTTP httpx.Client
+	HTTP   httpx.Client
+	Assets asset.Resolver
 }
 
 // Exports contains named model providers in declaration order.
@@ -119,12 +127,15 @@ type provider struct {
 	headers          http.Header
 	maxResponseBytes int
 	maxErrorBytes    int
+	maxAssetBytes    int
+	assetSlots       chan struct{}
 	http             httpx.Client
+	assets           asset.Resolver
 }
 
 // New validates and snapshots all provider configuration.
 func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
-	if ctx == nil || isNil(deps.HTTP) {
+	if ctx == nil || isNil(deps.HTTP) || isNil(deps.Assets) {
 		return Exports{}, nil, fmt.Errorf("construct model.openai-compatible: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
@@ -136,7 +147,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 
 	items := make([]ingotabi.Named[model.Provider], 0, len(cfg.Providers))
 	for i, candidate := range cfg.Providers {
-		instance, err := newProvider(candidate, deps.HTTP)
+		instance, err := newProvider(candidate, deps.HTTP, deps.Assets)
 		if err != nil {
 			return Exports{}, nil, fmt.Errorf("providers[%d]: %w", i, err)
 		}
@@ -148,7 +159,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	return Exports{Providers: items}, nil, nil
 }
 
-func newProvider(cfg ProviderConfig, client httpx.Client) (*provider, error) {
+func newProvider(cfg ProviderConfig, client httpx.Client, assets asset.Resolver) (*provider, error) {
 	if len(cfg.Name) > maxProviderNameBytes || !providerNamePattern.MatchString(cfg.Name) {
 		return nil, configError("name", "must match [a-z][a-z0-9]*(?:[._-][a-z0-9]+)* and be at most 64 bytes")
 	}
@@ -169,6 +180,14 @@ func newProvider(cfg ProviderConfig, client httpx.Client) (*provider, error) {
 		return nil, err
 	}
 	maxError, err := positiveDefault(cfg.MaxErrorBodyBytes, defaultMaxErrorBodyBytes, "max_error_body_bytes")
+	if err != nil {
+		return nil, err
+	}
+	maxAsset, err := positiveDefault(cfg.MaxAssetBytes, defaultMaxAssetBytes, "max_asset_bytes")
+	if err != nil {
+		return nil, err
+	}
+	assetConcurrency, err := positiveDefault(cfg.AssetConcurrency, defaultAssetConcurrency, "asset_concurrency")
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +231,10 @@ func newProvider(cfg ProviderConfig, client httpx.Client) (*provider, error) {
 		headers:          headers,
 		maxResponseBytes: maxResponse,
 		maxErrorBytes:    maxError,
+		maxAssetBytes:    maxAsset,
+		assetSlots:       make(chan struct{}, assetConcurrency),
 		http:             client,
+		assets:           assets,
 	}, nil
 }
 
@@ -243,7 +265,7 @@ func (p *provider) Complete(ctx context.Context, request model.Request) (model.R
 	if err := p.validateRequest(ctx, request); err != nil {
 		return model.Response{}, err
 	}
-	body, err := encodeChatRequest(request, false)
+	body, err := p.encodeChatRequest(ctx, request, false)
 	if err != nil {
 		return model.Response{}, err
 	}
@@ -264,6 +286,66 @@ func (p *provider) Complete(ctx context.Context, request model.Request) (model.R
 		return model.Response{}, err
 	}
 	return decodeComplete(raw, p.name)
+}
+
+// Capabilities reports the stable subset of Chat Completions content handled
+// by this adapter. The returned aggregate is caller-owned.
+func (p *provider) Capabilities(ctx context.Context, modelName string) (model.Capabilities, error) {
+	if ctx == nil {
+		return model.Capabilities{}, fmt.Errorf("nil context: %w", model.ErrCapabilitiesUnavailable)
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Capabilities{}, err
+	}
+	if modelName == "" {
+		return model.Capabilities{}, fmt.Errorf("empty model: %w", model.ErrModelNotFound)
+	}
+	if len(p.models) != 0 {
+		if _, ok := p.models[modelName]; !ok {
+			return model.Capabilities{}, fmt.Errorf("model %q is not allowed by provider %q: %w", modelName, p.name, model.ErrModelNotFound)
+		}
+	}
+	return model.Capabilities{
+		Input: []model.ContentCapability{
+			{Kind: content.KindText, Roles: []model.Role{model.RoleSystem, model.RoleUser, model.RoleAssistant, model.RoleTool}},
+			{Kind: content.KindImage, Sources: []content.SourceKind{content.SourceInline, content.SourceURI, content.SourceAsset}, Roles: []model.Role{model.RoleUser}},
+		},
+		Output:          []model.ContentCapability{{Kind: content.KindText, Roles: []model.Role{model.RoleAssistant}}},
+		StreamingOutput: []content.Kind{content.KindText},
+	}, nil
+}
+
+func (p *provider) readAsset(ctx context.Context, reference asset.Reference) ([]byte, error) {
+	info, err := p.assets.Stat(ctx, reference)
+	if err != nil {
+		return nil, fmt.Errorf("stat model input asset: %w", err)
+	}
+	if info.Size > uint64(p.maxAssetBytes) {
+		return nil, &content.UnsupportedError{Kind: content.KindImage, Reason: "asset exceeds provider input limit"}
+	}
+	select {
+	case p.assetSlots <- struct{}{}:
+		defer func() { <-p.assetSlots }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	body, err := p.assets.Open(ctx, reference)
+	if err != nil {
+		return nil, fmt.Errorf("open model input asset: %w", err)
+	}
+	stopBodyWatch := closeBodyOnCancel(ctx, body)
+	defer stopBodyWatch()
+	raw, err := io.ReadAll(io.LimitReader(body, int64(info.Size)+1))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("read model input asset: %w", err)
+	}
+	if uint64(len(raw)) != info.Size {
+		return nil, errors.New("read model input asset: size changed while reading immutable asset")
+	}
+	return raw, nil
 }
 
 func (p *provider) validateRequest(ctx context.Context, request model.Request) error {
@@ -417,4 +499,7 @@ func isNil(value any) bool {
 	}
 }
 
-var _ model.StreamingProvider = (*provider)(nil)
+var (
+	_ model.StreamingProvider  = (*provider)(nil)
+	_ model.CapabilityProvider = (*provider)(nil)
+)

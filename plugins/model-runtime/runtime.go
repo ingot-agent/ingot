@@ -3,14 +3,17 @@
 package modelruntime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
@@ -40,9 +43,10 @@ type Dependencies struct {
 // request resolver used by components that need the materialized provider and
 // model selection before invocation.
 type Exports struct {
-	Runtime   model.Runtime
-	Streaming model.StreamingRuntime
-	Resolver  model.RequestResolver
+	Runtime      model.Runtime
+	Streaming    model.StreamingRuntime
+	Resolver     model.RequestResolver
+	Capabilities model.CapabilityResolver
 }
 
 type runtime struct {
@@ -103,7 +107,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		providers: providers, defaultProvider: defaultProvider, defaultModel: cfg.DefaultModel,
 		interceptors: interceptors, streamInterceptors: streamInterceptors,
 	}
-	return Exports{Runtime: instance, Streaming: instance, Resolver: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, Resolver: instance, Capabilities: instance}, nil, nil
 }
 
 // ResolveRequest returns a caller-owned request with provider and model
@@ -121,7 +125,39 @@ func (r *runtime) ResolveRequest(ctx context.Context, request model.Request) (mo
 	if _, err := r.selectProvider(owned); err != nil {
 		return model.Request{}, err
 	}
+	if err := validateRequest(owned); err != nil {
+		return model.Request{}, err
+	}
 	return owned, nil
+}
+
+// ResolveCapabilities returns a caller-owned capability declaration using the
+// same provider and model defaulting rules as ResolveRequest.
+func (r *runtime) ResolveCapabilities(ctx context.Context, request model.CapabilityRequest) (model.Capabilities, error) {
+	if ctx == nil {
+		return model.Capabilities{}, errors.New("model capability resolver: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Capabilities{}, err
+	}
+	selected := model.Request{Provider: request.Provider, Model: request.Model}
+	r.applyDefaults(&selected)
+	provider, err := r.selectProvider(selected)
+	if err != nil {
+		return model.Capabilities{}, err
+	}
+	capabilityProvider, ok := provider.(model.CapabilityProvider)
+	if !ok || isNil(capabilityProvider) {
+		return model.Capabilities{}, fmt.Errorf("provider %q: %w", selected.Provider, model.ErrCapabilitiesUnavailable)
+	}
+	capabilities, err := capabilityProvider.Capabilities(ctx, selected.Model)
+	if err != nil {
+		return model.Capabilities{}, err
+	}
+	if err := validateCapabilities(capabilities); err != nil {
+		return model.Capabilities{}, err
+	}
+	return cloneCapabilities(capabilities), nil
 }
 
 func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Response, error) {
@@ -134,6 +170,9 @@ func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Re
 	owned := cloneRequest(request)
 	r.applyDefaults(&owned)
 	terminal := func(callCtx context.Context, selected model.Request) (model.Response, error) {
+		if err := validateRequest(selected); err != nil {
+			return model.Response{}, err
+		}
 		provider, err := r.selectProvider(selected)
 		if err != nil {
 			return model.Response{}, err
@@ -153,6 +192,11 @@ func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Re
 	}
 	next := pipeline.Compose[model.Request, model.Response](terminal, r.interceptors...)
 	response, err := next(ctx, owned)
+	if err == nil {
+		if validationErr := validateResponse(response); validationErr != nil {
+			return model.Response{}, validationErr
+		}
+	}
 	return cloneResponse(response), err
 }
 
@@ -168,7 +212,11 @@ func (r *runtime) Stream(ctx context.Context, request model.Request, handler mod
 	}
 	owned := cloneRequest(request)
 	r.applyDefaults(&owned)
+	stream := newStreamValidator(handler)
 	terminal := model.StreamNext(func(callCtx context.Context, selected model.Request, selectedHandler model.StreamHandler) (model.Response, error) {
+		if err := validateRequest(selected); err != nil {
+			return model.Response{}, err
+		}
 		provider, err := r.selectProvider(selected)
 		if err != nil {
 			return model.Response{}, err
@@ -198,7 +246,18 @@ func (r *runtime) Stream(ctx context.Context, request model.Request, handler mod
 			return interceptor.InvokeStream(callCtx, selected, selectedHandler, following)
 		}
 	}
-	response, err := next(ctx, owned, handler)
+	response, err := next(ctx, owned, stream.handle)
+	if stream.handlerErr != nil {
+		return cloneResponse(response), stream.handlerErr
+	}
+	if err == nil {
+		if validationErr := validateResponse(response); validationErr != nil {
+			return model.Response{}, validationErr
+		}
+		if validationErr := stream.finish(response.Message.Content); validationErr != nil {
+			return model.Response{}, validationErr
+		}
+	}
 	return cloneResponse(response), err
 }
 
@@ -230,9 +289,12 @@ func validateResponse(response model.Response) error {
 		return fmt.Errorf("response requires assistant role, provider, and model: %w", ErrInvalidResponse)
 	}
 	if !utf8.ValidString(response.Provider) || !utf8.ValidString(response.Model) ||
-		!utf8.ValidString(response.FinishReason) || !utf8.ValidString(response.Message.Content) ||
+		!utf8.ValidString(response.FinishReason) ||
 		!utf8.ValidString(response.Message.Name) || !utf8.ValidString(response.Message.ToolCallID) {
 		return fmt.Errorf("response contains invalid UTF-8: %w", ErrInvalidResponse)
+	}
+	if err := content.Validate(response.Message.Content); err != nil {
+		return fmt.Errorf("response message content: %w: %w", ErrInvalidResponse, err)
 	}
 	if response.Usage.InputTokens < 0 || response.Usage.OutputTokens < 0 || response.Usage.TotalTokens < 0 {
 		return fmt.Errorf("response usage is negative: %w", ErrInvalidResponse)
@@ -247,6 +309,25 @@ func validateResponse(response model.Response) error {
 		}
 	}
 	return nil
+}
+
+func validateRequest(request model.Request) error {
+	if !utf8.ValidString(request.Provider) || !utf8.ValidString(request.Model) {
+		return fmt.Errorf("request provider or model contains invalid UTF-8: %w", ErrInvalidResponse)
+	}
+	for i, message := range request.Messages {
+		if !validRole(message.Role) || !utf8.ValidString(message.Name) || !utf8.ValidString(message.ToolCallID) {
+			return fmt.Errorf("request messages[%d] has invalid fields: %w", i, content.ErrInvalidContent)
+		}
+		if err := content.Validate(message.Content); err != nil {
+			return fmt.Errorf("request messages[%d] content: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validRole(role model.Role) bool {
+	return role == model.RoleSystem || role == model.RoleUser || role == model.RoleAssistant || role == model.RoleTool
 }
 
 func cloneRequest(request model.Request) model.Request {
@@ -289,6 +370,7 @@ func cloneMessages(messages []model.Message) []model.Message {
 }
 
 func cloneMessage(message model.Message) model.Message {
+	message.Content = content.Clone(message.Content)
 	calls := message.ToolCalls
 	if calls == nil {
 		return message
@@ -298,6 +380,160 @@ func cloneMessage(message model.Message) model.Message {
 		message.ToolCalls[i] = tool.Call{ID: call.ID, Name: call.Name, Arguments: cloneRawMessage(call.Arguments)}
 	}
 	return message
+}
+
+func cloneCapabilities(value model.Capabilities) model.Capabilities {
+	result := model.Capabilities{StreamingOutput: slices.Clone(value.StreamingOutput)}
+	result.Input = cloneContentCapabilities(value.Input)
+	result.Output = cloneContentCapabilities(value.Output)
+	return result
+}
+
+func cloneContentCapabilities(value []model.ContentCapability) []model.ContentCapability {
+	if value == nil {
+		return nil
+	}
+	result := make([]model.ContentCapability, len(value))
+	for i, capability := range value {
+		result[i] = capability
+		result[i].Sources = slices.Clone(capability.Sources)
+		result[i].Roles = slices.Clone(capability.Roles)
+	}
+	return result
+}
+
+func validateCapabilities(value model.Capabilities) error {
+	for collectionName, collection := range map[string][]model.ContentCapability{"input": value.Input, "output": value.Output} {
+		for i, capability := range collection {
+			if !validContentKind(capability.Kind) {
+				return fmt.Errorf("provider %s capability[%d] has unknown kind %d: %w", collectionName, i, capability.Kind, model.ErrCapabilitiesUnavailable)
+			}
+			for j, source := range capability.Sources {
+				if source != content.SourceInline && source != content.SourceURI && source != content.SourceAsset {
+					return fmt.Errorf("provider %s capability[%d].sources[%d] is unknown: %w", collectionName, i, j, model.ErrCapabilitiesUnavailable)
+				}
+			}
+			for j, role := range capability.Roles {
+				if !validRole(role) {
+					return fmt.Errorf("provider %s capability[%d].roles[%d] is unknown: %w", collectionName, i, j, model.ErrCapabilitiesUnavailable)
+				}
+			}
+		}
+	}
+	for i, kind := range value.StreamingOutput {
+		if !validContentKind(kind) {
+			return fmt.Errorf("provider streaming_output[%d] has unknown kind %d: %w", i, kind, model.ErrCapabilitiesUnavailable)
+		}
+	}
+	return nil
+}
+
+func validContentKind(kind content.Kind) bool {
+	return kind >= content.KindText && kind <= content.KindFile
+}
+
+type streamValidator struct {
+	handler    model.StreamHandler
+	parts      content.Content
+	active     bool
+	activeKind content.Kind
+	activeMIME string
+	activeName string
+	text       []byte
+	data       []byte
+	handlerErr error
+}
+
+func newStreamValidator(handler model.StreamHandler) *streamValidator {
+	return &streamValidator{handler: handler}
+}
+
+func (v *streamValidator) handle(event model.StreamEvent) error {
+	if v.handlerErr != nil {
+		return v.handlerErr
+	}
+	if err := v.validateEvent(event); err != nil {
+		v.handlerErr = err
+		return err
+	}
+	owned := event
+	owned.DataDelta = slices.Clone(event.DataDelta)
+	if err := v.handler(owned); err != nil {
+		v.handlerErr = err
+		return err
+	}
+	return nil
+}
+
+func (v *streamValidator) validateEvent(event model.StreamEvent) error {
+	switch event.Kind {
+	case model.StreamPartStart:
+		if v.active || event.PartIndex != len(v.parts) || !validContentKind(event.PartKind) || event.TextDelta != "" || len(event.DataDelta) != 0 || !utf8.ValidString(event.Name) {
+			return fmt.Errorf("invalid stream part start at index %d: %w", event.PartIndex, ErrInvalidResponse)
+		}
+		if event.PartKind == content.KindText && (event.MIMEType != "" || event.Name != "") {
+			return fmt.Errorf("text stream part carries media metadata: %w", ErrInvalidResponse)
+		}
+		v.active = true
+		v.activeKind = event.PartKind
+		v.activeMIME = event.MIMEType
+		v.activeName = event.Name
+		v.text = nil
+		v.data = nil
+	case model.StreamPartDelta:
+		if !v.active || event.PartIndex != len(v.parts) || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" {
+			return fmt.Errorf("invalid stream part delta at index %d: %w", event.PartIndex, ErrInvalidResponse)
+		}
+		if v.activeKind == content.KindText {
+			if len(event.DataDelta) != 0 || !utf8.ValidString(event.TextDelta) {
+				return fmt.Errorf("invalid text stream delta: %w", ErrInvalidResponse)
+			}
+			v.text = append(v.text, event.TextDelta...)
+		} else {
+			if event.TextDelta != "" {
+				return fmt.Errorf("media stream delta carries text: %w", ErrInvalidResponse)
+			}
+			v.data = append(v.data, event.DataDelta...)
+		}
+	case model.StreamPartEnd:
+		if !v.active || event.PartIndex != len(v.parts) || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" || event.TextDelta != "" || len(event.DataDelta) != 0 {
+			return fmt.Errorf("invalid stream part end at index %d: %w", event.PartIndex, ErrInvalidResponse)
+		}
+		if v.activeKind == content.KindText {
+			v.parts = append(v.parts, content.Text(string(v.text)))
+		} else {
+			v.parts = append(v.parts, content.Inline(v.activeKind, v.activeMIME, v.activeName, v.data))
+		}
+		v.active = false
+	default:
+		return fmt.Errorf("unknown stream event kind %d: %w", event.Kind, ErrInvalidResponse)
+	}
+	return nil
+}
+
+func (v *streamValidator) finish(final content.Content) error {
+	if v.active {
+		return fmt.Errorf("stream ended with an incomplete part: %w", ErrInvalidResponse)
+	}
+	if !contentEqual(v.parts, final) {
+		return fmt.Errorf("stream events do not match final response content: %w", ErrInvalidResponse)
+	}
+	return nil
+}
+
+func contentEqual(left, right content.Content) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].Kind != right[i].Kind || left[i].Text != right[i].Text ||
+			left[i].Media.MIMEType != right[i].Media.MIMEType || left[i].Media.Name != right[i].Media.Name ||
+			left[i].Media.Source.Kind != right[i].Media.Source.Kind || left[i].Media.Source.URI != right[i].Media.Source.URI ||
+			left[i].Media.Source.Asset != right[i].Media.Source.Asset || !bytes.Equal(left[i].Media.Source.Data, right[i].Media.Source.Data) {
+			return false
+		}
+	}
+	return true
 }
 
 func cloneRawMessage(value json.RawMessage) json.RawMessage {
@@ -323,7 +559,8 @@ func isNil(value any) bool {
 }
 
 var (
-	_ model.Runtime          = (*runtime)(nil)
-	_ model.StreamingRuntime = (*runtime)(nil)
-	_ model.RequestResolver  = (*runtime)(nil)
+	_ model.Runtime            = (*runtime)(nil)
+	_ model.StreamingRuntime   = (*runtime)(nil)
+	_ model.RequestResolver    = (*runtime)(nil)
+	_ model.CapabilityResolver = (*runtime)(nil)
 )
