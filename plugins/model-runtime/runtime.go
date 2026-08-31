@@ -434,6 +434,16 @@ func validContentKind(kind content.Kind) bool {
 
 type streamValidator struct {
 	handler    model.StreamHandler
+	handlerErr error
+	content    streamPartValidator
+	reasoning  streamPartValidator
+}
+
+// Content is accumulated for final-response validation. Reasoning has the same
+// lifecycle checks but never retains text or contributes to canonical content.
+type streamPartValidator struct {
+	index      int
+	transient  bool
 	parts      content.Content
 	active     bool
 	activeKind content.Kind
@@ -441,11 +451,10 @@ type streamValidator struct {
 	activeName string
 	text       []byte
 	data       []byte
-	handlerErr error
 }
 
 func newStreamValidator(handler model.StreamHandler) *streamValidator {
-	return &streamValidator{handler: handler}
+	return &streamValidator{handler: handler, reasoning: streamPartValidator{transient: true}}
 }
 
 func (v *streamValidator) handle(event model.StreamEvent) error {
@@ -466,9 +475,23 @@ func (v *streamValidator) handle(event model.StreamEvent) error {
 }
 
 func (v *streamValidator) validateEvent(event model.StreamEvent) error {
+	switch event.Semantic {
+	case model.StreamSemanticContent:
+		return v.content.validateEvent(event)
+	case model.StreamSemanticReasoning:
+		if event.Kind == model.StreamPartStart && event.PartKind != content.KindText {
+			return fmt.Errorf("reasoning stream part must be text: %w", ErrInvalidResponse)
+		}
+		return v.reasoning.validateEvent(event)
+	default:
+		return fmt.Errorf("unknown stream semantic %d: %w", event.Semantic, ErrInvalidResponse)
+	}
+}
+
+func (v *streamPartValidator) validateEvent(event model.StreamEvent) error {
 	switch event.Kind {
 	case model.StreamPartStart:
-		if v.active || event.PartIndex != len(v.parts) || !validContentKind(event.PartKind) || event.TextDelta != "" || len(event.DataDelta) != 0 || !utf8.ValidString(event.Name) {
+		if v.active || event.PartIndex != v.index || !validContentKind(event.PartKind) || event.TextDelta != "" || len(event.DataDelta) != 0 || !utf8.ValidString(event.Name) {
 			return fmt.Errorf("invalid stream part start at index %d: %w", event.PartIndex, ErrInvalidResponse)
 		}
 		if event.PartKind == content.KindText && (event.MIMEType != "" || event.Name != "") {
@@ -481,14 +504,16 @@ func (v *streamValidator) validateEvent(event model.StreamEvent) error {
 		v.text = nil
 		v.data = nil
 	case model.StreamPartDelta:
-		if !v.active || event.PartIndex != len(v.parts) || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" {
+		if !v.active || event.PartIndex != v.index || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" {
 			return fmt.Errorf("invalid stream part delta at index %d: %w", event.PartIndex, ErrInvalidResponse)
 		}
 		if v.activeKind == content.KindText {
 			if len(event.DataDelta) != 0 || !utf8.ValidString(event.TextDelta) {
 				return fmt.Errorf("invalid text stream delta: %w", ErrInvalidResponse)
 			}
-			v.text = append(v.text, event.TextDelta...)
+			if !v.transient {
+				v.text = append(v.text, event.TextDelta...)
+			}
 		} else {
 			if event.TextDelta != "" {
 				return fmt.Errorf("media stream delta carries text: %w", ErrInvalidResponse)
@@ -496,15 +521,20 @@ func (v *streamValidator) validateEvent(event model.StreamEvent) error {
 			v.data = append(v.data, event.DataDelta...)
 		}
 	case model.StreamPartEnd:
-		if !v.active || event.PartIndex != len(v.parts) || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" || event.TextDelta != "" || len(event.DataDelta) != 0 {
+		if !v.active || event.PartIndex != v.index || event.PartKind != 0 || event.MIMEType != "" || event.Name != "" || event.TextDelta != "" || len(event.DataDelta) != 0 {
 			return fmt.Errorf("invalid stream part end at index %d: %w", event.PartIndex, ErrInvalidResponse)
 		}
-		if v.activeKind == content.KindText {
-			v.parts = append(v.parts, content.Text(string(v.text)))
-		} else {
-			v.parts = append(v.parts, content.Inline(v.activeKind, v.activeMIME, v.activeName, v.data))
+		if !v.transient {
+			if v.activeKind == content.KindText {
+				v.parts = append(v.parts, content.Text(string(v.text)))
+			} else {
+				v.parts = append(v.parts, content.Inline(v.activeKind, v.activeMIME, v.activeName, v.data))
+			}
 		}
 		v.active = false
+		v.index++
+		v.text = nil
+		v.data = nil
 	default:
 		return fmt.Errorf("unknown stream event kind %d: %w", event.Kind, ErrInvalidResponse)
 	}
@@ -512,10 +542,10 @@ func (v *streamValidator) validateEvent(event model.StreamEvent) error {
 }
 
 func (v *streamValidator) finish(final content.Content) error {
-	if v.active {
+	if v.content.active || v.reasoning.active {
 		return fmt.Errorf("stream ended with an incomplete part: %w", ErrInvalidResponse)
 	}
-	if !contentEqual(v.parts, final) {
+	if !contentEqual(v.content.parts, final) {
 		return fmt.Errorf("stream events do not match final response content: %w", ErrInvalidResponse)
 	}
 	return nil

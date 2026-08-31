@@ -17,7 +17,6 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
-	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -40,15 +39,17 @@ var (
 	ErrCorruptHistory = errors.New("corrupt agent history")
 )
 
-// Config controls model selection, generation, streaming, and tool behavior.
+// Config controls model selection, generation, and tool behavior.
 type Config struct {
 	Provider      string   `toml:"provider"`
 	Model         string   `toml:"model"`
 	Temperature   *float64 `toml:"temperature"`
 	MaxTokens     *int     `toml:"max_tokens"`
 	MaxToolRounds int      `toml:"max_tool_rounds"`
-	Streaming     bool     `toml:"streaming"`
-	ToolErrorMode string   `toml:"tool_error_mode"`
+	// Deprecated: retained for config compatibility and ignored. Use the
+	// Streaming export's Stream method to request incremental output.
+	Streaming     bool   `toml:"streaming"`
+	ToolErrorMode string `toml:"tool_error_mode"`
 }
 
 // Dependencies contains the runtime chokepoints used by an agent turn.
@@ -63,10 +64,11 @@ type Dependencies struct {
 	Interceptors []agent.Interceptor
 }
 
-// Exports contains the agent runtime.
+// Exports contains independent turn, output streaming, and history capabilities.
 type Exports struct {
-	Runtime agent.Runtime
-	History agent.History
+	Runtime   agent.Runtime
+	Streaming agent.StreamingRuntime
+	History   agent.History
 }
 
 type runtime struct {
@@ -84,7 +86,6 @@ type runtime struct {
 	temperature   *float64
 	maxTokens     *int
 	maxToolRounds int
-	streamEnabled bool
 	toolErrorMode string
 }
 
@@ -101,9 +102,6 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	}
 	if deps.Streaming.Valid && isNil(deps.Streaming.Value) {
 		return Exports{}, nil, fmt.Errorf("streaming dependency is typed nil: %w", ErrInvalidConfig)
-	}
-	if cfg.Streaming && !deps.Streaming.Valid {
-		return Exports{}, nil, fmt.Errorf("streaming=true without model.StreamingRuntime: %w", ErrInvalidConfig)
 	}
 	if deps.Compactor.Valid && isNil(deps.Compactor.Value) {
 		return Exports{}, nil, fmt.Errorf("compactor dependency is typed nil: %w", ErrInvalidConfig)
@@ -140,9 +138,9 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		prompt: deps.Prompt, compactor: deps.Compactor, interceptors: interceptors,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
-		maxToolRounds: maxRounds, streamEnabled: cfg.Streaming, toolErrorMode: mode,
+		maxToolRounds: maxRounds, toolErrorMode: mode,
 	}
-	return Exports{Runtime: instance, History: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, History: instance}, nil, nil
 }
 
 // Load returns a validated, caller-owned snapshot of one session's persisted
@@ -168,156 +166,7 @@ func (r *runtime) Load(ctx context.Context, sessionID session.ID) ([]model.Messa
 }
 
 func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error) {
-	if ctx == nil {
-		return agent.Result{}, fmt.Errorf("run agent: nil context: %w", ErrInvalidTurn)
-	}
-	if turn.SessionID == "" || !utf8.ValidString(string(turn.SessionID)) || !utf8.ValidString(turn.Input) {
-		return agent.Result{}, ErrInvalidTurn
-	}
-	if err := content.ValidateAttachments(turn.Attachments); err != nil {
-		return agent.Result{}, fmt.Errorf("attachments: %w: %w", ErrInvalidTurn, err)
-	}
-	if err := ctx.Err(); err != nil {
-		return agent.Result{}, err
-	}
-	release, err := r.gates.acquire(ctx, string(turn.SessionID))
-	if err != nil {
-		return agent.Result{}, err
-	}
-	defer release()
-
-	originalSessionID := turn.SessionID
-	terminal := func(callCtx context.Context, selected agent.Turn) (agent.Result, error) {
-		if selected.SessionID != originalSessionID {
-			return agent.Result{}, fmt.Errorf("agent interceptor changed session id from %q to %q: %w", originalSessionID, selected.SessionID, ErrInvalidTurn)
-		}
-		return r.runTurn(callCtx, selected)
-	}
-	next := pipeline.Compose[agent.Turn, agent.Result](terminal, r.interceptors...)
-	owned := turn
-	owned.Attachments = content.CloneAttachments(turn.Attachments)
-	result, err := next(ctx, owned)
-	if err != nil {
-		return agent.Result{}, err
-	}
-	if err := content.Validate(result.Output); err != nil {
-		return agent.Result{}, fmt.Errorf("agent result: %w: %w", ErrInvalidModelMessage, err)
-	}
-	return agent.Result{Output: content.Clone(result.Output)}, nil
-}
-
-func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, error) {
-	history, err := r.loadHistory(ctx, turn.SessionID)
-	if err != nil {
-		return agent.Result{}, err
-	}
-	history, err = r.recoverTrailingRound(ctx, turn.SessionID, history)
-	if err != nil {
-		return agent.Result{}, err
-	}
-	if !utf8.ValidString(turn.Input) {
-		return agent.Result{}, ErrInvalidTurn
-	}
-	if err := content.ValidateAttachments(turn.Attachments); err != nil {
-		return agent.Result{}, fmt.Errorf("attachments: %w: %w", ErrInvalidTurn, err)
-	}
-	input := content.FromInput(turn.Input, turn.Attachments)
-	user, err := r.appendMessage(ctx, turn.SessionID, model.Message{Role: model.RoleUser, Content: input})
-	if err != nil {
-		return agent.Result{}, fmt.Errorf("append user message: %w", err)
-	}
-	messages, err := r.prompt.Render(ctx, prompt.Request{SessionID: turn.SessionID, Input: content.Clone(user.Content), History: cloneMessages(history)})
-	if err != nil {
-		return agent.Result{}, fmt.Errorf("render prompt: %w", err)
-	}
-	messages = cloneMessages(messages)
-	definitions := cloneDefinitions(r.tools.Definitions())
-	rounds := 0
-	for {
-		request := model.Request{
-			Provider: r.provider, Model: r.modelName, Messages: cloneMessages(messages), Tools: cloneDefinitions(definitions),
-			Temperature: copyFloat(r.temperature), MaxTokens: copyInt(r.maxTokens),
-		}
-		request, err = r.compactRequest(ctx, turn.SessionID, request)
-		if err != nil {
-			return agent.Result{}, err
-		}
-		response, err := r.callModel(ctx, request)
-		if err != nil {
-			return agent.Result{}, err
-		}
-		response.Message, err = r.appendMessage(ctx, turn.SessionID, response.Message)
-		if err != nil {
-			return agent.Result{}, fmt.Errorf("append assistant message: %w", err)
-		}
-		messages = append(messages, cloneMessage(response.Message))
-		if len(response.Message.ToolCalls) == 0 {
-			return agent.Result{Output: content.Clone(response.Message.Content)}, nil
-		}
-		rounds++
-		if rounds > r.maxToolRounds {
-			return agent.Result{}, ErrMaxToolRounds
-		}
-		for _, call := range response.Message.ToolCalls {
-			result, callErr := r.tools.Call(ctx, cloneCall(call))
-			if callErr != nil {
-				if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
-					return agent.Result{}, callErr
-				}
-				if r.toolErrorMode == "fail" {
-					return agent.Result{}, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
-				}
-				result = tool.Result{Content: content.FromText(safeToolError(callErr))}
-			}
-			if err := content.Validate(result.Content); err != nil {
-				return agent.Result{}, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
-			}
-			message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
-			message, err = r.appendMessage(ctx, turn.SessionID, message)
-			if err != nil {
-				return agent.Result{}, fmt.Errorf("append tool result for %q: %w", call.ID, err)
-			}
-			messages = append(messages, message)
-		}
-	}
-}
-
-func (r *runtime) compactRequest(ctx context.Context, sessionID session.ID, request model.Request) (model.Request, error) {
-	if !r.compactor.Valid {
-		return request, nil
-	}
-	result, err := r.compactor.Value.Compact(ctx, contextwindow.CompactionRequest{
-		SessionID:  sessionID,
-		Invocation: cloneModelRequest(request),
-	})
-	if err != nil {
-		return model.Request{}, fmt.Errorf("compact model context: %w", err)
-	}
-	request.Messages = cloneMessages(result.Messages)
-	return request, nil
-}
-
-func (r *runtime) callModel(ctx context.Context, request model.Request) (model.Response, error) {
-	if !r.streamEnabled {
-		response, err := r.model.Complete(ctx, request)
-		if err != nil {
-			return model.Response{}, fmt.Errorf("complete model: %w", err)
-		}
-		if err := validateAssistant(response.Message); err != nil {
-			return model.Response{}, err
-		}
-		return response, nil
-	}
-	response, err := r.streaming.Value.Stream(ctx, request, func(model.StreamEvent) error {
-		return nil
-	})
-	if err != nil {
-		return model.Response{}, fmt.Errorf("stream model: %w", err)
-	}
-	if err := validateAssistant(response.Message); err != nil {
-		return model.Response{}, err
-	}
-	return response, nil
+	return r.execute(ctx, turn, nil)
 }
 
 func validateAssistant(message model.Message) error {
@@ -372,6 +221,7 @@ func safeToolError(err error) string {
 }
 
 var _ agent.Runtime = (*runtime)(nil)
+var _ agent.StreamingRuntime = (*runtime)(nil)
 var _ agent.History = (*runtime)(nil)
 
 func copyFloat(value *float64) *float64 {
@@ -402,5 +252,3 @@ func isNil(value any) bool {
 		return false
 	}
 }
-
-var _ agent.Runtime = (*runtime)(nil)
