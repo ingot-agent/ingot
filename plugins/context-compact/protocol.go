@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -82,8 +83,8 @@ func (r *compactor) callSummarizer(
 		Provider: provider,
 		Model:    modelName,
 		Messages: []model.Message{
-			{Role: model.RoleSystem, Content: systemPrompt},
-			{Role: model.RoleUser, Content: input},
+			{Role: model.RoleSystem, Content: content.FromText(systemPrompt)},
+			{Role: model.RoleUser, Content: content.FromText(input)},
 		},
 		Tools:       []tool.Definition{},
 		Temperature: &temperature,
@@ -94,12 +95,13 @@ func (r *compactor) callSummarizer(
 	if err != nil {
 		return summaryOutput{}, "", "", fmt.Errorf("summarize context: %w", err)
 	}
-	if response.Message.Role != model.RoleAssistant || response.Message.ToolCallID != "" || len(response.Message.ToolCalls) != 0 ||
-		!utf8.ValidString(response.Message.Content) {
+	responseText, textOnly := content.TextOnly(response.Message.Content)
+	if response.Message.Role != model.RoleAssistant || response.Message.ToolCallID != "" || len(response.Message.ToolCalls) != 0 || !textOnly ||
+		!utf8.ValidString(responseText) {
 		return summaryOutput{}, "", "", fmt.Errorf("summary response is not plain assistant text: %w", ErrCompactionFailed)
 	}
 	var output summaryOutput
-	if err := exactJSON([]byte(response.Message.Content), &output); err != nil {
+	if err := exactJSON([]byte(responseText), &output); err != nil {
 		return summaryOutput{}, "", "", fmt.Errorf("decode summary response: %w: %w", ErrCompactionFailed, err)
 	}
 	if strings.TrimSpace(output.Summary) == "" || !utf8.ValidString(output.Summary) || len(output.Summary) > r.cfg.summaryMaxBytes {

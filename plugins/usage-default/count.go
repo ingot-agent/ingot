@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/usage"
 )
@@ -34,6 +35,9 @@ func (c *counter) CountInput(ctx context.Context, request usage.CountRequest) (u
 	selected, routeIndex, ok := selectProfile(c.routes, resolved.Provider, resolved.Model)
 	if !ok {
 		return usage.CountResult{}, fmt.Errorf("provider %q model %q has no matching route: %w", resolved.Provider, resolved.Model, ErrUnsupportedModel)
+	}
+	if hasMedia(resolved) {
+		return usage.CountResult{}, fmt.Errorf("provider %q model %q profile %q has no reliable multimodal counting strategy: %w", resolved.Provider, resolved.Model, selected.Source(), ErrUnsupportedModel)
 	}
 	key, err := requestCacheKey(selected.Source(), resolved)
 	if err != nil {
@@ -94,6 +98,17 @@ func (c *counter) CountInput(ctx context.Context, request usage.CountRequest) (u
 	close(pending.done)
 	c.mu.Unlock()
 	return result, countErr
+}
+
+func hasMedia(request model.Request) bool {
+	for _, message := range request.Messages {
+		for _, part := range message.Content {
+			if part.Kind != content.KindText {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *counter) addCache(key string, result usage.CountResult) {

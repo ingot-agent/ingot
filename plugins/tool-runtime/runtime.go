@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -19,7 +20,9 @@ import (
 
 const (
 	defaultMaxArgumentsBytes = 1024 * 1024
-	defaultMaxResultBytes    = 4 * 1024 * 1024
+	defaultMaxTextBytes      = 4 * 1024 * 1024
+	defaultMaxInlinePart     = 16 * 1024 * 1024
+	defaultMaxInlineBytes    = 32 * 1024 * 1024
 )
 
 var (
@@ -27,17 +30,20 @@ var (
 	ErrInvalidConfig = errors.New("invalid tool.runtime config")
 	// ErrInvalidDefinition indicates a malformed or duplicate tool definition.
 	ErrInvalidDefinition = errors.New("invalid tool definition")
-	// ErrInvalidResult indicates invalid UTF-8 or an oversized result.
+	// ErrInvalidResult indicates invalid content or an oversized result.
 	ErrInvalidResult = errors.New("invalid tool result")
 	// ErrCallMutation indicates that an interceptor changed a validated Call.
 	ErrCallMutation = errors.New("tool call mutation is not allowed")
 	toolNamePattern = regexp.MustCompile("^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 )
 
-// Config bounds argument and result payloads.
+// Config bounds argument and result payloads. Text and inline limits apply to
+// totals across a result, while MaxInlinePartBytes also bounds each media part.
 type Config struct {
-	MaxArgumentsBytes int `toml:"max_arguments_bytes"`
-	MaxResultBytes    int `toml:"max_result_bytes"`
+	MaxArgumentsBytes  int `toml:"max_arguments_bytes"`
+	MaxTextBytes       int `toml:"max_text_bytes"`
+	MaxInlinePartBytes int `toml:"max_inline_part_bytes"`
+	MaxInlineBytes     int `toml:"max_inline_bytes"`
 }
 
 // Dependencies are the tools and interceptors assembled by the host.
@@ -52,11 +58,13 @@ type Exports struct {
 }
 
 type runtime struct {
-	definitions  []tool.Definition
-	entries      map[string]registeredTool
-	interceptors []tool.Interceptor
-	maxArguments int
-	maxResult    int
+	definitions   []tool.Definition
+	entries       map[string]registeredTool
+	interceptors  []tool.Interceptor
+	maxArguments  int
+	maxText       int
+	maxInlinePart int
+	maxInline     int
 }
 
 type registeredTool struct {
@@ -79,12 +87,26 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if maxArguments < 1 {
 		return Exports{}, nil, fmt.Errorf("max_arguments_bytes must be positive: %w", ErrInvalidConfig)
 	}
-	maxResult := cfg.MaxResultBytes
-	if maxResult == 0 {
-		maxResult = defaultMaxResultBytes
+	maxText := cfg.MaxTextBytes
+	if maxText == 0 {
+		maxText = defaultMaxTextBytes
 	}
-	if maxResult < 1 {
-		return Exports{}, nil, fmt.Errorf("max_result_bytes must be positive: %w", ErrInvalidConfig)
+	if maxText < 1 {
+		return Exports{}, nil, fmt.Errorf("max_text_bytes must be positive: %w", ErrInvalidConfig)
+	}
+	maxInlinePart := cfg.MaxInlinePartBytes
+	if maxInlinePart == 0 {
+		maxInlinePart = defaultMaxInlinePart
+	}
+	if maxInlinePart < 1 {
+		return Exports{}, nil, fmt.Errorf("max_inline_part_bytes must be positive: %w", ErrInvalidConfig)
+	}
+	maxInline := cfg.MaxInlineBytes
+	if maxInline == 0 {
+		maxInline = defaultMaxInlineBytes
+	}
+	if maxInline < 1 {
+		return Exports{}, nil, fmt.Errorf("max_inline_bytes must be positive: %w", ErrInvalidConfig)
 	}
 	entries := make(map[string]registeredTool, len(deps.Tools))
 	definitions := make([]tool.Definition, 0, len(deps.Tools))
@@ -120,11 +142,13 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	}
 	return Exports{
 		Runtime: &runtime{
-			definitions:  definitions,
-			entries:      entries,
-			interceptors: interceptors,
-			maxArguments: maxArguments,
-			maxResult:    maxResult,
+			definitions:   definitions,
+			entries:       entries,
+			interceptors:  interceptors,
+			maxArguments:  maxArguments,
+			maxText:       maxText,
+			maxInlinePart: maxInlinePart,
+			maxInline:     maxInline,
 		},
 	}, nil, nil
 }
@@ -226,13 +250,38 @@ func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error)
 	if !sameCall(request, original) {
 		return tool.Result{}, fmt.Errorf("tool %q: %w", original.Name, ErrCallMutation)
 	}
-	if !utf8.ValidString(result.Content) {
-		return tool.Result{}, fmt.Errorf("tool %q returned invalid UTF-8: %w", call.Name, ErrInvalidResult)
+	if err := r.validateResult(call.Name, result); err != nil {
+		return tool.Result{}, err
 	}
-	if len([]byte(result.Content)) > r.maxResult {
-		return tool.Result{}, fmt.Errorf("tool %q result exceeds limit: %w", call.Name, ErrInvalidResult)
+	return tool.Result{Content: content.Clone(result.Content)}, nil
+}
+
+func (r *runtime) validateResult(name string, result tool.Result) error {
+	if err := content.Validate(result.Content); err != nil {
+		return fmt.Errorf("tool %q returned invalid content: %w: %w", name, ErrInvalidResult, err)
 	}
-	return result, nil
+	textBytes := 0
+	inlineBytes := 0
+	for i, part := range result.Content {
+		if part.Kind == content.KindText {
+			textBytes += len(part.Text)
+			if textBytes > r.maxText {
+				return fmt.Errorf("tool %q text result exceeds limit: %w", name, ErrInvalidResult)
+			}
+			continue
+		}
+		if part.Media.Source.Kind != content.SourceInline {
+			continue
+		}
+		if len(part.Media.Source.Data) > r.maxInlinePart {
+			return fmt.Errorf("tool %q inline result part %d exceeds limit: %w", name, i, ErrInvalidResult)
+		}
+		inlineBytes += len(part.Media.Source.Data)
+		if inlineBytes > r.maxInline {
+			return fmt.Errorf("tool %q total inline result exceeds limit: %w", name, ErrInvalidResult)
+		}
+	}
+	return nil
 }
 
 func validateCallArguments(name string, schema *jsonschema.Schema, raw json.RawMessage) error {

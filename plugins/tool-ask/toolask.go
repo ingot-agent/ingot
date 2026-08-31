@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -200,7 +201,7 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 	if len([]byte(answer)) > t.maxResponseBytes {
 		return tool.Result{}, ErrResponseLimit
 	}
-	return tool.Result{Content: answer}, nil
+	return tool.Result{Content: content.FromText(answer)}, nil
 }
 
 func (t *askTool) validateOptions(raw askOptionArguments) ([]interaction.Option, error) {

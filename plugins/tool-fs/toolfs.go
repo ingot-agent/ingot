@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	contentprotocol "github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/filesystem"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -177,7 +178,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if !utf8.Valid(content) {
 			return tool.Result{}, fmt.Errorf("read %q: %w", args.Path, ErrBinaryContent)
 		}
-		return tool.Result{Content: string(content)}, nil
+		return tool.Result{Content: contentprotocol.FromText(string(content))}, nil
 	case toolWrite:
 		var args writeArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -195,7 +196,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err := t.filesystem.WriteFile(ctx, args.Path, []byte(*args.Content), t.config.fileMode); err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: fmt.Sprintf("wrote %q", args.Path)}, nil
+		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("wrote %q", args.Path))}, nil
 	case toolList:
 		var args pathArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -225,7 +226,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: string(encoded)}, nil
+		return tool.Result{Content: contentprotocol.FromText(string(encoded))}, nil
 	case toolStat:
 		var args pathArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -246,7 +247,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: string(encoded)}, nil
+		return tool.Result{Content: contentprotocol.FromText(string(encoded))}, nil
 	case toolMkdir:
 		var args pathArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -258,7 +259,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err := t.filesystem.MkdirAll(ctx, args.Path, t.config.directoryMode); err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: fmt.Sprintf("created directory %q", args.Path)}, nil
+		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("created directory %q", args.Path))}, nil
 	case toolRemove:
 		var args pathArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -270,7 +271,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err := t.filesystem.Remove(ctx, args.Path); err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: fmt.Sprintf("removed %q", args.Path)}, nil
+		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("removed %q", args.Path))}, nil
 	case toolRename:
 		var args renameArgs
 		if err := decodeObject(call.Arguments, &args); err != nil {
@@ -288,7 +289,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		if err := t.filesystem.Rename(ctx, *args.Source, *args.Destination); err != nil {
 			return tool.Result{}, err
 		}
-		return tool.Result{Content: fmt.Sprintf("renamed %q to %q", *args.Source, *args.Destination)}, nil
+		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("renamed %q to %q", *args.Source, *args.Destination))}, nil
 	default:
 		return tool.Result{}, fmt.Errorf("unknown filesystem tool %q", t.name)
 	}

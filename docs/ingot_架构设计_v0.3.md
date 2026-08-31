@@ -462,9 +462,9 @@ Plugin 源码编译进 Runtime Image，按受信任代码管理。供应链完�
 - `ingotabi.Cleanup`、`ingotabi.Optional[T]`、`ingotabi.Named[T]`；
 - `invocation.Invocation`、`lifecycle.Controller` 与 `state.Scope` host Contract。
 
-可选的 Agent SDK v0.1.6 提供 typed pipeline helper，以及 `httpx`、
-`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、`usage`、
-`interaction`、`agent` 等可替换能力 Contract。领域 SDK 或 Plugin 自有 Contract
+可选的 Agent SDK v0.2.0 提供 typed pipeline helper，以及 `asset`、`content`、
+`httpx`、`filesystem`、`tool`、`model`、`session`、`prompt`、`contextwindow`、
+`usage`、`interaction`、`agent` 等可替换能力 Contract。领域 SDK 或 Plugin 自有 Contract
 可通过普通 Go import 与它并存，均不需要 Builder 配置。
 
 Runtime 的主要 chokepoint：
@@ -474,17 +474,19 @@ Runtime 的主要 chokepoint：
 - Model stream 调用进入 `model.StreamingRuntime`；
 - Agent turn 进入 `agent.Runtime`。
 
-ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 语义见
-《ingot SDK v0.1 设计方案》。
+ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 的历史基线见
+《ingot SDK v0.1 设计方案》，当前多模态语义见仓库顶层
+《ingot SDK 多模态协议迁移方案》和 SDK package docs。
 
 ## 11. 首批官方 Plugin
 
 | Plugin | 主要职责 | Exports / Dependencies |
 |---|---|---|
+| `asset.local` | 持久化 immutable binary assets | Export `asset.Store`，并可赋值给 `asset.Resolver`；own persistent State |
 | `http.default` | 共享 HTTP client | Export `httpx.Client` |
 | `filesystem.local` | workspace-relative filesystem | Export `filesystem.FS` |
-| `model.openai-compatible` | OpenAI-compatible providers | Consume `httpx.Client`; export `[]ingotabi.Named[model.Provider]` |
-| `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes |
+| `model.openai-compatible` | OpenAI-compatible providers | Consume `httpx.Client` 与 `asset.Resolver`; export `[]ingotabi.Named[model.Provider]` |
+| `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes、request/capability resolvers |
 | `tool.shell` | shell tool | Export `[]tool.Tool` |
 | `tool.fs` | file tools | Consume `filesystem.FS`; export `[]tool.Tool` |
 | `tool.ask` | 同步文本/选项询问，选项模式保留自由输入 | Consume `interaction.Channel`; export `[]tool.Tool` |
@@ -494,11 +496,13 @@ ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 语义见
 | `session.jsonl` | append-oriented session store与标题metadata更新 | Export `session.MutableStore`（可赋值给`session.Store`）；own persistent State |
 | `prompt.default` | prompt rendering | Consume contributors; export `prompt.Renderer` |
 | `context.compact` | non-destructive invocation context compaction | Consume `model.Runtime`与`session.Store`; export `contextwindow.Compactor` |
-| `agent.default` | default agent turn | Consume model/tool/session/prompt/optional context compactor/interaction/interceptors; export `agent.Runtime` |
+| `agent.default` | default agent turn | Consume model/tool/session/asset store/prompt/optional context compactor/interaction/interceptors; export `agent.Runtime` |
 | `app.cli` | CLI frontend | Composite：interaction Component + app Component |
 
 ```mermaid
 flowchart LR
+    Asset["asset.local"] -->|asset.Resolver| Provider["model.openai-compatible"]
+    Asset -->|asset.Store| Agent["agent.default"]
     HTTP["http.default"] -->|httpx.Client| Provider["model.openai-compatible"]
     Provider -->|Named model.Provider| ModelRuntime["model.runtime"]
 

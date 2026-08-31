@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -50,8 +51,8 @@ func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(result.Content, "exit_code: 0\nstdout:\n") || !strings.Contains(result.Content, "hello") || !strings.Contains(result.Content, "\nstderr:\n") {
-		t.Fatalf("unexpected shell result: %q", result.Content)
+	if !strings.HasPrefix(resultText(result), "exit_code: 0\nstdout:\n") || !strings.Contains(resultText(result), "hello") || !strings.Contains(resultText(result), "\nstderr:\n") {
+		t.Fatalf("unexpected shell result: %q", resultText(result))
 	}
 }
 
@@ -61,8 +62,8 @@ func TestShellOutputLimitAndArgumentValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Content, outputTruncationMarker) {
-		t.Fatalf("missing truncation marker: %q", result.Content)
+	if !strings.Contains(resultText(result), outputTruncationMarker) {
+		t.Fatalf("missing truncation marker: %q", resultText(result))
 	}
 	_, err = shell.Invoke(context.Background(), tool.Call{Arguments: []byte("{\"command\":\"\"}")})
 	if !errors.Is(err, ErrInvalidArguments) {
@@ -127,14 +128,14 @@ func TestShellUsesConfiguredWorkingDirectoryAndIsolatedEnvironment(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(result.Content, "must-not-leak") || strings.Contains(result.Content, "inherited") {
-		t.Fatalf("parent environment leaked: %q", result.Content)
+	if strings.Contains(resultText(result), "must-not-leak") || strings.Contains(resultText(result), "inherited") {
+		t.Fatalf("parent environment leaked: %q", resultText(result))
 	}
-	if !strings.Contains(result.Content, "isolated") {
-		t.Fatalf("isolation marker missing: %q", result.Content)
+	if !strings.Contains(resultText(result), "isolated") {
+		t.Fatalf("isolation marker missing: %q", resultText(result))
 	}
-	if !strings.Contains(strings.ToLower(result.Content), strings.ToLower(workingDirectory)) {
-		t.Fatalf("working directory missing from output: %q", result.Content)
+	if !strings.Contains(strings.ToLower(resultText(result)), strings.ToLower(workingDirectory)) {
+		t.Fatalf("working directory missing from output: %q", resultText(result))
 	}
 }
 
@@ -150,8 +151,8 @@ func TestShellAllowsOnlyExplicitlyInheritedEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(result.Content, "allowed-value") {
-		t.Fatalf("allowlisted environment missing: %q", result.Content)
+	if !strings.Contains(resultText(result), "allowed-value") {
+		t.Fatalf("allowlisted environment missing: %q", resultText(result))
 	}
 }
 
@@ -165,8 +166,8 @@ func TestShellReturnsStderrAndNonZeroExitAsResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(result.Content, "exit_code: 7\n") || !strings.Contains(result.Content, "\nstderr:\nproblem") {
-		t.Fatalf("non-zero result = %q", result.Content)
+	if !strings.HasPrefix(resultText(result), "exit_code: 7\n") || !strings.Contains(resultText(result), "\nstderr:\nproblem") {
+		t.Fatalf("non-zero result = %q", resultText(result))
 	}
 }
 
@@ -191,6 +192,11 @@ func invokeShell(t *testing.T, shell tool.Tool, command string) (tool.Result, er
 		t.Fatal(err)
 	}
 	return shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: arguments})
+}
+
+func resultText(result tool.Result) string {
+	value, _ := content.TextOnly(result.Content)
+	return value
 }
 
 func testShellPath() string {

@@ -11,10 +11,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/sdk/agent"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
 )
+
+const hookProtocolVersion = 2
 
 type beforeEnvelope struct {
 	ProtocolVersion int    `json:"protocol_version"`
@@ -63,7 +66,7 @@ type definitionProjection struct {
 
 type messageProjection struct {
 	Role       string           `json:"role"`
-	Content    string           `json:"content"`
+	Content    []partProjection `json:"content"`
 	Name       string           `json:"name"`
 	ToolCallID string           `json:"tool_call_id"`
 	ToolCalls  []callProjection `json:"tool_calls"`
@@ -94,21 +97,45 @@ type modelResponseProjection struct {
 }
 
 type toolResponseProjection struct {
-	Content string `json:"content"`
+	Content []partProjection `json:"content"`
 }
 type agentRequestProjection struct {
-	SessionID string `json:"session_id"`
-	Input     string `json:"input"`
+	SessionID   string           `json:"session_id"`
+	Input       string           `json:"input"`
+	Attachments []partProjection `json:"attachments"`
 }
 type agentResponseProjection struct {
-	Output string `json:"output"`
+	Output []partProjection `json:"output"`
+}
+
+type partProjection struct {
+	Kind  string           `json:"kind"`
+	Text  string           `json:"text,omitempty"`
+	Media *mediaProjection `json:"media,omitempty"`
+}
+
+type mediaProjection struct {
+	MIMEType string           `json:"mime_type"`
+	Name     string           `json:"name"`
+	Source   sourceProjection `json:"source"`
+}
+
+type sourceProjection struct {
+	Kind  string           `json:"kind"`
+	Data  []byte           `json:"data,omitempty"`
+	URI   string           `json:"uri,omitempty"`
+	Asset *assetProjection `json:"asset,omitempty"`
+}
+
+type assetProjection struct {
+	ID string `json:"id"`
 }
 
 func runBefore(ctx context.Context, hook normalizedHook, request any) error {
 	if ctx == nil {
 		return context.Canceled
 	}
-	input, err := json.Marshal(beforeEnvelope{ProtocolVersion: 1, Hook: hook.name, Target: hook.target, Phase: "before", Request: request})
+	input, err := json.Marshal(beforeEnvelope{ProtocolVersion: hookProtocolVersion, Hook: hook.name, Target: hook.target, Phase: "before", Request: request})
 	if err != nil {
 		return fmt.Errorf("encode before hook %q: %w: %w", hook.name, ErrHookFailed, err)
 	}
@@ -158,7 +185,7 @@ func finishAfter[T any](ctx context.Context, hook normalizedHook, request, respo
 			return response, errors.Join(downstreamErr, afterHookFailure(hook, err))
 		}
 	}
-	input, err := json.Marshal(afterEnvelope{ProtocolVersion: 1, Hook: hook.name, Target: hook.target, Phase: "after", Request: request, Outcome: result})
+	input, err := json.Marshal(afterEnvelope{ProtocolVersion: hookProtocolVersion, Hook: hook.name, Target: hook.target, Phase: "after", Request: request, Outcome: result})
 	if err == nil {
 		var raw []byte
 		raw, err = executeHook(ctx, hook, input)
@@ -249,7 +276,7 @@ func decodeHookResponse(raw []byte) (hookResponse, error) {
 	if _, exists := seen["action"]; !exists {
 		return hookResponse{}, errors.New("hook response is missing action")
 	}
-	if response.ProtocolVersion != 1 {
+	if response.ProtocolVersion != hookProtocolVersion {
 		return hookResponse{}, fmt.Errorf("unsupported protocol_version %d", response.ProtocolVersion)
 	}
 	return response, nil
@@ -269,10 +296,11 @@ func projectToolRequest(call tool.Call) (callProjection, error) {
 }
 
 func projectToolResponse(result tool.Result) (toolResponseProjection, error) {
-	if err := validateUTF8("tool result content", result.Content); err != nil {
+	projected, err := projectContent(result.Content)
+	if err != nil {
 		return toolResponseProjection{}, err
 	}
-	return toolResponseProjection{Content: result.Content}, nil
+	return toolResponseProjection{Content: projected}, nil
 }
 
 func projectModelRequest(request model.Request) (modelRequestProjection, error) {
@@ -341,13 +369,16 @@ func projectModelResponse(response model.Response) (modelResponseProjection, err
 func projectMessage(message model.Message) (messageProjection, error) {
 	for _, field := range []struct{ name, value string }{
 		{name: "role", value: string(message.Role)},
-		{name: "content", value: message.Content},
 		{name: "name", value: message.Name},
 		{name: "tool call id", value: message.ToolCallID},
 	} {
 		if err := validateUTF8(field.name, field.value); err != nil {
 			return messageProjection{}, err
 		}
+	}
+	projectedContent, err := projectContent(message.Content)
+	if err != nil {
+		return messageProjection{}, err
 	}
 	calls := make([]callProjection, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
@@ -357,7 +388,7 @@ func projectMessage(message model.Message) (messageProjection, error) {
 		}
 		calls[i] = projected
 	}
-	return messageProjection{Role: string(message.Role), Content: message.Content, Name: message.Name, ToolCallID: message.ToolCallID, ToolCalls: calls}, nil
+	return messageProjection{Role: string(message.Role), Content: projectedContent, Name: message.Name, ToolCallID: message.ToolCallID, ToolCalls: calls}, nil
 }
 
 func projectAgentRequest(turn agent.Turn) (agentRequestProjection, error) {
@@ -367,14 +398,90 @@ func projectAgentRequest(turn agent.Turn) (agentRequestProjection, error) {
 	if err := validateUTF8("agent input", turn.Input); err != nil {
 		return agentRequestProjection{}, err
 	}
-	return agentRequestProjection{SessionID: string(turn.SessionID), Input: turn.Input}, nil
+	if err := content.ValidateAttachments(turn.Attachments); err != nil {
+		return agentRequestProjection{}, err
+	}
+	attachments := make([]partProjection, len(turn.Attachments))
+	for i, attachment := range turn.Attachments {
+		projected, err := projectContent(content.Content{content.AttachmentPart(attachment)})
+		if err != nil {
+			return agentRequestProjection{}, fmt.Errorf("attachment %d: %w", i, err)
+		}
+		attachments[i] = projected[0]
+	}
+	return agentRequestProjection{SessionID: string(turn.SessionID), Input: turn.Input, Attachments: attachments}, nil
 }
 
 func projectAgentResponse(result agent.Result) (agentResponseProjection, error) {
-	if err := validateUTF8("agent output", result.Output); err != nil {
+	projected, err := projectContent(result.Output)
+	if err != nil {
 		return agentResponseProjection{}, err
 	}
-	return agentResponseProjection{Output: result.Output}, nil
+	return agentResponseProjection{Output: projected}, nil
+}
+
+func projectContent(value content.Content) ([]partProjection, error) {
+	if err := content.Validate(value); err != nil {
+		return nil, err
+	}
+	result := make([]partProjection, len(value))
+	for i, part := range value {
+		result[i].Kind = contentKindName(part.Kind)
+		if part.Kind == content.KindText {
+			result[i].Text = part.Text
+			continue
+		}
+		if !utf8.ValidString(part.Media.MIMEType) {
+			return nil, fmt.Errorf("content part %d MIME type is not valid UTF-8", i)
+		}
+		source := sourceProjection{Kind: sourceKindName(part.Media.Source.Kind)}
+		switch part.Media.Source.Kind {
+		case content.SourceInline:
+			source.Data = append([]byte(nil), part.Media.Source.Data...)
+		case content.SourceURI:
+			if !utf8.ValidString(part.Media.Source.URI) {
+				return nil, fmt.Errorf("content part %d URI is not valid UTF-8", i)
+			}
+			source.URI = part.Media.Source.URI
+		case content.SourceAsset:
+			if !utf8.ValidString(part.Media.Source.Asset.ID) {
+				return nil, fmt.Errorf("content part %d asset ID is not valid UTF-8", i)
+			}
+			source.Asset = &assetProjection{ID: part.Media.Source.Asset.ID}
+		}
+		result[i].Media = &mediaProjection{MIMEType: part.Media.MIMEType, Name: part.Media.Name, Source: source}
+	}
+	return result, nil
+}
+
+func contentKindName(kind content.Kind) string {
+	switch kind {
+	case content.KindText:
+		return "text"
+	case content.KindImage:
+		return "image"
+	case content.KindAudio:
+		return "audio"
+	case content.KindVideo:
+		return "video"
+	case content.KindFile:
+		return "file"
+	default:
+		return ""
+	}
+}
+
+func sourceKindName(kind content.SourceKind) string {
+	switch kind {
+	case content.SourceInline:
+		return "inline"
+	case content.SourceURI:
+		return "uri"
+	case content.SourceAsset:
+		return "asset"
+	default:
+		return ""
+	}
 }
 
 func describeError(err error) (*errorDescriptor, error) {

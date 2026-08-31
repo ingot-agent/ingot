@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 )
@@ -198,6 +199,9 @@ func selectSource(layout messageLayout, covered, minimumBytes int) (int, int, er
 		if turn.end > layout.eligibleEnd {
 			break
 		}
+		if containsMedia(layout.conversation[turn.start:turn.end]) {
+			break
+		}
 		end = turn.end
 		raw, err := jsonMessages(layout.conversation[covered:end])
 		if err != nil {
@@ -211,6 +215,17 @@ func selectSource(layout messageLayout, covered, minimumBytes int) (int, int, er
 		return 0, 0, fmt.Errorf("no eligible complete turn remains: %w", ErrContextUncompactable)
 	}
 	return covered, end, nil
+}
+
+func containsMedia(messages []model.Message) bool {
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if part.Kind != content.KindText {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func jsonMessages(messages []model.Message) ([]byte, error) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -89,24 +90,29 @@ func TestNewExportsStableDefinitionsAndOperations(t *testing.T) {
 	}
 	ctx := context.WithValue(context.Background(), struct{}{}, "marker")
 	result, err := exports.Tools[0].Invoke(ctx, tool.Call{Name: "fs_read", Arguments: []byte("{\"path\":\"hello.txt\"}")})
-	if err != nil || result.Content != "hello" {
+	if err != nil || resultText(result) != "hello" {
 		t.Fatalf("read = %#v, %v", result, err)
 	}
 	if fake.lastCtx != ctx {
 		t.Fatal("filesystem did not receive the original context")
 	}
 	result, err = exports.Tools[1].Invoke(ctx, tool.Call{Name: "fs_write", Arguments: []byte("{\"path\":\"out.txt\",\"content\":\"世界\"}")})
-	if err != nil || result.Content != "wrote \"out.txt\"" || fake.written != "世界" || fake.mode != 0o644 {
+	if err != nil || resultText(result) != "wrote \"out.txt\"" || fake.written != "世界" || fake.mode != 0o644 {
 		t.Fatalf("write = %#v, %v, data=%q mode=%v", result, err, fake.written, fake.mode)
 	}
 	result, err = exports.Tools[2].Invoke(ctx, tool.Call{Name: "fs_list", Arguments: []byte("{\"path\":\".\"}")})
-	if err != nil || result.Content != "[{\"name\":\"a\",\"type\":\"directory\"},{\"name\":\"link\",\"type\":\"symlink\"},{\"name\":\"z.go\",\"type\":\"file\"}]" {
-		t.Fatalf("list = %q, %v", result.Content, err)
+	if err != nil || resultText(result) != "[{\"name\":\"a\",\"type\":\"directory\"},{\"name\":\"link\",\"type\":\"symlink\"},{\"name\":\"z.go\",\"type\":\"file\"}]" {
+		t.Fatalf("list = %q, %v", resultText(result), err)
 	}
 	result, err = exports.Tools[3].Invoke(ctx, tool.Call{Name: "fs_stat", Arguments: []byte("{\"path\":\"hello.txt\"}")})
-	if err != nil || result.Content != "{\"name\":\"hello.txt\",\"size\":5,\"mode\":420,\"modified_at\":\"2025-01-02T02:04:05.000000006Z\",\"type\":\"file\"}" {
-		t.Fatalf("stat = %q, %v", result.Content, err)
+	if err != nil || resultText(result) != "{\"name\":\"hello.txt\",\"size\":5,\"mode\":420,\"modified_at\":\"2025-01-02T02:04:05.000000006Z\",\"type\":\"file\"}" {
+		t.Fatalf("stat = %q, %v", resultText(result), err)
 	}
+}
+
+func resultText(result tool.Result) string {
+	value, _ := content.TextOnly(result.Content)
+	return value
 }
 
 func TestReadRejectsBinaryAndListLimitWithoutPartialResult(t *testing.T) {

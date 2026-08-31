@@ -17,6 +17,7 @@ type Dependencies struct {
     Streaming    ingotabi.Optional[model.StreamingRuntime]
     Tools        tool.Runtime
     Store        session.Store
+    Assets       asset.Store
     Prompt       prompt.Renderer
     Compactor    ingotabi.Optional[contextwindow.Compactor]
     Interceptors []agent.Interceptor
@@ -68,7 +69,17 @@ Payload exact semantic shape：
 ```json
 {
   "role":"assistant",
-  "content":"...",
+  "content":[
+    {"kind":"text","text":"..."},
+    {
+      "kind":"image",
+      "media":{
+        "mime_type":"image/png",
+        "name":"diagram.png",
+        "source":{"kind":"asset","asset":{"id":"opaque-reference"}}
+      }
+    }
+  ],
   "name":"",
   "tool_call_id":"",
   "tool_calls":[
@@ -80,6 +91,8 @@ Payload exact semantic shape：
 规则：
 
 - 使用Plugin-owned persistence struct和golden JSON，不直接依赖Go字段默认命名；
+- 持久化前将inline media导入`asset.Store`，Payload只保存part顺序、metadata、URI或Asset Reference，不重复保存媒体bytes；
+- MIME type、URI和Asset ID是opaque Go string：合法UTF-8值直接编码为可读JSON string，非法UTF-8值编码为`{"bytes":"<base64>"}`并按bytes无损恢复；
 - RawMessage在encode/decode时deep-copy且必须valid JSON；
 - Load时只消费 `Kind="agent.message"`；其他Kind保留给其他组件并忽略；
 - `agent.message`未知Version返回 `ErrUnsupportedEntryVersion`，不静默跳过；
@@ -91,7 +104,7 @@ Assistant tool-call message 必须先于对应 Tool result 持久化，因此进
 
 - 已存在的 Tool message 必须按 assistant `tool_calls` 顺序构成从0开始的连续前缀，`tool_call_id`逐项匹配；
 - 只允许最后一个 assistant tool-call round缺少后缀结果；缺少中间结果后又出现其他 Agent message、未知call id、重复结果或多个未完成round仍返回`ErrCorruptHistory`；
-- 下一次`Run`在写入新user message前，为每个缺失call按原顺序 Append一个synthetic RoleTool message，Content固定为`tool error [interrupted]: previous execution was interrupted; result unknown`；
+- 下一次`Run`在写入新user message前，为每个缺失call按原顺序 Append一个synthetic RoleTool message，Content固定为只含`tool error [interrupted]: previous execution was interrupted; result unknown`的text part；
 - synthetic result只修复对话关联，不重新执行Tool。尤其不得自动重试可能已经产生副作用但commit status unknown的调用；
 - recovery Append沿用正常Context和Store原子语义。中途失败时立即返回；下次Load从已提交的更长前缀继续，不重复已存在结果。
 
@@ -117,11 +130,11 @@ SDK所说“按调用顺序串行”以成功获得Runtime入口序号定义。�
 
 ### 6.1 初始化
 
-1. 检查Context、SessionID和Input UTF-8；
+1. 检查Context、SessionID、Input UTF-8和Attachments结构；
 2. `Store.Load`并decode Agent history；若存在4.1定义的尾部未完成Tool round，先完成synthetic recovery并加入in-memory history；
-3. 构造当前user `model.Message`；
-4. 先把user message Append到Session；
-5. 调用 `Prompt.Render{SessionID, Input, History}`；
+3. 用`content.FromInput(Input, Attachments)`构造当前user `model.Message`；
+4. 将inline media写入`asset.Store`并替换为Asset Reference，再把user message Append到Session；
+5. 调用 `Prompt.Render{SessionID, Input: materializedContent, History}`；
 6. snapshot `Tools.Definitions()`并构造初始 `model.Request`；
 7. 若可选Compactor存在，在每次Model invocation前调用`Compact{SessionID, Invocation}`，仅以返回的完整Messages替换本次Request.Messages。
 
@@ -131,7 +144,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ### 6.2 Model 调用
 
-- streaming=false使用`Model.Complete`；完整assistant response先通过role、UTF-8和ToolCalls校验；
+- streaming=false使用`Model.Complete`；完整assistant response先通过role、`content.Validate`和ToolCalls校验；
 - streaming=true使用`Streaming.Stream`并以no-op handler消费增量；本组件不把模型文本或delta投影为通用Interaction；
 - Stream error立即停止并传播；
 - 最终assistant Message完成校验后Append，再加入本轮in-memory messages。
@@ -150,7 +163,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 6. 非Context error在mode=result时按以下固定映射转换为tool result；mode=fail时立即返回包装后的原错误，尚未产生的result由下一次Run按4.1恢复；
 7. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
 
-`result`模式提供给模型和持久化历史的Content只使用稳定安全文本，不拼接`err.Error()`、Go stack或其他下游诊断：
+`result`模式提供给模型和持久化历史的Content只包含稳定安全的text part，不拼接`err.Error()`、Go stack或其他下游诊断：
 
 | Error classification | Content |
 |---|---|
@@ -164,7 +177,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 Agent Interceptors按MANY stable order组合，第一个最外层。Interceptor short-circuit时不进入turn terminal，也不持久化user message，但仍处于same-session gate内。Interceptor可以替换Input，但不得改变SessionID；Runtime在进入terminal前拒绝SessionID改写，避免绕过按原始Session获取的serialization gate。
 
-所有从Store、Prompt、Model、Tool得到的aggregate在保留前deep-copy；传给下游的Request不复用caller Turn内部mutable data（Turn当前只有string/ID）。
+所有从Store、Prompt、Model、Tool得到的aggregate在保留前deep-copy；传给Interceptor和下游的Request不复用caller Turn中的Attachments、Content、ToolCalls或JSON bytes。
 
 建议sentinel：
 
@@ -205,7 +218,8 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 
 - exactDependencies/Exports/New contract；
 - Config与optional streaming组合；
-- agent.message v1 golden和corruption/version；
+- agent.message v1多模态golden、opaque string byte-exact round trip和corruption/version；
+- Input与Attachments顺序、inline media单次导入、Asset Reference持久化及history恢复不读取asset；
 - trailing incomplete Tool round的prefix识别、synthetic recovery、recovery中断续跑和禁止自动重试；
 - user→prompt→model→assistant persistence顺序；
 - multi-round tool call完整trace；

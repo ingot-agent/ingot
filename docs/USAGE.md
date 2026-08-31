@@ -164,7 +164,7 @@ Initializes a working ingot home:
 
 | Option | Meaning |
 |---|---|
-| `--profile` | `default` (skeleton + common adapters, 13 plugins) or `minimal` (minimum runnable set, 8 plugins); default `default`. |
+| `--profile` | `default` (skeleton + common adapters, 14 plugins) or `minimal` (minimum runnable set, 9 plugins); default `default`. Both include `asset.local` for immutable multimodal data. |
 | `--bundle` | Directory of the official plugin set (default: auto-detected relative to the executable). |
 | `--force` | Overwrite an already initialized home (refuses to touch an existing `plugins.toml` otherwise). |
 | `--apply` | Run `apply` (resolve + build + switch current) right after init. |

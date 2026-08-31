@@ -61,7 +61,7 @@ Plugin 通过 stdin 发送一份 compact JSON，stdout 接受一份 compact JSON
 
 ```json
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "hook": "audit",
   "target": "tool",
   "phase": "before",
@@ -72,34 +72,34 @@ Plugin 通过 stdin 发送一份 compact JSON，stdout 接受一份 compact JSON
 Before response exact shape：
 
 ```json
-{"protocol_version":1,"action":"continue"}
+{"protocol_version":2,"action":"continue"}
 ```
 
 或：
 
 ```json
-{"protocol_version":1,"action":"reject","message":"policy denied"}
+{"protocol_version":2,"action":"reject","message":"policy denied"}
 ```
 
-Before response只允许上述两个exact shape：`protocol_version`必须为1，`action`为`continue|reject`，reject message必须为非空UTF-8字符串；unknown、duplicate、missing、显式`null`或类型错误字段，以及非UTF-8输入，均为protocol error。
+Before response只允许上述两个exact shape：`protocol_version`必须为2，`action`为`continue|reject`，reject message必须为非空UTF-8字符串；unknown、duplicate、missing、显式`null`或类型错误字段，以及非UTF-8输入，均为protocol error。v2直接采用多模态projection，不兼容或接受v1响应。
 
 执行`next`后，只要调用Context仍有效，无论成功或业务失败都执行After hook；Before reject和Context cancellation/deadline不执行After。若`next`返回后Context已经取消，即使`next`错误地返回nil error，Interceptor也必须返回或join `ctx.Err()`，不能把已取消调用报告为成功。After request envelope：
 
 ```json
 {
-  "protocol_version":1,
+  "protocol_version":2,
   "hook":"audit",
   "target":"tool",
   "phase":"after",
   "request":{"id":"call-1","name":"fs_read","arguments":{}},
-  "outcome":{"response":{"content":"..."},"error":null}
+  "outcome":{"response":{"content":[{"kind":"text","text":"..."}]},"error":null}
 }
 ```
 
 `outcome.response`和`outcome.error`恰好一个非null；下游返回error时response固定为null，不投影可能同时返回的partial Go value。After response只允许：
 
 ```json
-{"protocol_version":1,"action":"continue"}
+{"protocol_version":2,"action":"continue"}
 ```
 
 After hook只能审计，不能改写已经发生的typed response或error。
@@ -110,10 +110,10 @@ After hook只能审计，不能改写已经发生的typed response或error。
 
 | Target | Request projection | Response projection |
 |---|---|---|
-| `tool` | `{"id":string,"name":string,"arguments":<JSON value>}` | `{"content":string}` |
+| `tool` | `{"id":string,"name":string,"arguments":<JSON value>}` | `{"content":[part...]}` |
 | `model` | model request shape | model response shape |
 | `model-stream` | 与`model`相同 | 最终model response；不含逐chunk事件 |
-| `agent` | `{"session_id":string,"input":string}` | `{"output":string}` |
+| `agent` | `{"session_id":string,"input":string,"attachments":[part...]}` | `{"output":[part...]}` |
 
 model request shape：
 
@@ -121,7 +121,7 @@ model request shape：
 {
   "provider":"default",
   "model":"gpt-example",
-  "messages":[{"role":"user","content":"hello","name":"","tool_call_id":"","tool_calls":[]}],
+  "messages":[{"role":"user","content":[{"kind":"text","text":"hello"}],"name":"","tool_call_id":"","tool_calls":[]}],
   "tools":[{"name":"fs_read","description":"...","input_schema":{}}],
   "temperature":null,
   "max_tokens":null,
@@ -133,7 +133,7 @@ model response shape：
 
 ```json
 {
-  "message":{"role":"assistant","content":"hi","name":"","tool_call_id":"","tool_calls":[]},
+  "message":{"role":"assistant","content":[{"kind":"text","text":"hi"}],"name":"","tool_call_id":"","tool_calls":[]},
   "finish_reason":"stop",
   "usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},
   "provider":"default",
@@ -141,7 +141,7 @@ model response shape：
 }
 ```
 
-嵌套tool call始终使用`{"id":string,"name":string,"arguments":<JSON value>}`。所有投影字符串必须是有效UTF-8；Definition.InputSchema和Call.Arguments必须同时是有效UTF-8和valid JSON value并原样嵌入；Temperature必须是有限数值。投影前做deep copy，hook process无法修改Go aggregate。
+part使用固定的`text/image/audio/video/file` kind和`inline/uri/asset` source结构。嵌套tool call始终使用`{"id":string,"name":string,"arguments":<JSON value>}`。所有投影字符串必须是有效UTF-8；Definition.InputSchema和Call.Arguments必须同时是有效UTF-8和valid JSON value并原样嵌入；Temperature必须是有限数值。投影前做deep copy，hook process无法修改Go aggregate。
 
 ### 4.2 Error descriptor
 

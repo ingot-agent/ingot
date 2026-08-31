@@ -4,7 +4,7 @@ go 1.24.0
 
 require (
 	github.com/dlclark/regexp2 v1.12.0
-	github.com/ingot-agent/sdk v0.1.6
+	github.com/ingot-agent/sdk v0.2.0
 	github.com/sugarme/tokenizer v0.3.0
 )
 

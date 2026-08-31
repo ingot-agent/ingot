@@ -2,6 +2,7 @@
 package agentdefault
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
+	"github.com/ingot-agent/sdk/asset"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
@@ -54,6 +57,7 @@ type Dependencies struct {
 	Streaming    ingotabi.Optional[model.StreamingRuntime]
 	Tools        tool.Runtime
 	Store        session.Store
+	Assets       asset.Store
 	Prompt       prompt.Renderer
 	Compactor    ingotabi.Optional[contextwindow.Compactor]
 	Interceptors []agent.Interceptor
@@ -70,6 +74,7 @@ type runtime struct {
 	streaming     ingotabi.Optional[model.StreamingRuntime]
 	tools         tool.Runtime
 	store         session.Store
+	assets        asset.Store
 	prompt        prompt.Renderer
 	compactor     ingotabi.Optional[contextwindow.Compactor]
 	interceptors  []agent.Interceptor
@@ -91,7 +96,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Model) || isNil(deps.Tools) || isNil(deps.Store) || isNil(deps.Prompt) {
+	if isNil(deps.Model) || isNil(deps.Tools) || isNil(deps.Store) || isNil(deps.Assets) || isNil(deps.Prompt) {
 		return Exports{}, nil, fmt.Errorf("required dependency is nil: %w", ErrInvalidConfig)
 	}
 	if deps.Streaming.Valid && isNil(deps.Streaming.Value) {
@@ -131,7 +136,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		interceptors[i] = interceptor
 	}
 	instance := &runtime{
-		model: deps.Model, streaming: deps.Streaming, tools: deps.Tools, store: deps.Store,
+		model: deps.Model, streaming: deps.Streaming, tools: deps.Tools, store: deps.Store, assets: deps.Assets,
 		prompt: deps.Prompt, compactor: deps.Compactor, interceptors: interceptors,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
@@ -169,6 +174,9 @@ func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error
 	if turn.SessionID == "" || !utf8.ValidString(string(turn.SessionID)) || !utf8.ValidString(turn.Input) {
 		return agent.Result{}, ErrInvalidTurn
 	}
+	if err := content.ValidateAttachments(turn.Attachments); err != nil {
+		return agent.Result{}, fmt.Errorf("attachments: %w: %w", ErrInvalidTurn, err)
+	}
 	if err := ctx.Err(); err != nil {
 		return agent.Result{}, err
 	}
@@ -186,7 +194,16 @@ func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error
 		return r.runTurn(callCtx, selected)
 	}
 	next := pipeline.Compose[agent.Turn, agent.Result](terminal, r.interceptors...)
-	return next(ctx, turn)
+	owned := turn
+	owned.Attachments = content.CloneAttachments(turn.Attachments)
+	result, err := next(ctx, owned)
+	if err != nil {
+		return agent.Result{}, err
+	}
+	if err := content.Validate(result.Output); err != nil {
+		return agent.Result{}, fmt.Errorf("agent result: %w: %w", ErrInvalidModelMessage, err)
+	}
+	return agent.Result{Output: content.Clone(result.Output)}, nil
 }
 
 func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, error) {
@@ -198,11 +215,18 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 	if err != nil {
 		return agent.Result{}, err
 	}
-	user := model.Message{Role: model.RoleUser, Content: turn.Input}
-	if err := r.appendMessage(ctx, turn.SessionID, user); err != nil {
+	if !utf8.ValidString(turn.Input) {
+		return agent.Result{}, ErrInvalidTurn
+	}
+	if err := content.ValidateAttachments(turn.Attachments); err != nil {
+		return agent.Result{}, fmt.Errorf("attachments: %w: %w", ErrInvalidTurn, err)
+	}
+	input := content.FromInput(turn.Input, turn.Attachments)
+	user, err := r.appendMessage(ctx, turn.SessionID, model.Message{Role: model.RoleUser, Content: input})
+	if err != nil {
 		return agent.Result{}, fmt.Errorf("append user message: %w", err)
 	}
-	messages, err := r.prompt.Render(ctx, prompt.Request{SessionID: turn.SessionID, Input: turn.Input, History: cloneMessages(history)})
+	messages, err := r.prompt.Render(ctx, prompt.Request{SessionID: turn.SessionID, Input: content.Clone(user.Content), History: cloneMessages(history)})
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("render prompt: %w", err)
 	}
@@ -222,12 +246,13 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 		if err != nil {
 			return agent.Result{}, err
 		}
-		if err := r.appendMessage(ctx, turn.SessionID, response.Message); err != nil {
+		response.Message, err = r.appendMessage(ctx, turn.SessionID, response.Message)
+		if err != nil {
 			return agent.Result{}, fmt.Errorf("append assistant message: %w", err)
 		}
 		messages = append(messages, cloneMessage(response.Message))
 		if len(response.Message.ToolCalls) == 0 {
-			return agent.Result{Output: response.Message.Content}, nil
+			return agent.Result{Output: content.Clone(response.Message.Content)}, nil
 		}
 		rounds++
 		if rounds > r.maxToolRounds {
@@ -242,13 +267,14 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn) (agent.Result, e
 				if r.toolErrorMode == "fail" {
 					return agent.Result{}, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
 				}
-				result = tool.Result{Content: safeToolError(callErr)}
+				result = tool.Result{Content: content.FromText(safeToolError(callErr))}
 			}
-			if !utf8.ValidString(result.Content) {
-				return agent.Result{}, fmt.Errorf("tool %q returned invalid UTF-8", call.Name)
+			if err := content.Validate(result.Content); err != nil {
+				return agent.Result{}, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
 			}
 			message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
-			if err := r.appendMessage(ctx, turn.SessionID, message); err != nil {
+			message, err = r.appendMessage(ctx, turn.SessionID, message)
+			if err != nil {
 				return agent.Result{}, fmt.Errorf("append tool result for %q: %w", call.ID, err)
 			}
 			messages = append(messages, message)
@@ -282,7 +308,7 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 		}
 		return response, nil
 	}
-	response, err := r.streaming.Value.Stream(ctx, request, func(model.StreamChunk) error {
+	response, err := r.streaming.Value.Stream(ctx, request, func(model.StreamEvent) error {
 		return nil
 	})
 	if err != nil {
@@ -295,8 +321,11 @@ func (r *runtime) callModel(ctx context.Context, request model.Request) (model.R
 }
 
 func validateAssistant(message model.Message) error {
-	if message.Role != model.RoleAssistant || !utf8.ValidString(message.Content) {
+	if message.Role != model.RoleAssistant {
 		return ErrInvalidModelMessage
+	}
+	if err := content.Validate(message.Content); err != nil {
+		return fmt.Errorf("assistant content: %w: %w", ErrInvalidModelMessage, err)
 	}
 	seen := make(map[string]struct{}, len(message.ToolCalls))
 	for i, call := range message.ToolCalls {
@@ -309,6 +338,26 @@ func validateAssistant(message model.Message) error {
 		seen[call.ID] = struct{}{}
 	}
 	return nil
+}
+
+func (r *runtime) materializeContent(ctx context.Context, value content.Content) (content.Content, error) {
+	result := content.Clone(value)
+	for i := range result {
+		part := &result[i]
+		if part.Kind == content.KindText || part.Media.Source.Kind != content.SourceInline {
+			continue
+		}
+		data := part.Media.Source.Data
+		reference, info, err := r.assets.Put(ctx, asset.PutRequest{Body: bytes.NewReader(data), Size: uint64(len(data))})
+		if err != nil {
+			return nil, fmt.Errorf("persist content part %d asset: %w", i, err)
+		}
+		if reference.ID == "" || info.Size != uint64(len(data)) {
+			return nil, fmt.Errorf("persist content part %d asset returned invalid reference or size", i)
+		}
+		part.Media.Source = content.Source{Kind: content.SourceAsset, Asset: reference}
+	}
+	return result, nil
 }
 
 func safeToolError(err error) string {

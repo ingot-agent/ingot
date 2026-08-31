@@ -39,15 +39,15 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if !result.WrotePlugins || !result.WroteBuilderConfig || !result.WroteConfig {
 		t.Fatalf("init must write plugins, builder, and runtime config files: %#v", result)
 	}
-	if len(result.Plugins) != 13 {
-		t.Fatalf("default profile has %d plugins, want 13: %#v", len(result.Plugins), result.Plugins)
+	if len(result.Plugins) != 14 {
+		t.Fatalf("default profile has %d plugins, want 14: %#v", len(result.Plugins), result.Plugins)
 	}
 	desired, err := builder.ParseDesired(home.DesiredPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(desired.Plugins) != 13 {
-		t.Fatalf("plugins.toml has %d plugins, want 13", len(desired.Plugins))
+	if len(desired.Plugins) != 14 {
+		t.Fatalf("plugins.toml has %d plugins, want 14", len(desired.Plugins))
 	}
 	builderData, err := os.ReadFile(home.BuilderConfigPath())
 	if err != nil {
@@ -135,8 +135,8 @@ func TestInitMinimalProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Plugins) != 8 {
-		t.Fatalf("minimal profile has %d plugins, want 8: %#v", len(result.Plugins), result.Plugins)
+	if len(result.Plugins) != 9 {
+		t.Fatalf("minimal profile has %d plugins, want 9: %#v", len(result.Plugins), result.Plugins)
 	}
 	configData, err := os.ReadFile(home.ConfigPath())
 	if err != nil {

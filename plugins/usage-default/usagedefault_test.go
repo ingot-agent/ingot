@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/ingot-agent/sdk/usage"
@@ -64,9 +65,9 @@ func TestCountResolvesCompleteRequestAndPreservesOwnership(t *testing.T) {
 	schema := json.RawMessage(`{"type":"object"}`)
 	request := model.Request{
 		Messages: []model.Message{
-			{Role: model.RoleSystem, Content: "你是助手"},
+			{Role: model.RoleSystem, Content: textContent("你是助手")},
 			{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call-1", Name: "read", Arguments: arguments}}},
-			{Role: model.RoleTool, Content: "contents", ToolCallID: "call-1"},
+			{Role: model.RoleTool, Content: textContent("contents"), ToolCallID: "call-1"},
 		},
 		Tools: []tool.Definition{{Name: "read", Description: "Read a file", InputSchema: schema}},
 	}
@@ -100,7 +101,7 @@ func TestUnicodeEstimateProfileFixedVector(t *testing.T) {
 	t.Parallel()
 	profile := unicodeEstimateProfile{}
 	count, err := profile.CountInput(context.Background(), model.Request{
-		Messages: []model.Message{{Role: model.RoleUser, Content: "hello世界"}},
+		Messages: []model.Message{{Role: model.RoleUser, Content: textContent("hello世界")}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +189,33 @@ func TestUnsupportedModelAndResolverErrorsRemainClassified(t *testing.T) {
 	}
 }
 
+func TestCountRejectsMediaInsteadOfSilentlyCountingZero(t *testing.T) {
+	profile := &testProfile{source: "text-only", accuracy: usage.AccuracyEstimate, count: 1}
+	counter := newCounter(
+		resolverFunc(passthroughResolver),
+		[]compiledRoute{{provider: "p", pattern: mustRegexp(t, `model`), profile: profile}},
+		1,
+	)
+	inline := []byte("image")
+	request := usage.CountRequest{Invocation: model.Request{
+		Provider: "p", Model: "model",
+		Messages: []model.Message{{Role: model.RoleUser, Content: content.Content{
+			content.Text("describe"),
+			content.Inline(content.KindImage, "image/png", "x.png", inline),
+		}}},
+	}}
+	_, err := counter.CountInput(context.Background(), request)
+	if !errors.Is(err, usage.ErrUnsupportedModel) {
+		t.Fatalf("error=%v", err)
+	}
+	if profile.calls.Load() != 0 {
+		t.Fatalf("text profile was called %d times", profile.calls.Load())
+	}
+	if string(inline) != "image" {
+		t.Fatalf("caller media was mutated: %q", inline)
+	}
+}
+
 func TestInvalidRequestsAreRejectedWithoutLeakingContent(t *testing.T) {
 	t.Parallel()
 	invalidUTF8 := string([]byte{0xff})
@@ -195,8 +223,8 @@ func TestInvalidRequestsAreRejectedWithoutLeakingContent(t *testing.T) {
 	zero := 0
 	tests := []model.Request{
 		{Messages: []model.Message{{Role: "unknown"}}},
-		{Messages: []model.Message{{Role: model.RoleUser, Content: invalidUTF8}}},
-		{Messages: []model.Message{{Role: model.RoleAssistant, Content: "TOP-SECRET", ToolCalls: []tool.Call{{ID: "", Name: "tool", Arguments: json.RawMessage(`{}`)}}}}},
+		{Messages: []model.Message{{Role: model.RoleUser, Content: textContent(invalidUTF8)}}},
+		{Messages: []model.Message{{Role: model.RoleAssistant, Content: textContent("TOP-SECRET"), ToolCalls: []tool.Call{{ID: "", Name: "tool", Arguments: json.RawMessage(`{}`)}}}}},
 		{Messages: []model.Message{{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call", Name: "tool", Arguments: json.RawMessage(`{`)}}}}},
 		{Tools: []tool.Definition{{Name: "tool", InputSchema: json.RawMessage(`{`)}}},
 		{Temperature: &temperature},
@@ -342,7 +370,14 @@ func validConfig() Config {
 }
 
 func validRequest(content string) model.Request {
-	return model.Request{Provider: "p", Model: "model", Messages: []model.Message{{Role: model.RoleUser, Content: content}}}
+	return model.Request{Provider: "p", Model: "model", Messages: []model.Message{{Role: model.RoleUser, Content: textContent(content)}}}
+}
+
+func textContent(value string) content.Content { return content.FromText(value) }
+
+func messageText(message model.Message) string {
+	value, _ := content.TextOnly(message.Content)
+	return value
 }
 
 func requestWithDefaults(request model.Request, provider, modelName string) model.Request {

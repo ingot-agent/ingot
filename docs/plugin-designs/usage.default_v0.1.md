@@ -204,6 +204,8 @@ validate Context and request aggregate
 - MaxTokens为nil或positive；
 - aggregate中的slice、pointer和RawMessage保持presence语义。
 
+当前内置profile没有可靠的多模态计数策略。resolved Request只要包含非text part，就在构造JSON cache key或调用profile前返回包装`ErrUnsupportedModel`，不得把媒体metadata或bytes静默当作普通文本估算。
+
 Counter 不负责验证完整对话顺序；合法但处于中间tool round的 `model.Request` 仍可能需要计数。对话turn分组继续属于 `context.compact` policy，而不是 usage capability。
 
 ## 7. Accuracy 与调用方策略

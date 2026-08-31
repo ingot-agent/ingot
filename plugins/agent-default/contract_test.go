@@ -1,12 +1,15 @@
 package agentdefault_test
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"testing"
 
 	agentdefault "github.com/ingot-agent/agent-default"
 	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
+	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/prompt"
@@ -36,6 +39,18 @@ func (sessionStore) List(context.Context, session.Query) ([]session.Summary, err
 	return nil, nil
 }
 
+type assetStore struct{}
+
+func (assetStore) Put(context.Context, asset.PutRequest) (asset.Reference, asset.Info, error) {
+	return asset.Reference{ID: "asset"}, asset.Info{}, nil
+}
+func (assetStore) Stat(context.Context, asset.Reference) (asset.Info, error) {
+	return asset.Info{}, nil
+}
+func (assetStore) Open(context.Context, asset.Reference) (io.ReadCloser, error) {
+	return io.NopCloser(bytes.NewReader(nil)), nil
+}
+
 type promptRenderer struct{}
 
 func (promptRenderer) Render(context.Context, prompt.Request) ([]model.Message, error) {
@@ -50,7 +65,7 @@ func (contextCompactor) Compact(context.Context, contextwindow.CompactionRequest
 
 func TestComponentContractIncludesOptionalCompactor(t *testing.T) {
 	exports, cleanup, err := agentdefault.New(context.Background(), agentdefault.Config{}, agentdefault.Dependencies{
-		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Prompt: promptRenderer{},
+		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Assets: assetStore{}, Prompt: promptRenderer{},
 		Compactor: ingotabi.Some[contextwindow.Compactor](contextCompactor{}),
 	})
 	if err != nil {

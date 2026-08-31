@@ -23,12 +23,14 @@ type Exports struct {
 
 ```go
 type Config struct {
-    MaxArgumentsBytes int `toml:"max_arguments_bytes"`
-    MaxResultBytes    int `toml:"max_result_bytes"`
+    MaxArgumentsBytes  int `toml:"max_arguments_bytes"`
+    MaxTextBytes       int `toml:"max_text_bytes"`
+    MaxInlinePartBytes int `toml:"max_inline_part_bytes"`
+    MaxInlineBytes     int `toml:"max_inline_bytes"`
 }
 ```
 
-默认分别为 1 MiB 和 4 MiB，必须为正数。这是 Runtime 的内存/边界保护，不替代具体 Tool 的领域限制。
+默认参数1 MiB、text总量4 MiB、单个inline media 16 MiB、inline media总量32 MiB，且必须为正数。这是Runtime的内存/边界保护，不替代具体Tool的领域限制；URI和Asset Reference不重复计算外部资源bytes。
 
 ## 3. Startup validation
 
@@ -75,7 +77,7 @@ Context/size/JSON syntax
 - `Call.ID` 是 opaque correlation value，允许为空，但进入 chain 后不得修改；
 - Runtime 在进入 chain 前复制整个 `Call` 的 `Arguments`；v0.1 Interceptor 不得修改 `Call.ID`、`Call.Name` 或 `Call.Arguments`，Runtime 在 terminal 前再次验证 schema，并在检测到 mutation 时返回 `ErrCallMutation`；
 - Tool/Interceptor error 原样保留链；
-- Result.Content 必须为 valid UTF-8 且不超过限制，否则返回 Runtime error；
+- Result.Content必须通过`content.Validate`；text总量、每个inline media及inline media总量分别不得超过对应限制，否则返回Runtime error；
 - Runtime 不把 Tool error转换成成功 Result；该策略属于 `agent.default`；
 - 不 recover Plugin panic；panic 是实现缺陷，应由进程级诊断暴露。
 
@@ -108,7 +110,7 @@ package = "."
 - lookup 和 schema error sentinel；
 - first Interceptor outermost、short-circuit、error propagation；
 - Interceptor 只能在 validation 后运行；
-- arguments/result ownership、size和 UTF-8；
+- arguments/result ownership、多模态Content validation、text/inline part/inline total size；
 - 多 Tool 并发和 race test。
 
 待确认：选用的 Draft 2020-12 validator library及其格式扩展策略；实现必须把 validator 版本作为 Plugin module dependency 固定。

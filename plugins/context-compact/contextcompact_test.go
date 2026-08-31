@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ingot-agent/sdk/asset"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -103,7 +105,7 @@ func (m *fakeModel) Complete(_ context.Context, request model.Request) (model.Re
 
 func TestCompactNoOpReturnsOwnedMessages(t *testing.T) {
 	t.Parallel()
-	request := model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "hello"}}}
+	request := model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: textContent("hello")}}}
 	raw, err := canonicalRequestBytes(request)
 	if err != nil {
 		t.Fatal(err)
@@ -121,9 +123,31 @@ func TestCompactNoOpReturnsOwnedMessages(t *testing.T) {
 	if result.Changed || !reflect.DeepEqual(result.Messages, request.Messages) || len(models.requests) != 0 {
 		t.Fatalf("result=%#v summary calls=%d", result, len(models.requests))
 	}
-	result.Messages[0].Content = "changed"
-	if request.Messages[0].Content != "hello" {
+	result.Messages[0].Content = textContent("changed")
+	if messageText(request.Messages[0]) != "hello" {
 		t.Fatal("result aliases invocation messages")
+	}
+}
+
+func TestInspectRequestRejectsOpaqueInvalidUTF8(t *testing.T) {
+	t.Parallel()
+	invalid := string([]byte{0xff})
+	tests := []struct {
+		name    string
+		content content.Content
+	}{
+		{name: "MIME type", content: content.Content{content.Inline(content.KindImage, invalid, "image.png", []byte("image"))}},
+		{name: "URI", content: content.Content{content.URI(content.KindImage, "image/png", "image.png", invalid)}},
+		{name: "asset ID", content: content.Content{content.AssetPart(content.KindImage, "image/png", "image.png", asset.Reference{ID: invalid})}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := inspectRequest(model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: test.content}}}, 0, 0)
+			if !errors.Is(err, ErrInvalidHistory) {
+				t.Fatalf("error=%v", err)
+			}
+		})
 	}
 }
 
@@ -135,7 +159,7 @@ func TestCompactPreservesAnchorRecentAndPersistsDelta(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := model.Response{
-		Message:  model.Message{Role: model.RoleAssistant, Content: `{"summary":"middle work was completed","operations":[{"op":"set","path":"/project/root","value":"D:\\ingot-local\\ingot"}]}`},
+		Message:  model.Message{Role: model.RoleAssistant, Content: textContent(`{"summary":"middle work was completed","operations":[{"op":"set","path":"/project/root","value":"D:\\ingot-local\\ingot"}]}`)},
 		Provider: "main-provider", Model: "main-model",
 	}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
@@ -155,13 +179,13 @@ func TestCompactPreservesAnchorRecentAndPersistsDelta(t *testing.T) {
 	if !result.Changed || len(models.requests) != 1 {
 		t.Fatalf("changed=%v summary calls=%d", result.Changed, len(models.requests))
 	}
-	if len(result.Messages) != 7 || result.Messages[0].Role != model.RoleSystem || result.Messages[1].Content != "anchor user" || result.Messages[2].Content != "anchor assistant" {
+	if len(result.Messages) != 7 || result.Messages[0].Role != model.RoleSystem || messageText(result.Messages[1]) != "anchor user" || messageText(result.Messages[2]) != "anchor assistant" {
 		t.Fatalf("preserved prefix=%#v", result.Messages)
 	}
-	if !strings.Contains(result.Messages[3].Content, "middle work was completed") || !strings.Contains(result.Messages[4].Content, `"/project/root"`) {
+	if !strings.Contains(messageText(result.Messages[3]), "middle work was completed") || !strings.Contains(messageText(result.Messages[4]), `"/project/root"`) {
 		t.Fatalf("summary/delta=%#v", result.Messages[3:5])
 	}
-	if result.Messages[5].Content != "recent user" || result.Messages[6].Content != "recent assistant" {
+	if messageText(result.Messages[5]) != "recent user" || messageText(result.Messages[6]) != "recent assistant" {
 		t.Fatalf("recent suffix=%#v", result.Messages[5:])
 	}
 	if models.requests[0].Tools == nil || len(models.requests[0].Tools) != 0 || models.requests[0].Temperature == nil || *models.requests[0].Temperature != 0 {
@@ -216,15 +240,15 @@ func TestIncrementalSegmentsKeepFrozenPrefixAndUpdateState(t *testing.T) {
 	}
 
 	secondRequest := model.Request{Provider: "main-provider", Model: "main-model", Messages: []model.Message{
-		{Role: model.RoleSystem, Content: "system"},
-		{Role: model.RoleUser, Content: "anchor user"},
-		{Role: model.RoleAssistant, Content: "anchor assistant"},
-		{Role: model.RoleUser, Content: "middle user " + strings.Repeat("x", 1200)},
-		{Role: model.RoleAssistant, Content: "middle assistant " + strings.Repeat("y", 1200)},
-		{Role: model.RoleUser, Content: "second middle " + strings.Repeat("m", 1200)},
-		{Role: model.RoleAssistant, Content: "second result " + strings.Repeat("n", 1200)},
-		{Role: model.RoleUser, Content: "recent user"},
-		{Role: model.RoleAssistant, Content: "recent assistant"},
+		{Role: model.RoleSystem, Content: textContent("system")},
+		{Role: model.RoleUser, Content: textContent("anchor user")},
+		{Role: model.RoleAssistant, Content: textContent("anchor assistant")},
+		{Role: model.RoleUser, Content: textContent("middle user " + strings.Repeat("x", 1200))},
+		{Role: model.RoleAssistant, Content: textContent("middle assistant " + strings.Repeat("y", 1200))},
+		{Role: model.RoleUser, Content: textContent("second middle " + strings.Repeat("m", 1200))},
+		{Role: model.RoleAssistant, Content: textContent("second result " + strings.Repeat("n", 1200))},
+		{Role: model.RoleUser, Content: textContent("recent user")},
+		{Role: model.RoleAssistant, Content: textContent("recent assistant")},
 	}}
 	second, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: secondRequest})
 	if err != nil {
@@ -236,7 +260,7 @@ func TestIncrementalSegmentsKeepFrozenPrefixAndUpdateState(t *testing.T) {
 	if !reflect.DeepEqual(first.Messages[:5], second.Messages[:5]) {
 		t.Fatalf("frozen prefix changed\nfirst=%#v\nsecond=%#v", first.Messages[:5], second.Messages[:5])
 	}
-	if !strings.Contains(second.Messages[5].Content, "second frozen segment") || !strings.Contains(second.Messages[6].Content, `"D:\\new"`) {
+	if !strings.Contains(messageText(second.Messages[5]), "second frozen segment") || !strings.Contains(messageText(second.Messages[6]), `"D:\\new"`) {
 		t.Fatalf("incremental messages=%#v", second.Messages[5:7])
 	}
 	store.mu.Lock()
@@ -266,7 +290,7 @@ func TestRollupBoundsFrozenSummaryChunksWithoutChangingState(t *testing.T) {
 	}}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	cfg := Config{
-		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: 1500,
+		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: 2500,
 		AnchorTurns: 1, RecentTurns: 1, SummaryChunkBytes: 1,
 		MaxSummaryChunks: 2, MaxSummaryPasses: 4,
 	}
@@ -310,8 +334,8 @@ func TestCompactRejectsInvalidHistoryAndOwnedCheckpointVersion(t *testing.T) {
 	_, err = exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{
 		SessionID: "s",
 		Invocation: model.Request{Messages: []model.Message{
-			{Role: model.RoleUser, Content: "u"},
-			{Role: model.RoleTool, Content: "orphan", ToolCallID: "c"},
+			{Role: model.RoleUser, Content: textContent("u")},
+			{Role: model.RoleTool, Content: textContent("orphan"), ToolCallID: "c"},
 		}},
 	})
 	if !errors.Is(err, ErrInvalidHistory) {
@@ -319,7 +343,7 @@ func TestCompactRejectsInvalidHistoryAndOwnedCheckpointVersion(t *testing.T) {
 	}
 
 	store.entries["s"] = []session.Entry{{Kind: checkpointEntryKind, Version: 2, Payload: json.RawMessage(`{}`)}}
-	_, err = exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: "u"}}}})
+	_, err = exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: model.Request{Messages: []model.Message{{Role: model.RoleUser, Content: textContent("u")}}}})
 	if !errors.Is(err, ErrUnsupportedCheckpointVersion) {
 		t.Fatalf("version error=%v", err)
 	}
@@ -382,6 +406,98 @@ func TestCompactDoesNotPersistSummaryWithoutSizeBenefit(t *testing.T) {
 	defer store.mu.Unlock()
 	if len(store.entries["s"]) != 0 {
 		t.Fatalf("persisted checkpoints=%d, want 0", len(store.entries["s"]))
+	}
+}
+
+func TestCompactPreservesRecentMediaAndDoesNotSummarizeIt(t *testing.T) {
+	request := longRequest()
+	recent := content.Content{
+		content.Text("recent user"),
+		content.AssetPart(content.KindImage, "image/png", "recent.png", asset.Reference{ID: "asset-recent"}),
+	}
+	request.Messages[len(request.Messages)-2].Content = content.Clone(recent)
+	raw, err := canonicalRequestBytes(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := &fakeModel{responses: []model.Response{summaryResponse(`{"summary":"middle summarized","operations":[]}`)}}
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	exports, _, err := New(context.Background(), Config{
+		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: len(raw) - 500,
+		AnchorTurns: 1, RecentTurns: 1, SummaryChunkBytes: 1,
+	}, Dependencies{Model: models, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || len(result.Messages) < 2 || !reflect.DeepEqual(result.Messages[len(result.Messages)-2].Content, recent) {
+		t.Fatalf("media was not preserved: %#v", result.Messages)
+	}
+	if len(models.requests) != 1 || strings.Contains(messagesText(models.requests[0].Messages), "recent.png") {
+		t.Fatalf("summary request included recent media: %#v", models.requests)
+	}
+}
+
+func TestCompactReturnsUncompactableWhenMiddleTurnContainsMedia(t *testing.T) {
+	request := model.Request{Provider: "p", Model: "m", Messages: []model.Message{
+		{Role: model.RoleSystem, Content: textContent("system")},
+		{Role: model.RoleUser, Content: textContent("anchor user")},
+		{Role: model.RoleAssistant, Content: textContent("anchor assistant")},
+		{Role: model.RoleUser, Content: content.Content{
+			content.Text(strings.Repeat("middle", 300)),
+			content.AssetPart(content.KindImage, "image/png", "middle.png", asset.Reference{ID: "asset-middle"}),
+		}},
+		{Role: model.RoleAssistant, Content: textContent(strings.Repeat("answer", 300))},
+		{Role: model.RoleUser, Content: textContent("recent user")},
+		{Role: model.RoleAssistant, Content: textContent("recent assistant")},
+	}}
+	raw, err := canonicalRequestBytes(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := &fakeModel{}
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
+	exports, _, err := New(context.Background(), Config{
+		TriggerRequestBytes: len(raw) - 1, TargetRequestBytes: len(raw) - 100,
+		AnchorTurns: 1, RecentTurns: 1, SummaryChunkBytes: 1,
+	}, Dependencies{Model: models, Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = exports.Compactor.Compact(context.Background(), contextwindow.CompactionRequest{SessionID: "s", Invocation: request})
+	if !errors.Is(err, ErrContextUncompactable) {
+		t.Fatalf("error=%v", err)
+	}
+	if len(models.requests) != 0 || len(store.entries["s"]) != 0 {
+		t.Fatalf("media was summarized or checkpointed: requests=%d entries=%d", len(models.requests), len(store.entries["s"]))
+	}
+}
+
+func TestCanonicalDigestIncludesMediaRepresentation(t *testing.T) {
+	base := []model.Message{{Role: model.RoleUser, Content: content.Content{
+		content.Inline(content.KindImage, "image/png", "x.png", []byte("one")),
+	}}}
+	first, err := messageDigest(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedData := cloneMessages(base)
+	changedData[0].Content[0].Media.Source.Data = []byte("two")
+	second, err := messageDigest(changedData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedSource := cloneMessages(base)
+	changedSource[0].Content[0] = content.URI(content.KindImage, "image/png", "x.png", "https://example.test/x.png")
+	third, err := messageDigest(changedSource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second || first == third || second == third {
+		t.Fatalf("media digests were not distinct: %q %q %q", first, second, third)
 	}
 }
 
@@ -468,8 +584,8 @@ func TestCheckpointReuseRequiresMatchingResolvedModelIdentity(t *testing.T) {
 	request := longRequest()
 	raw, _ := canonicalRequestBytes(request)
 	models := &fakeModel{responses: []model.Response{
-		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"stale identity","operations":[]}`}, Provider: "other-provider", Model: "other-model"},
-		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"matching identity","operations":[]}`}, Provider: request.Provider, Model: request.Model},
+		{Message: model.Message{Role: model.RoleAssistant, Content: textContent(`{"summary":"stale identity","operations":[]}`)}, Provider: "other-provider", Model: "other-model"},
+		{Message: model.Message{Role: model.RoleAssistant, Content: textContent(`{"summary":"matching identity","operations":[]}`)}, Provider: request.Provider, Model: request.Model},
 	}}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	cfg := Config{
@@ -511,8 +627,8 @@ func TestCheckpointWithRuntimeDefaultSelectionIsNotReused(t *testing.T) {
 	request.Model = ""
 	raw, _ := canonicalRequestBytes(request)
 	models := &fakeModel{responses: []model.Response{
-		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"default one","operations":[]}`}, Provider: "provider-one", Model: "model-one"},
-		{Message: model.Message{Role: model.RoleAssistant, Content: `{"summary":"default two","operations":[]}`}, Provider: "provider-two", Model: "model-two"},
+		{Message: model.Message{Role: model.RoleAssistant, Content: textContent(`{"summary":"default one","operations":[]}`)}, Provider: "provider-one", Model: "model-one"},
+		{Message: model.Message{Role: model.RoleAssistant, Content: textContent(`{"summary":"default two","operations":[]}`)}, Provider: "provider-two", Model: "model-two"},
 	}}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	cfg := Config{
@@ -539,45 +655,52 @@ func longRequest() model.Request {
 	return model.Request{
 		Provider: "main-provider", Model: "main-model",
 		Messages: []model.Message{
-			{Role: model.RoleSystem, Content: "system"},
-			{Role: model.RoleUser, Content: "anchor user"},
-			{Role: model.RoleAssistant, Content: "anchor assistant"},
-			{Role: model.RoleUser, Content: "middle user " + strings.Repeat("x", 1200)},
-			{Role: model.RoleAssistant, Content: "middle assistant " + strings.Repeat("y", 1200)},
-			{Role: model.RoleUser, Content: "recent user"},
-			{Role: model.RoleAssistant, Content: "recent assistant"},
+			{Role: model.RoleSystem, Content: textContent("system")},
+			{Role: model.RoleUser, Content: textContent("anchor user")},
+			{Role: model.RoleAssistant, Content: textContent("anchor assistant")},
+			{Role: model.RoleUser, Content: textContent("middle user " + strings.Repeat("x", 1200))},
+			{Role: model.RoleAssistant, Content: textContent("middle assistant " + strings.Repeat("y", 1200))},
+			{Role: model.RoleUser, Content: textContent("recent user")},
+			{Role: model.RoleAssistant, Content: textContent("recent assistant")},
 		},
 	}
 }
 
 func manyMiddleTurnsRequest(middle int) model.Request {
 	messages := []model.Message{
-		{Role: model.RoleSystem, Content: "system"},
-		{Role: model.RoleUser, Content: "anchor user"},
-		{Role: model.RoleAssistant, Content: "anchor assistant"},
+		{Role: model.RoleSystem, Content: textContent("system")},
+		{Role: model.RoleUser, Content: textContent("anchor user")},
+		{Role: model.RoleAssistant, Content: textContent("anchor assistant")},
 	}
 	for i := 0; i < middle; i++ {
 		messages = append(messages,
-			model.Message{Role: model.RoleUser, Content: "middle user " + strings.Repeat(string(rune('a'+i)), 1200)},
-			model.Message{Role: model.RoleAssistant, Content: "middle assistant " + strings.Repeat(string(rune('k'+i)), 1200)},
+			model.Message{Role: model.RoleUser, Content: textContent("middle user " + strings.Repeat(string(rune('a'+i)), 1200))},
+			model.Message{Role: model.RoleAssistant, Content: textContent("middle assistant " + strings.Repeat(string(rune('k'+i)), 1200))},
 		)
 	}
 	messages = append(messages,
-		model.Message{Role: model.RoleUser, Content: "recent user"},
-		model.Message{Role: model.RoleAssistant, Content: "recent assistant"},
+		model.Message{Role: model.RoleUser, Content: textContent("recent user")},
+		model.Message{Role: model.RoleAssistant, Content: textContent("recent assistant")},
 	)
 	return model.Request{Provider: "main-provider", Model: "main-model", Messages: messages}
 }
 
-func summaryResponse(content string) model.Response {
-	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content}, Provider: "main-provider", Model: "main-model"}
+func summaryResponse(responseContent string) model.Response {
+	return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: textContent(responseContent)}, Provider: "main-provider", Model: "main-model"}
 }
 
 func messagesText(messages []model.Message) string {
 	var builder strings.Builder
 	for _, message := range messages {
-		builder.WriteString(message.Content)
+		builder.WriteString(messageText(message))
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+func textContent(value string) content.Content { return content.FromText(value) }
+
+func messageText(message model.Message) string {
+	value, _ := content.TextOnly(message.Content)
+	return value
 }

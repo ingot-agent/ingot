@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/ingot-agent/sdk/agent"
+	"github.com/ingot-agent/sdk/asset"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -50,17 +52,17 @@ func TestHookHelper(t *testing.T) {
 		}
 		_, _ = file.Write(append(raw, '\n'))
 		_ = file.Close()
-		fmt.Fprint(os.Stdout, `{"protocol_version":1,"action":"continue"}`)
+		fmt.Fprint(os.Stdout, `{"protocol_version":2,"action":"continue"}`)
 		os.Exit(0)
 	case "reject":
-		fmt.Fprint(os.Stdout, `{"protocol_version":1,"action":"reject","message":"denied"}`)
+		fmt.Fprint(os.Stdout, `{"protocol_version":2,"action":"reject","message":"denied"}`)
 		os.Exit(0)
 	case "fail-after":
 		if envelope.Phase == "after" {
 			fmt.Fprint(os.Stderr, "after failed")
 			os.Exit(3)
 		}
-		fmt.Fprint(os.Stdout, `{"protocol_version":1,"action":"continue"}`)
+		fmt.Fprint(os.Stdout, `{"protocol_version":2,"action":"continue"}`)
 		os.Exit(0)
 	case "sleep":
 		time.Sleep(5 * time.Second)
@@ -68,10 +70,10 @@ func TestHookHelper(t *testing.T) {
 		if envelope.Phase == "after" {
 			time.Sleep(5 * time.Second)
 		}
-		fmt.Fprint(os.Stdout, `{"protocol_version":1,"action":"continue"}`)
+		fmt.Fprint(os.Stdout, `{"protocol_version":2,"action":"continue"}`)
 		os.Exit(0)
 	case "stderr":
-		fmt.Fprint(os.Stdout, `{"protocol_version":1,"action":"continue"}`)
+		fmt.Fprint(os.Stdout, `{"protocol_version":2,"action":"continue"}`)
 		fmt.Fprint(os.Stderr, "warning")
 		os.Exit(0)
 	case "nonzero":
@@ -83,6 +85,15 @@ func TestHookHelper(t *testing.T) {
 	default:
 		os.Exit(2)
 	}
+}
+
+func invalidText(value string) content.Content {
+	return content.Content{{Kind: content.KindText, Text: value}}
+}
+
+func textValue(value content.Content) string {
+	result, _ := content.TextOnly(value)
+	return result
 }
 
 func TestExportsAllTypedTargets(t *testing.T) {
@@ -123,13 +134,14 @@ func TestDecodeHookResponseIsStrict(t *testing.T) {
 		raw  []byte
 	}{
 		{name: "not object", raw: []byte(`[]`)},
-		{name: "unknown", raw: []byte(`{"protocol_version":1,"action":"continue","extra":true}`)},
-		{name: "duplicate", raw: []byte(`{"protocol_version":1,"action":"continue","action":"continue"}`)},
-		{name: "null message", raw: []byte(`{"protocol_version":1,"action":"continue","message":null}`)},
+		{name: "old version", raw: []byte(`{"protocol_version":1,"action":"continue"}`)},
+		{name: "unknown", raw: []byte(`{"protocol_version":2,"action":"continue","extra":true}`)},
+		{name: "duplicate", raw: []byte(`{"protocol_version":2,"action":"continue","action":"continue"}`)},
+		{name: "null message", raw: []byte(`{"protocol_version":2,"action":"continue","message":null}`)},
 		{name: "missing version", raw: []byte(`{"action":"continue"}`)},
-		{name: "missing action", raw: []byte(`{"protocol_version":1}`)},
-		{name: "wrong type", raw: []byte(`{"protocol_version":1,"action":1}`)},
-		{name: "multiple values", raw: []byte(`{"protocol_version":1,"action":"continue"}{}`)},
+		{name: "missing action", raw: []byte(`{"protocol_version":2}`)},
+		{name: "wrong type", raw: []byte(`{"protocol_version":2,"action":1}`)},
+		{name: "multiple values", raw: []byte(`{"protocol_version":2,"action":"continue"}{}`)},
 		{name: "invalid utf8", raw: []byte{'{', '"', 0xff, '"', ':', '1', '}'}},
 	}
 	for _, test := range tests {
@@ -140,7 +152,7 @@ func TestDecodeHookResponseIsStrict(t *testing.T) {
 			}
 		})
 	}
-	if response, err := decodeHookResponse([]byte(" \n{\"protocol_version\":1,\"action\":\"continue\"}\t")); err != nil || response.Action != "continue" {
+	if response, err := decodeHookResponse([]byte(" \n{\"protocol_version\":2,\"action\":\"continue\"}\t")); err != nil || response.Action != "continue" {
 		t.Fatalf("response=%#v error=%v", response, err)
 	}
 }
@@ -159,9 +171,21 @@ func TestProjectionRejectsInvalidUTF8AndNonFiniteNumbers(t *testing.T) {
 			return err
 		}},
 		{name: "tool arguments", project: func() error { _, err := projectToolRequest(tool.Call{Arguments: invalidJSON}); return err }},
-		{name: "tool result", project: func() error { _, err := projectToolResponse(tool.Result{Content: invalid}); return err }},
+		{name: "tool result", project: func() error { _, err := projectToolResponse(tool.Result{Content: invalidText(invalid)}); return err }},
 		{name: "model provider", project: func() error { _, err := projectModelRequest(model.Request{Provider: invalid}); return err }},
-		{name: "message content", project: func() error { _, err := projectMessage(model.Message{Content: invalid}); return err }},
+		{name: "message content", project: func() error { _, err := projectMessage(model.Message{Content: invalidText(invalid)}); return err }},
+		{name: "media MIME type", project: func() error {
+			_, err := projectContent(content.Content{content.Inline(content.KindImage, invalid, "image.png", []byte("image"))})
+			return err
+		}},
+		{name: "media URI", project: func() error {
+			_, err := projectContent(content.Content{content.URI(content.KindImage, "image/png", "image.png", invalid)})
+			return err
+		}},
+		{name: "asset ID", project: func() error {
+			_, err := projectContent(content.Content{content.AssetPart(content.KindImage, "image/png", "image.png", asset.Reference{ID: invalid})})
+			return err
+		}},
 		{name: "definition schema", project: func() error {
 			_, err := projectModelRequest(model.Request{Tools: []tool.Definition{{InputSchema: invalidJSON}}})
 			return err
@@ -169,7 +193,7 @@ func TestProjectionRejectsInvalidUTF8AndNonFiniteNumbers(t *testing.T) {
 		{name: "stop", project: func() error { _, err := projectModelRequest(model.Request{Stop: []string{invalid}}); return err }},
 		{name: "temperature", project: func() error { _, err := projectModelRequest(model.Request{Temperature: &temperature}); return err }},
 		{name: "agent request", project: func() error { _, err := projectAgentRequest(agent.Turn{Input: invalid}); return err }},
-		{name: "agent response", project: func() error { _, err := projectAgentResponse(agent.Result{Output: invalid}); return err }},
+		{name: "agent response", project: func() error { _, err := projectAgentResponse(agent.Result{Output: invalidText(invalid)}); return err }},
 		{name: "error", project: func() error { _, err := describeError(errors.New(invalid)); return err }},
 	}
 	for _, test := range tests {
@@ -179,6 +203,32 @@ func TestProjectionRejectsInvalidUTF8AndNonFiniteNumbers(t *testing.T) {
 				t.Fatal("expected projection error")
 			}
 		})
+	}
+}
+
+func TestMultimodalProjectionIsReadableAndCallerOwned(t *testing.T) {
+	inline := []byte{0, 1, 2}
+	value := content.Content{
+		content.Text("look"),
+		content.Inline(content.KindImage, "image/png", "inline.png", inline),
+		content.URI(content.KindAudio, "audio/mpeg", "remote.mp3", "https://example.test/audio.mp3"),
+		content.AssetPart(content.KindFile, "application/pdf", "document.pdf", asset.Reference{ID: "asset-1"}),
+	}
+	projection, err := projectContent(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `[{"kind":"text","text":"look"},{"kind":"image","media":{"mime_type":"image/png","name":"inline.png","source":{"kind":"inline","data":"AAEC"}}},{"kind":"audio","media":{"mime_type":"audio/mpeg","name":"remote.mp3","source":{"kind":"uri","uri":"https://example.test/audio.mp3"}}},{"kind":"file","media":{"mime_type":"application/pdf","name":"document.pdf","source":{"kind":"asset","asset":{"id":"asset-1"}}}}]`
+	if string(raw) != want {
+		t.Fatalf("projection=%s", raw)
+	}
+	projection[1].Media.Source.Data[0] = 0xff
+	if value[1].Media.Source.Data[0] != 0 {
+		t.Fatalf("projection aliases source content: %#v", value)
 	}
 }
 
@@ -192,12 +242,12 @@ func TestToolHookProjectsBeforeAfterAndIsolatesEnvironment(t *testing.T) {
 	called := false
 	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"x":1}`)}, func(_ context.Context, call tool.Call) (tool.Result, error) {
 		called = true
-		return tool.Result{Content: "ok"}, nil
+		return tool.Result{Content: content.FromText("ok")}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !called || result.Content != "ok" {
+	if !called || textValue(result.Content) != "ok" {
 		t.Fatalf("called=%v result=%#v", called, result)
 	}
 	raw, err := os.ReadFile(trace)
@@ -226,17 +276,17 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := model.Request{
-			Provider: "p", Model: "m", Messages: []model.Message{{Role: model.RoleUser, Content: "hello"}},
+			Provider: "p", Model: "m", Messages: []model.Message{{Role: model.RoleUser, Content: content.FromText("hello")}},
 			Tools: []tool.Definition{{Name: "echo", Description: "Echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}, Stop: []string{},
 		}
-		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "hi"}, FinishReason: "stop", Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}, Provider: "p", Model: "m"}
+		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("hi")}, FinishReason: "stop", Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}, Provider: "p", Model: "m"}
 		got, err := exports.ModelInterceptors[0].Invoke(context.Background(), request, func(context.Context, model.Request) (model.Response, error) { return response, nil })
 		if err != nil || !reflect.DeepEqual(got, response) {
 			t.Fatalf("response=%#v error=%v", got, err)
 		}
 		assertTraceJSON(t, trace, []string{
-			`{"protocol_version":1,"hook":"policy","target":"model","phase":"before","request":{"provider":"p","model":"m","messages":[{"role":"user","content":"hello","name":"","tool_call_id":"","tool_calls":[]}],"tools":[{"name":"echo","description":"Echo","input_schema":{"type":"object"}}],"temperature":null,"max_tokens":null,"stop":[]}}`,
-			`{"protocol_version":1,"hook":"policy","target":"model","phase":"after","request":{"provider":"p","model":"m","messages":[{"role":"user","content":"hello","name":"","tool_call_id":"","tool_calls":[]}],"tools":[{"name":"echo","description":"Echo","input_schema":{"type":"object"}}],"temperature":null,"max_tokens":null,"stop":[]},"outcome":{"response":{"message":{"role":"assistant","content":"hi","name":"","tool_call_id":"","tool_calls":[]},"finish_reason":"stop","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"provider":"p","model":"m"},"error":null}}`,
+			`{"protocol_version":2,"hook":"policy","target":"model","phase":"before","request":{"provider":"p","model":"m","messages":[{"role":"user","content":[{"kind":"text","text":"hello"}],"name":"","tool_call_id":"","tool_calls":[]}],"tools":[{"name":"echo","description":"Echo","input_schema":{"type":"object"}}],"temperature":null,"max_tokens":null,"stop":[]}}`,
+			`{"protocol_version":2,"hook":"policy","target":"model","phase":"after","request":{"provider":"p","model":"m","messages":[{"role":"user","content":[{"kind":"text","text":"hello"}],"name":"","tool_call_id":"","tool_calls":[]}],"tools":[{"name":"echo","description":"Echo","input_schema":{"type":"object"}}],"temperature":null,"max_tokens":null,"stop":[]},"outcome":{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"hi"}],"name":"","tool_call_id":"","tool_calls":[]},"finish_reason":"stop","usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3},"provider":"p","model":"m"},"error":null}}`,
 		})
 	})
 
@@ -249,7 +299,7 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := model.Request{Provider: "p", Model: "m"}
-		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "done"}}
+		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}}
 		got, err := exports.StreamInterceptors[0].InvokeStream(context.Background(), request, nil, func(context.Context, model.Request, model.StreamHandler) (model.Response, error) {
 			return response, nil
 		})
@@ -257,8 +307,8 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 			t.Fatalf("response=%#v error=%v", got, err)
 		}
 		assertTraceJSON(t, trace, []string{
-			`{"protocol_version":1,"hook":"policy","target":"model-stream","phase":"before","request":{"provider":"p","model":"m","messages":[],"tools":[],"temperature":null,"max_tokens":null,"stop":[]}}`,
-			`{"protocol_version":1,"hook":"policy","target":"model-stream","phase":"after","request":{"provider":"p","model":"m","messages":[],"tools":[],"temperature":null,"max_tokens":null,"stop":[]},"outcome":{"response":{"message":{"role":"assistant","content":"done","name":"","tool_call_id":"","tool_calls":[]},"finish_reason":"","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"provider":"","model":""},"error":null}}`,
+			`{"protocol_version":2,"hook":"policy","target":"model-stream","phase":"before","request":{"provider":"p","model":"m","messages":[],"tools":[],"temperature":null,"max_tokens":null,"stop":[]}}`,
+			`{"protocol_version":2,"hook":"policy","target":"model-stream","phase":"after","request":{"provider":"p","model":"m","messages":[],"tools":[],"temperature":null,"max_tokens":null,"stop":[]},"outcome":{"response":{"message":{"role":"assistant","content":[{"kind":"text","text":"done"}],"name":"","tool_call_id":"","tool_calls":[]},"finish_reason":"","usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0},"provider":"","model":""},"error":null}}`,
 		})
 	})
 
@@ -271,14 +321,14 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := agent.Turn{SessionID: session.ID("s1"), Input: "hello"}
-		response := agent.Result{Output: "world"}
+		response := agent.Result{Output: content.FromText("world")}
 		got, err := exports.AgentInterceptors[0].Invoke(context.Background(), request, func(context.Context, agent.Turn) (agent.Result, error) { return response, nil })
-		if err != nil || got != response {
+		if err != nil || !reflect.DeepEqual(got, response) {
 			t.Fatalf("response=%#v error=%v", got, err)
 		}
 		assertTraceJSON(t, trace, []string{
-			`{"protocol_version":1,"hook":"policy","target":"agent","phase":"before","request":{"session_id":"s1","input":"hello"}}`,
-			`{"protocol_version":1,"hook":"policy","target":"agent","phase":"after","request":{"session_id":"s1","input":"hello"},"outcome":{"response":{"output":"world"},"error":null}}`,
+			`{"protocol_version":2,"hook":"policy","target":"agent","phase":"before","request":{"session_id":"s1","input":"hello","attachments":[]}}`,
+			`{"protocol_version":2,"hook":"policy","target":"agent","phase":"after","request":{"session_id":"s1","input":"hello","attachments":[]},"outcome":{"response":{"output":[{"kind":"text","text":"world"}]},"error":null}}`,
 		})
 	})
 }
@@ -331,9 +381,9 @@ func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
-		return tool.Result{Content: "committed"}, nil
+		return tool.Result{Content: content.FromText("committed")}, nil
 	})
-	if result.Content != "committed" || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) {
+	if textValue(result.Content) != "committed" || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 }
@@ -375,9 +425,9 @@ func TestCancellationAfterDownstreamIsNotSwallowed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	result, err := exports.ToolInterceptors[0].Invoke(ctx, tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
 		cancel()
-		return tool.Result{Content: "committed"}, nil
+		return tool.Result{Content: content.FromText("committed")}, nil
 	})
-	if result.Content != "committed" || !errors.Is(err, context.Canceled) {
+	if textValue(result.Content) != "committed" || !errors.Is(err, context.Canceled) {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 	raw, readErr := os.ReadFile(trace)
@@ -397,7 +447,7 @@ func TestResponseProjectionFailureIsAfterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := model.Response{Message: model.Message{Content: string([]byte{0xff})}}
+	response := model.Response{Message: model.Message{Content: invalidText(string([]byte{0xff}))}}
 	got, err := exports.ModelInterceptors[0].Invoke(context.Background(), model.Request{}, func(context.Context, model.Request) (model.Response, error) {
 		return response, nil
 	})
@@ -424,9 +474,9 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
-		return tool.Result{Content: "committed"}, nil
+		return tool.Result{Content: content.FromText("committed")}, nil
 	})
-	if result.Content != "committed" || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) || !errors.Is(err, ErrHookFailed) {
+	if textValue(result.Content) != "committed" || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) || !errors.Is(err, ErrHookFailed) {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 
