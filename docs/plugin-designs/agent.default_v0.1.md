@@ -1,7 +1,7 @@
 # `agent.default` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`agent.Runtime`、`agent.History`
+> Exports：`agent.Runtime`、`agent.StreamingRuntime`、`agent.History`
 
 ## 1. 定位
 
@@ -24,8 +24,9 @@ type Dependencies struct {
 }
 
 type Exports struct {
-    Runtime agent.Runtime
-    History agent.History
+    Runtime   agent.Runtime
+    Streaming agent.StreamingRuntime
+    History   agent.History
 }
 ```
 
@@ -49,7 +50,7 @@ type Config struct {
 - temperature若存在必须是finite number且在 `[0,2]`；具体Provider可进一步收紧；
 - max tokens若存在必须 `>0`；
 - max tool rounds默认8，必须 `>0`；一次 round是一条含ToolCalls的assistant response及其全部tool results；
-- streaming默认false；true时 `Streaming.Valid` 必须为true，否则 `New`失败；
+- streaming字段已弃用，仅为配置解析兼容保留，值不影响执行；`Run()` 使用 Complete，`Stream()` 使用 Streaming；
 - tool error mode：`result`（默认）或 `fail`；Context cancellation/deadline无论模式都直接失败。
 
 ## 4. Agent persistence envelope
@@ -144,14 +145,18 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ### 6.2 Model 调用
 
-- streaming=false使用`Model.Complete`；完整assistant response先通过role、`content.Validate`和ToolCalls校验；
-- streaming=true使用`Streaming.Stream`并以no-op handler消费增量；本组件不把模型文本或delta投影为通用Interaction；
-- Stream error立即停止并传播；
+- `Run()` 与 `Stream()` 共用 execute、Agent Interceptor、session gate、Prompt、Compactor、Tool loop和持久化逻辑；
+- `Run()` 使用 `Model.Complete`，`Stream()` 使用可选 `model.StreamingRuntime`；完整assistant response均通过role、`content.Validate`和ToolCalls校验；
+- Stream仅将非空text delta按Semantic映射成 `agent.StreamReasoningDelta` 或 `agent.StreamOutputDelta`；过滤part start/end、binary、未知semantic和所有非输出事件；
+- reasoning和output在每一轮均实时输出，包含随后调用工具的轮次；最终 `Result.Output` 仍以完整正式assistant response为准，不能拼接stream重建；reasoning不写Session；
+- Handler同步有序调用，错误原样返回并终止turn，不再派发事件或工具；Context贯穿模型请求和工具调用，已完成副作用不回滚；
+- nil handler返回 `agent.ErrNilStreamHandler`；缺少Streaming依赖返回 `agent.ErrStreamingUnsupported`，均在持久化前失败；下游 `model.ErrStreamingUnsupported` 同时保留两层sentinel，不进行Complete fallback；
+- 下游模型调用前user message已持久化，模型失败（含Provider不支持Streaming）仍遵循既有失败turn语义；
 - 最终assistant Message完成校验后Append，再加入本轮in-memory messages。
 
 ### 6.3 Tool loop
 
-若assistant没有ToolCalls，返回`agent.Result{Output: Message.Content}`。调用方通过Result和`agent.History`获取最终输出及持久化消息；流式观察和Tool执行观察需要未来独立的typed observer contract，不使用通用Interaction承载领域事件。
+若assistant没有ToolCalls，返回`agent.Result{Output: Message.Content}`。调用方通过Result和`agent.History`获取最终输出及持久化消息；实时输出通过独立 `agent.StreamingRuntime` 暴露；Tool执行观察仍不属于该输出Contract，不使用通用Interaction承载领域事件。
 
 否则：
 
@@ -217,7 +222,7 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 ## 10. 测试与验收
 
 - exactDependencies/Exports/New contract；
-- Config与optional streaming组合；
+- Config兼容、独立Streaming导出、optional streaming缺失/nil handler、Run/Stream多轮等价、reasoning/output顺序、Tool过滤、Handler错误和取消；
 - agent.message v1多模态golden、opaque string byte-exact round trip和corruption/version；
 - Input与Attachments顺序、inline media单次导入、Asset Reference持久化及history恢复不读取asset；
 - trailing incomplete Tool round的prefix识别、synthetic recovery、recovery中断续跑和禁止自动重试；

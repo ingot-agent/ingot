@@ -272,7 +272,7 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
 	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.0\n\t%s %s\n)\n\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.1\n\t%s %s\n)\n\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "replace %s => %s\n", plugin.module, filepath.ToSlash(filepath.Join(repositoryRoot, "plugins", plugin.directory)))
 	}

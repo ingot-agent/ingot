@@ -82,6 +82,13 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 		}
 	}
 	assertEveryPluginHasConfigTable(t, home, result.Plugins)
+	configData, err := os.ReadFile(home.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(configData), "streaming =") {
+		t.Fatalf("config.toml advertises the ignored agent streaming key:\n%s", configData)
+	}
 }
 
 func TestInitIsIdempotentAndForceOverwrites(t *testing.T) {

@@ -28,9 +28,11 @@ type streamChoice struct {
 }
 
 type streamDelta struct {
-	Role      string            `json:"role"`
-	Content   *string           `json:"content"`
-	ToolCalls []streamToolDelta `json:"tool_calls"`
+	Role             string            `json:"role"`
+	Content          *string           `json:"content"`
+	ReasoningContent *string           `json:"reasoning_content"`
+	Reasoning        *string           `json:"reasoning"`
+	ToolCalls        []streamToolDelta `json:"tool_calls"`
 }
 
 type streamToolDelta struct {
@@ -44,14 +46,15 @@ type streamToolDelta struct {
 }
 
 type streamAccumulator struct {
-	provider     string
-	model        string
-	role         model.Role
-	content      strings.Builder
-	contentOpen  bool
-	toolCalls    []tool.Call
-	finishReason string
-	usage        model.Usage
+	provider      string
+	model         string
+	role          model.Role
+	content       strings.Builder
+	contentOpen   bool
+	reasoningOpen bool
+	toolCalls     []tool.Call
+	finishReason  string
+	usage         model.Usage
 }
 
 func (p *provider) Stream(ctx context.Context, request model.Request, handler model.StreamHandler) (model.Response, error) {
@@ -78,6 +81,13 @@ func (p *provider) Stream(ctx context.Context, request model.Request, handler mo
 }
 
 func (p *provider) decodeStream(ctx context.Context, response *http.Response, handler model.StreamHandler) (model.Response, error) {
+	consumer := handler
+	handler = func(event model.StreamEvent) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return consumer(event)
+	}
 	limited := &io.LimitedReader{R: response.Body, N: int64(p.maxResponseBytes) + 1}
 	reader := bufio.NewReader(limited)
 	dataLines := make([]string, 0, 1)
@@ -158,6 +168,9 @@ func (p *provider) decodeStream(ctx context.Context, response *http.Response, ha
 	if err := accumulator.finish(handler); err != nil {
 		return model.Response{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return model.Response{}, err
+	}
 	return accumulator.response()
 }
 
@@ -189,6 +202,26 @@ func (a *streamAccumulator) add(chunk streamResponse, handler model.StreamHandle
 			return protocolError("invalid or conflicting stream role %q", role)
 		}
 		a.role = role
+	}
+	// Some compatible endpoints expose an alias. Prefer reasoning_content
+	// when both are present to avoid duplicating the same reasoning text.
+	reasoning := choice.Delta.ReasoningContent
+	if reasoning == nil {
+		reasoning = choice.Delta.Reasoning
+	}
+	if reasoning != nil && *reasoning != "" {
+		if !utf8.ValidString(*reasoning) {
+			return protocolError("stream reasoning delta is invalid UTF-8")
+		}
+		if !a.reasoningOpen {
+			if err := handler(model.StreamEvent{Kind: model.StreamPartStart, PartKind: content.KindText, Semantic: model.StreamSemanticReasoning}); err != nil {
+				return err
+			}
+			a.reasoningOpen = true
+		}
+		if err := handler(model.StreamEvent{Kind: model.StreamPartDelta, Semantic: model.StreamSemanticReasoning, TextDelta: *reasoning}); err != nil {
+			return err
+		}
 	}
 	if choice.Delta.Content != nil {
 		if !utf8.ValidString(*choice.Delta.Content) {
@@ -249,6 +282,11 @@ func (a *streamAccumulator) add(chunk streamResponse, handler model.StreamHandle
 }
 
 func (a *streamAccumulator) finish(handler model.StreamHandler) error {
+	if a.reasoningOpen {
+		if err := handler(model.StreamEvent{Kind: model.StreamPartEnd, Semantic: model.StreamSemanticReasoning}); err != nil {
+			return err
+		}
+	}
 	if !a.contentOpen {
 		return nil
 	}

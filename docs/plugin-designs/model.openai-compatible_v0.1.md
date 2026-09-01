@@ -106,6 +106,8 @@ Provider 不在 v0.1 自动 retry。重试、fallback和速率策略应由 Model
 - `[DONE]` 必须是单个 data payload（允许字段值两侧协议空白），出现后结束；body EOF 前未出现 `[DONE]` 是 protocol error；
 - `max_response_bytes` 限制整个 streaming response 的原始读取字节数，包含 SSE framing，不只限制单个 event；超限立即关闭 body并返回 `ResponseLimitError`；
 - 每个 text delta 同步调用 `StreamHandler`，严格保持交付顺序；
+- `delta.reasoning_content`（优先）或 `delta.reasoning`（前者为null/缺失时的别名）映射为 `StreamSemanticReasoning`；两字段同时存在不重复输出；`delta.content` 映射为默认 `StreamSemanticContent`，不从普通文本推断reasoning；
+- 每种semantic使用独立的text part（index=0），start/delta/end均携带semantic；同一chunk同时包含reasoning和content时先发送reasoning，跨chunk保留到达顺序并允许交错；reasoning不累积进最终Response；
 - handler 返回 error 时立即停止读取、关闭 body并原样向上传递；
 - 首个 chunk 交付后任何网络/解析错误直接返回，不 retry；v0.1 整体不自动 retry，因此自然满足边界；
 - 普通 data event 必须是单个 JSON object；有 choice 的 chunk 只接受一个 `index=0` choice，usage-only final chunk可以使用 empty choices；
@@ -113,7 +115,7 @@ Provider 不在 v0.1 自动 retry。重试、fallback和速率策略应由 Model
 - 累积 role、content、finish reason和 tool-call delta，最终构造完整 `model.Response`；Response.Provider 固定为 Named Provider name，Response.Model 使用 stream 中一致的非空 model；
 - malformed SSE、invalid UTF-8、oversize event、invalid tool arguments 或提前 EOF 返回 protocol error；
 - Complete 和 Stream 在 Context cancel 时主动 close body；因 close 唤醒的阻塞读取必须归一化为 Context error；
-- 最终 response 的 Message 与已交付 delta一致；usage 缺失时保持 zero value。
+- 最终 response 的 Message.Content 与已交付Content delta一致，排除transient reasoning；usage 缺失时保持 zero value。
 
 ## 6. 并发、生命周期和错误
 

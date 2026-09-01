@@ -74,7 +74,7 @@ Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或改写
 - `Messages`、`Tools`、`Stop`、所有 RawMessage和指针字段递归深拷贝，避免默认填充或恶意 Interceptor修改 caller aggregate；复制必须保留 `nil` 与“非 nil 空值”的 presence 差异，不能把 caller 明确提供的空 slice/RawMessage折叠为 `nil`；
 - 只有 terminal 实际调用 Provider 后才执行来源归一化：`Response.Provider` 强制设为最终选中的 Named Provider，`Response.Model` 非空时保留 Provider报告的实际模型，空时填入最终 Request.Model；
 - terminal成功响应必须具有assistant role、非空Provider/Model、通过`content.Validate`的Content、非负且满足`TotalTokens == InputTokens + OutputTokens`的Usage；每个ToolCall必须有非空且合法UTF-8的ID/Name和合法JSON Arguments，否则包装`ErrInvalidResponse`；
-- Stream逐part验证start/delta/end序列，text只接受UTF-8 text delta，media只接受data delta；最终重建Content必须与Provider返回的final Message.Content byte-exact一致；
+- Stream按Semantic分别验证连续part index和start/delta/end序列，两种semantic可交错；Content text只接受UTF-8 text delta，media只接受data delta，最终重建Content必须与Provider返回的final Message.Content byte-exact一致；Reasoning仅接受UTF-8 text，不累积、不写入final Content，但仍检查完整part生命周期；未知Semantic被拒绝；
 - Interceptor short-circuit 返回的 Response 不冒充某次 Provider调用，不填充或覆盖其 Provider/Model，只做 ownership deep-copy；
 - Response aggregate 在返回前归一化为独立值，Provider或Interceptor在返回后不得影响 caller持有的数据。
 
