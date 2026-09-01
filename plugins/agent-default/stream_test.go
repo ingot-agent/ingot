@@ -13,6 +13,7 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -166,8 +167,9 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 				if mode == "model error" {
 					return model.Response{}, providerErr
 				}
-				if callCtx != ctx {
-					t.Fatal("context was replaced")
+				correlation, ok := observation.CorrelationFromContext(callCtx)
+				if !ok || correlation.SessionID != "s" || correlation.TurnID == "" || correlation.RoundIndex != 0 {
+					t.Fatalf("model context correlation=%#v ok=%v", correlation, ok)
 				}
 				// Deliberately ignore callback errors: the agent must still abort.
 				_ = handler(model.StreamEvent{Kind: model.StreamPartDelta, TextDelta: "stop"})

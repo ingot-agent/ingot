@@ -1,7 +1,7 @@
 # `agent.default` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`agent.Runtime`、`agent.StreamingRuntime`、`agent.History`
+> Exports：`observation.Consumer`、`agent.Runtime`、`agent.StreamingRuntime`、`agent.History`
 
 ## 1. 定位
 
@@ -10,6 +10,20 @@
 它只通过 Runtime chokepoint调用 Model和Tool，不直接持有具体 Provider/Tool；Session storage format由 `session.Store` 所属 Plugin管理，但 Agent拥有其写入的 Entry kind/payload schema。
 
 ## 2. Component Contract
+
+`agent.default` 是 composite plugin。Observation component：
+
+```go
+type Dependencies struct {
+    Observers []observation.Observer
+}
+
+type Exports struct {
+    Consumer observation.Consumer
+}
+```
+
+Agent runtime component：
 
 ```go
 type Dependencies struct {
@@ -21,6 +35,8 @@ type Dependencies struct {
     Prompt       prompt.Renderer
     Compactor    ingotabi.Optional[contextwindow.Compactor]
     Interceptors []agent.Interceptor
+    RoundInterceptors []agent.RoundInterceptor
+    Observation  observation.Consumer
 }
 
 type Exports struct {
@@ -160,7 +176,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 否则：
 
-1. round计数，超过上限返回`ErrMaxToolRounds`；
+1. round计数，超过上限返回`ErrMaxToolRounds`；每轮在模型调用前建立 `agent.Round` lifecycle；
 2. ToolCalls按模型返回slice顺序串行执行，保持确定性和依赖关系；
 3. 每个Call要求ID和Name非空、Arguments valid JSON；
 4. 调用`Tools.Call(ctx, call)`；
@@ -182,6 +198,14 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 Agent Interceptors按MANY stable order组合，第一个最外层。Interceptor short-circuit时不进入turn terminal，也不持久化user message，但仍处于same-session gate内。Interceptor可以替换Input，但不得改变SessionID；Runtime在进入terminal前拒绝SessionID改写，避免绕过按原始Session获取的serialization gate。
 
+Round Interceptors同样按MANY stable order组合，在完整、已校验的原始 Model Response 产生后、任何 canonical assistant persistence 与 Tool side effect 之前运行。`Invocation`、`Response`、`SessionID` 和 `Index` 是不可改写 execution facts；`Decision` 可按 contract 修改并在 terminal 再校验。Policy 可在调用 `next` 前返回 error 拒绝整轮。成功 short-circuit 因无法代表 durable canonical round 而返回 `agent.ErrInvalidRoundResult`；已执行 terminal 的 `RoundResult` 也不得被 after logic 改写。
+
+## 7.1 Execution Observation
+
+Turn、Round、Model 和 Tool 均产生 `Started`/`Finished`，Model stream 与 Tool 实现可产生 Progress。Turn 在基本输入校验和 Turn ID 生成后、等待 same-session gate 前开始，因此排队等待与等待取消属于 Turn lifecycle。Round 在 compaction/model 前开始；Model success 只表示完整 validated Response 已返回；Tool success 只表示 `tool.Runtime.Call` 返回 valid Result。后续 policy 或 persistence 失败只改变父 scope status，不改写已完成 child scope。
+
+Observation Hub 从 Context 补全 SessionID、TurnID、RoundIndex、ToolCallID，分配 per-Turn Sequence 与 materialization time，并同步 deep-copy 后入本地队列。Observer callback 在后台串行派发；每个 Observer 收到独立 snapshot，panic 被隔离。Structural lifecycle event 不丢弃；pending progress 超过内部上限时允许 best-effort drop。Cleanup 停止接收并 drain 已入队事件，受 cleanup Context 限制。
+
 所有从Store、Prompt、Model、Tool得到的aggregate在保留前deep-copy；传给Interceptor和下游的Request不复用caller Turn中的Attachments、Content、ToolCalls或JSON bytes。
 
 建议sentinel：
@@ -200,8 +224,8 @@ ErrCorruptHistory
 
 - 不同Session Turn并发；同Session全chain严格有序；
 - Runtime registry/config/dependencies在startup后immutable；
-- v0.1不启动后台任务，所有Model/Tool调用属于Run调用栈；
-- 成功`New`返回nil Cleanup；
+- Agent runtime本身不启动后台任务，所有Model/Tool调用属于Run调用栈；Observation component 启动一个 ordered delivery worker；
+- Agent runtime `New` 返回nil Cleanup；Observation component Cleanup drain queue；
 - Runtime不清理其Dependencies，它们由generated wiring各自Cleanup。
 
 ## 9. Manifest
@@ -211,6 +235,10 @@ manifest_version = 1
 name = "agent.default"
 ingot = ">=0.3.0 <0.4.0"
 config_package = "."
+
+[[components]]
+name = "observation"
+package = "./observation"
 
 [[components]]
 name = "default"
@@ -231,9 +259,11 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 - ToolCalls顺序、tool error result/fail、max rounds；
 - Complete/Stream、response校验和Stream error；
 - optional Compactor absent/typed-nil、完整Request输入、每轮调用、replacement ownership和错误传播；
-- Agent Interceptor outermost/short-circuit；
+- Agent Interceptor outermost/short-circuit；Round Interceptor mutation/reject/result integrity；
+- Turn/Round/Model/Tool lifecycle、Model/Tool progress、correlation、per-Turn sequence、failure status与partial persistence boundary；
+- Observer异步非阻塞、panic isolation、callback serialization、deep ownership和cleanup drain；
 - same-session ticket order、等待取消、cross-session并发；
 - partial failure不回滚已提交Entry；
 - aggregate ownership和race test。
 
-未来可增加独立的agent observer contract承载stream delta、ToolCall/ToolResult和token/turn usage；这些领域事件不投影成通用Interaction。
+Outcome/accounting仍不由 Observation 代替；aggregate usage 与最终 accounting 留待独立 contract。

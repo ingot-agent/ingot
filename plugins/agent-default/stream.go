@@ -8,6 +8,7 @@ import (
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 )
 
 func (r *runtime) Stream(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Result, error) {
@@ -20,11 +21,22 @@ func (r *runtime) Stream(ctx context.Context, turn agent.Turn, handler agent.Str
 	return r.execute(ctx, turn, handler)
 }
 
-func (r *runtime) invokeModel(ctx context.Context, request model.Request, handler agent.StreamHandler) (model.Response, error) {
+func (r *runtime) invokeModel(ctx context.Context, request model.Request, handler agent.StreamHandler) (response model.Response, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return model.Response{}, err
 	}
-	var response model.Response
+	r.observation.Emit(ctx, observation.ModelStarted{Request: request})
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.observation.Emit(ctx, observation.ModelFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panic(recovered)
+		}
+		finished := observation.ModelFinished{Status: terminalStatus(resultErr), Error: errorText(resultErr)}
+		if resultErr == nil {
+			finished.Response = &response
+		}
+		r.observation.Emit(ctx, finished)
+	}()
 	var err error
 	if handler == nil {
 		response, err = r.model.Complete(ctx, request)
@@ -37,6 +49,7 @@ func (r *runtime) invokeModel(ctx context.Context, request model.Request, handle
 		}
 		var handlerErr error
 		response, err = r.streaming.Value.Stream(ctx, request, func(event model.StreamEvent) error {
+			r.observation.Emit(ctx, observation.ModelProgress{Progress: event})
 			if handlerErr != nil {
 				return handlerErr
 			}

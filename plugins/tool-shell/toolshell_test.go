@@ -8,12 +8,26 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/tool"
 )
+
+type recordingObservation struct {
+	mu      sync.Mutex
+	details []observation.Detail
+}
+
+func (r *recordingObservation) Emit(_ context.Context, detail observation.Detail) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.details = append(r.details, detail)
+}
 
 func testShell(t *testing.T, cfg Config) tool.Tool {
 	t.Helper()
@@ -53,6 +67,38 @@ func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 	}
 	if !strings.HasPrefix(resultText(result), "exit_code: 0\nstdout:\n") || !strings.Contains(resultText(result), "hello") || !strings.Contains(resultText(result), "\nstderr:\n") {
 		t.Fatalf("unexpected shell result: %q", resultText(result))
+	}
+}
+
+func TestShellEmitsStdoutAndStderrProgressOnly(t *testing.T) {
+	workingDirectory, _ := os.Getwd()
+	consumer := &recordingObservation{}
+	exports, _, err := New(context.Background(), Config{
+		WorkingDirectory: workingDirectory,
+		Shell:            testShellPath(),
+	}, Dependencies{Observation: ingotabi.Some[observation.Consumer](consumer)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := `printf output; printf problem >&2`
+	if runtime.GOOS == "windows" {
+		command = `echo output & echo problem 1>&2`
+	}
+	if _, err := invokeShell(t, exports.Tools[0], command); err != nil {
+		t.Fatal(err)
+	}
+	consumer.mu.Lock()
+	defer consumer.mu.Unlock()
+	channels := map[string]bool{}
+	for _, detail := range consumer.details {
+		progress, ok := detail.(observation.ToolProgress)
+		if !ok {
+			t.Fatalf("shell emitted lifecycle detail %#v", detail)
+		}
+		channels[progress.Progress.Channel] = true
+	}
+	if !channels["stdout"] || !channels["stderr"] {
+		t.Fatalf("progress channels=%v details=%#v", channels, consumer.details)
 	}
 }
 

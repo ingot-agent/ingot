@@ -13,7 +13,9 @@ Plugin 本身不绕过 `tool.Runtime` 调用，不内置交互审批，也不提
 ## 2. Component Contract
 
 ```go
-type Dependencies struct{}
+type Dependencies struct {
+    Observation ingotabi.Optional[observation.Consumer]
+}
 
 type Exports struct {
     Tools []tool.Tool
@@ -85,6 +87,8 @@ stderr:
 
 stdout/stderr 分别捕获，最终按固定顺序呈现。`max_output_bytes` 在构造采集器时固定分配为 stdout 配额 `ceil(limit/2)` 和 stderr 配额 `floor(limit/2)`；任一流超过自己的配额时截断，并在实际被截断的流中显式添加 truncation marker。若截断点落在 UTF-8 多字节字符中间，丢弃该流末尾不完整的编码字节后再添加 marker，不能由截断制造非法 UTF-8。采集器继续 drain 两条 pipe，不得静默丢弃。stdout 与 stderr reader 的完成和错误必须分别归因，不能按 goroutine 完成顺序推断来源。无 exit code 的启动或 Context 错误直接返回 error。
 
+若 Graph 提供 Observation Consumer，每次 stdout/stderr write 同时产生 `ToolProgress`，Channel 分别为 opaque local convention `stdout` / `stderr`。有效 UTF-8 chunk 使用 text Content；其他 bytes 使用 `application/octet-stream` file Content，避免制造非法 text。Progress 是 transient fact，不改变 fixed final Result envelope；Tool lifecycle Started/Finished 仍由 Agent Runtime 统一拥有，`tool.shell` 不重复产生。
+
 ## 5. 执行与生命周期
 
 - 使用 `exec.CommandContext` 的等价平台实现，并终止平台 containment primitive 内的进程；Unix 使用独立 process group，脱离 process group 的 daemon 不在 v0.1 强保证范围内；Windows 以 suspended 状态创建进程，加入带 `KILL_ON_JOB_CLOSE` 的 Job Object 后再恢复主线程，子进程不得在进入 Job 前开始执行；
@@ -129,6 +133,7 @@ package = "."
 - working directory 和 environment isolation；
 - 空 environment 不继承父进程变量，显式 `inherit_env` allowlist 正常传递；
 - stdout/stderr/exit code；
+- stdout/stderr ToolProgress channel、Content ownership，且不重复 lifecycle event；
 - invalid arguments 在 Runtime schema validation 阶段被拒绝；
 - timeout、caller cancellation 和平台 containment primitive 回收；
 - output truncation marker；

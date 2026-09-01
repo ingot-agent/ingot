@@ -4,5 +4,9 @@ ingot = ">=0.3.0 <0.4.0"
 config_package = "."
 
 [[components]]
+name = "observation"
+package = "./observation"
+
+[[components]]
 name = "default"
 package = "."

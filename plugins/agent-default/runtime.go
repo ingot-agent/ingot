@@ -17,6 +17,7 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -54,14 +55,16 @@ type Config struct {
 
 // Dependencies contains the runtime chokepoints used by an agent turn.
 type Dependencies struct {
-	Model        model.Runtime
-	Streaming    ingotabi.Optional[model.StreamingRuntime]
-	Tools        tool.Runtime
-	Store        session.Store
-	Assets       asset.Store
-	Prompt       prompt.Renderer
-	Compactor    ingotabi.Optional[contextwindow.Compactor]
-	Interceptors []agent.Interceptor
+	Model             model.Runtime
+	Streaming         ingotabi.Optional[model.StreamingRuntime]
+	Tools             tool.Runtime
+	Store             session.Store
+	Assets            asset.Store
+	Prompt            prompt.Renderer
+	Compactor         ingotabi.Optional[contextwindow.Compactor]
+	Interceptors      []agent.Interceptor
+	RoundInterceptors []agent.RoundInterceptor
+	Observation       observation.Consumer
 }
 
 // Exports contains independent turn, output streaming, and history capabilities.
@@ -72,21 +75,23 @@ type Exports struct {
 }
 
 type runtime struct {
-	model         model.Runtime
-	streaming     ingotabi.Optional[model.StreamingRuntime]
-	tools         tool.Runtime
-	store         session.Store
-	assets        asset.Store
-	prompt        prompt.Renderer
-	compactor     ingotabi.Optional[contextwindow.Compactor]
-	interceptors  []agent.Interceptor
-	gates         *gateManager
-	provider      string
-	modelName     string
-	temperature   *float64
-	maxTokens     *int
-	maxToolRounds int
-	toolErrorMode string
+	model             model.Runtime
+	streaming         ingotabi.Optional[model.StreamingRuntime]
+	tools             tool.Runtime
+	store             session.Store
+	assets            asset.Store
+	prompt            prompt.Renderer
+	compactor         ingotabi.Optional[contextwindow.Compactor]
+	interceptors      []agent.Interceptor
+	roundInterceptors []agent.RoundInterceptor
+	observation       observation.Consumer
+	gates             *gateManager
+	provider          string
+	modelName         string
+	temperature       *float64
+	maxTokens         *int
+	maxToolRounds     int
+	toolErrorMode     string
 }
 
 // New validates immutable dependencies and creates an independent runtime.
@@ -133,9 +138,21 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		}
 		interceptors[i] = interceptor
 	}
+	roundInterceptors := make([]agent.RoundInterceptor, len(deps.RoundInterceptors))
+	for i, interceptor := range deps.RoundInterceptors {
+		if isNil(interceptor) {
+			return Exports{}, nil, fmt.Errorf("round_interceptors[%d] is nil: %w", i, ErrInvalidConfig)
+		}
+		roundInterceptors[i] = interceptor
+	}
+	observationConsumer := deps.Observation
+	if isNil(observationConsumer) {
+		observationConsumer = discardObservation{}
+	}
 	instance := &runtime{
 		model: deps.Model, streaming: deps.Streaming, tools: deps.Tools, store: deps.Store, assets: deps.Assets,
 		prompt: deps.Prompt, compactor: deps.Compactor, interceptors: interceptors,
+		roundInterceptors: roundInterceptors, observation: observationConsumer,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
 		maxToolRounds: maxRounds, toolErrorMode: mode,

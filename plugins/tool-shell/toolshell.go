@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -54,8 +56,11 @@ type Config struct {
 	InheritEnv       []string          `toml:"inherit_env"`
 }
 
-// Dependencies is intentionally empty: approval is supplied by a runtime interceptor.
-type Dependencies struct{}
+// Dependencies contains optional passive execution observation. Approval is
+// supplied independently by a runtime interceptor.
+type Dependencies struct {
+	Observation ingotabi.Optional[observation.Consumer]
+}
 
 // Exports contains the shell_exec tool.
 type Exports struct{ Tools []tool.Tool }
@@ -68,10 +73,13 @@ type normalizedConfig struct {
 	environment      []string
 }
 
-type shellTool struct{ config normalizedConfig }
+type shellTool struct {
+	config      normalizedConfig
+	observation observation.Consumer
+}
 
 // New validates the fixed process boundary and creates shell_exec.
-func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.shell: %w", ErrInvalidConfig)
 	}
@@ -82,7 +90,14 @@ func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cle
 	if err != nil {
 		return Exports{}, nil, err
 	}
-	return Exports{Tools: []tool.Tool{&shellTool{config: normalized}}}, nil, nil
+	if deps.Observation.Valid && isNil(deps.Observation.Value) {
+		return Exports{}, nil, fmt.Errorf("observation dependency is typed nil: %w", ErrInvalidConfig)
+	}
+	var consumer observation.Consumer
+	if deps.Observation.Valid {
+		consumer = deps.Observation.Value
+	}
+	return Exports{Tools: []tool.Tool{&shellTool{config: normalized, observation: consumer}}}, nil, nil
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
@@ -244,8 +259,8 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 	command.Env = make([]string, len(t.config.environment))
 	copy(command.Env, t.config.environment)
 	collector := newOutputCollector(t.config.maxOutputBytes)
-	command.Stdout = outputWriter{collector: collector}
-	command.Stderr = outputWriter{collector: collector, stderr: true}
+	command.Stdout = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stdout"}
+	command.Stderr = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stderr", stderr: true}
 	controller, err := newProcessController(command)
 	if err != nil {
 		return tool.Result{}, err
@@ -434,12 +449,24 @@ func trimIncompleteUTF8Suffix(value string) string {
 }
 
 type outputWriter struct {
-	collector *outputCollector
-	stderr    bool
+	ctx         context.Context
+	collector   *outputCollector
+	observation observation.Consumer
+	channel     string
+	stderr      bool
 }
 
 func (w outputWriter) Write(p []byte) (int, error) {
 	w.collector.write(w.stderr, p)
+	if w.observation != nil && len(p) > 0 {
+		progress := tool.Progress{Channel: w.channel}
+		if utf8.Valid(p) {
+			progress.Content = content.FromText(string(p))
+		} else {
+			progress.Content = content.Content{content.Inline(content.KindFile, "application/octet-stream", w.channel, p)}
+		}
+		w.observation.Emit(w.ctx, observation.ToolProgress{Progress: progress})
+	}
 	return len(p), nil
 }
 
@@ -463,3 +490,16 @@ func decodeObject(raw json.RawMessage, target any) error {
 }
 
 var _ tool.Tool = (*shellTool)(nil)
+
+func isNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
