@@ -22,5 +22,3 @@ use (
 )
 
 replace github.com/ingot-agent/ingot-abi => ../ingot-abi
-
-replace github.com/ingot-agent/sdk => ../sdk
