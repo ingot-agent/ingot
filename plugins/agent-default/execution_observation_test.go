@@ -79,12 +79,6 @@ func (t *progressTools) Call(ctx context.Context, _ tool.Call) (tool.Result, err
 	return tool.Result{Content: content.FromText("tool-ok")}, nil
 }
 
-type roundInterceptorFunc func(context.Context, agent.Round, pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error)
-
-func (f roundInterceptorFunc) Invoke(ctx context.Context, round agent.Round, next pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error) {
-	return f(ctx, round, next)
-}
-
 func TestExecutionObservationLifecycleProgressCorrelationAndSequence(t *testing.T) {
 	consumer := &recordingConsumer{}
 	models := &sequenceModel{responses: []model.Response{

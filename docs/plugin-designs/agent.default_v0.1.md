@@ -56,7 +56,7 @@ type Config struct {
     Model         string   `toml:"model"`
     Temperature   *float64 `toml:"temperature"`
     MaxTokens     *int     `toml:"max_tokens"`
-    MaxToolRounds int      `toml:"max_tool_rounds"`
+    MaxRounds     int      `toml:"max_rounds"`
     Streaming     bool     `toml:"streaming"`
     ToolErrorMode string   `toml:"tool_error_mode"`
 }
@@ -65,7 +65,7 @@ type Config struct {
 - Provider/Model 可以为空，由 `model.runtime` default处理；
 - temperature若存在必须是finite number且在 `[0,2]`；具体Provider可进一步收紧；
 - max tokens若存在必须 `>0`；
-- max tool rounds默认8，必须 `>0`；一次 round是一条含ToolCalls的assistant response及其全部tool results；
+- max rounds默认8，必须 `>0`；每次模型调用及其随后可能发生的assistant持久化与tool执行构成一个round；最后一个允许的round不得再请求Tool；
 - streaming字段已弃用，仅为配置解析兼容保留，值不影响执行；`Run()` 使用 Complete，`Stream()` 使用 Streaming；
 - tool error mode：`result`（默认）或 `fail`；Context cancellation/deadline无论模式都直接失败。
 
@@ -117,7 +117,7 @@ Payload exact semantic shape：
 
 ### 4.1 尾部未完成 Tool round
 
-Assistant tool-call message 必须先于对应 Tool result 持久化，因此进程取消、Tool error、达到 round上限或崩溃可能留下**仅位于 Agent history 尾部**的未完成 round。这不是 Store corruption，Agent按以下规则恢复：
+Assistant tool-call message 必须先于对应 Tool result 持久化，因此进程取消、Tool error或崩溃可能留下**仅位于 Agent history 尾部**的未完成 round。这不是 Store corruption，Agent按以下规则恢复：
 
 - 已存在的 Tool message 必须按 assistant `tool_calls` 顺序构成从0开始的连续前缀，`tool_call_id`逐项匹配；
 - 只允许最后一个 assistant tool-call round缺少后缀结果；缺少中间结果后又出现其他 Agent message、未知call id、重复结果或多个未完成round仍返回`ErrCorruptHistory`；
@@ -176,7 +176,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 否则：
 
-1. round计数，超过上限返回`ErrMaxToolRounds`；每轮在模型调用前建立 `agent.Round` lifecycle；
+1. round计数，达到上限且最后一轮仍请求Tool时返回`ErrMaxRounds`；每轮在模型调用前建立 `agent.Round` lifecycle；
 2. ToolCalls按模型返回slice顺序串行执行，保持确定性和依赖关系；
 3. 每个Call要求ID和Name非空、Arguments valid JSON；
 4. 调用`Tools.Call(ctx, call)`；
@@ -212,7 +212,7 @@ Observation Hub 从 Context 补全 SessionID、TurnID、RoundIndex、ToolCallID�
 
 ```go
 ErrInvalidTurn
-ErrMaxToolRounds
+ErrMaxRounds
 ErrInvalidModelMessage
 ErrUnsupportedEntryVersion
 ErrCorruptHistory

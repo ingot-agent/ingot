@@ -9,7 +9,6 @@ import (
 	"io"
 	"unicode/utf8"
 
-	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -299,24 +298,6 @@ func cloneModelRequest(request model.Request) model.Request {
 	request.MaxTokens = copyInt(request.MaxTokens)
 	request.Stop = append([]string(nil), request.Stop...)
 	return request
-}
-
-func cloneModelResponse(response model.Response) model.Response {
-	response.Message = cloneMessage(response.Message)
-	return response
-}
-
-func cloneRound(round agent.Round) agent.Round {
-	round.Invocation = cloneModelRequest(round.Invocation)
-	round.Response = cloneModelResponse(round.Response)
-	round.Decision = cloneMessage(round.Decision)
-	return round
-}
-
-func cloneRoundResult(result agent.RoundResult) agent.RoundResult {
-	result.Decision = cloneMessage(result.Decision)
-	result.ToolMessages = cloneMessages(result.ToolMessages)
-	return result
 }
 
 func cloneMessages(messages []model.Message) []model.Message {

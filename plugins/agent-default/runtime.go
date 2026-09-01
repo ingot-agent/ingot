@@ -23,15 +23,21 @@ import (
 	"github.com/ingot-agent/sdk/tool"
 )
 
-const defaultMaxToolRounds = 8
+const defaultMaxRounds = 8
 
 var (
 	// ErrInvalidConfig indicates invalid limits or dependency combinations.
 	ErrInvalidConfig = errors.New("invalid agent.default config")
 	// ErrInvalidTurn indicates an empty session ID or invalid user input.
 	ErrInvalidTurn = errors.New("invalid agent turn")
-	// ErrMaxToolRounds indicates that the model requested another tool round beyond the configured bound.
-	ErrMaxToolRounds = errors.New("maximum tool rounds exceeded")
+	// ErrMaxRounds indicates that another round cannot be completed within the configured turn limit.
+	ErrMaxRounds = agent.ErrMaxRounds
+	// ErrInvalidRound indicates that a round interceptor changed immutable execution facts.
+	ErrInvalidRound = agent.ErrInvalidRound
+	// ErrInvalidRoundDecision indicates that a round interceptor produced an invalid canonical decision.
+	ErrInvalidRoundDecision = agent.ErrInvalidRoundDecision
+	// ErrInvalidRoundResult indicates an invalid short-circuit result or a post-commit result rewrite.
+	ErrInvalidRoundResult = agent.ErrInvalidRoundResult
 	// ErrInvalidModelMessage indicates an invalid assistant response.
 	ErrInvalidModelMessage = errors.New("invalid model message")
 	// ErrUnsupportedEntryVersion indicates an unknown agent.message payload version.
@@ -42,11 +48,11 @@ var (
 
 // Config controls model selection, generation, and tool behavior.
 type Config struct {
-	Provider      string   `toml:"provider"`
-	Model         string   `toml:"model"`
-	Temperature   *float64 `toml:"temperature"`
-	MaxTokens     *int     `toml:"max_tokens"`
-	MaxToolRounds int      `toml:"max_tool_rounds"`
+	Provider    string   `toml:"provider"`
+	Model       string   `toml:"model"`
+	Temperature *float64 `toml:"temperature"`
+	MaxTokens   *int     `toml:"max_tokens"`
+	MaxRounds   int      `toml:"max_rounds"`
 	// Deprecated: retained for config compatibility and ignored. Use the
 	// Streaming export's Stream method to request incremental output.
 	Streaming     bool   `toml:"streaming"`
@@ -90,7 +96,7 @@ type runtime struct {
 	modelName         string
 	temperature       *float64
 	maxTokens         *int
-	maxToolRounds     int
+	maxRounds         int
 	toolErrorMode     string
 }
 
@@ -117,12 +123,12 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if cfg.MaxTokens != nil && *cfg.MaxTokens < 1 {
 		return Exports{}, nil, fmt.Errorf("max_tokens must be positive: %w", ErrInvalidConfig)
 	}
-	maxRounds := cfg.MaxToolRounds
+	maxRounds := cfg.MaxRounds
 	if maxRounds == 0 {
-		maxRounds = defaultMaxToolRounds
+		maxRounds = defaultMaxRounds
 	}
 	if maxRounds < 1 {
-		return Exports{}, nil, fmt.Errorf("max_tool_rounds must be positive: %w", ErrInvalidConfig)
+		return Exports{}, nil, fmt.Errorf("max_rounds must be positive: %w", ErrInvalidConfig)
 	}
 	mode := cfg.ToolErrorMode
 	if mode == "" {
@@ -155,7 +161,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		roundInterceptors: roundInterceptors, observation: observationConsumer,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
-		maxToolRounds: maxRounds, toolErrorMode: mode,
+		maxRounds: maxRounds, toolErrorMode: mode,
 	}
 	return Exports{Runtime: instance, Streaming: instance, History: instance}, nil, nil
 }
@@ -187,7 +193,7 @@ func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error
 }
 
 func validateAssistant(message model.Message) error {
-	if message.Role != model.RoleAssistant {
+	if message.Role != model.RoleAssistant || message.ToolCallID != "" || !utf8.ValidString(message.Name) {
 		return ErrInvalidModelMessage
 	}
 	if err := content.Validate(message.Content); err != nil {
