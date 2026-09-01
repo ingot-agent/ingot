@@ -12,6 +12,7 @@ import (
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -63,10 +64,15 @@ func (contextCompactor) Compact(context.Context, contextwindow.CompactionRequest
 	return contextwindow.CompactionResult{}, nil
 }
 
+type observationConsumer struct{}
+
+func (observationConsumer) Emit(context.Context, observation.Detail) {}
+
 func TestComponentContractIncludesOptionalCompactor(t *testing.T) {
 	exports, cleanup, err := agentdefault.New(context.Background(), agentdefault.Config{}, agentdefault.Dependencies{
 		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Assets: assetStore{}, Prompt: promptRenderer{},
-		Compactor: ingotabi.Some[contextwindow.Compactor](contextCompactor{}),
+		Compactor:   ingotabi.Some[contextwindow.Compactor](contextCompactor{}),
+		Observation: observationConsumer{}, RoundInterceptors: []agent.RoundInterceptor{roundInterceptor{}},
 	})
 	if err != nil {
 		t.Fatal(err)

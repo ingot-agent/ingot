@@ -9,12 +9,14 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/tool"
 )
 
-func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Result, error) {
+func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (result agent.Result, err error) {
 	if ctx == nil {
 		return agent.Result{}, fmt.Errorf("run agent: nil context: %w", ErrInvalidTurn)
 	}
@@ -27,6 +29,23 @@ func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.St
 	if err := ctx.Err(); err != nil {
 		return agent.Result{}, err
 	}
+	turnID, err := newTurnID()
+	if err != nil {
+		return agent.Result{}, fmt.Errorf("generate turn id: %w", err)
+	}
+	ctx = observation.WithCorrelation(ctx, observation.Correlation{SessionID: turn.SessionID, TurnID: turnID})
+	r.observation.Emit(ctx, observation.TurnStarted{Turn: turn})
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.observation.Emit(ctx, observation.TurnFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panic(recovered)
+		}
+		finished := observation.TurnFinished{Status: terminalStatus(err), Error: errorText(err)}
+		if err == nil {
+			finished.Result = &result
+		}
+		r.observation.Emit(ctx, finished)
+	}()
 	release, err := r.gates.acquire(ctx, string(turn.SessionID))
 	if err != nil {
 		return agent.Result{}, err
@@ -61,7 +80,7 @@ func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.St
 	next := pipeline.Compose[agent.Turn, agent.Result](terminal, r.interceptors...)
 	owned := turn
 	owned.Attachments = content.CloneAttachments(turn.Attachments)
-	result, err := next(ctx, owned)
+	result, err = next(ctx, owned)
 	if handlerErr != nil {
 		return agent.Result{}, handlerErr
 	}
@@ -71,7 +90,8 @@ func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.St
 	if err := content.Validate(result.Output); err != nil {
 		return agent.Result{}, fmt.Errorf("agent result: %w: %w", ErrInvalidModelMessage, err)
 	}
-	return agent.Result{Output: content.Clone(result.Output)}, nil
+	result = agent.Result{Output: content.Clone(result.Output)}
+	return result, nil
 }
 
 func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Result, error) {
@@ -104,11 +124,7 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.St
 	messages = cloneMessages(messages)
 	definitions := cloneDefinitions(r.tools.Definitions())
 	for roundIndex := 0; roundIndex < r.maxRounds; roundIndex++ {
-		round, err := r.invokeRoundModel(ctx, turn.SessionID, roundIndex, messages, definitions, handler)
-		if err != nil {
-			return agent.Result{}, err
-		}
-		result, err := r.executeRound(ctx, round, roundIndex == r.maxRounds-1)
+		result, err := r.observeRound(ctx, turn.SessionID, roundIndex, messages, definitions, handler, roundIndex == r.maxRounds-1)
 		if err != nil {
 			return agent.Result{}, err
 		}
@@ -119,6 +135,40 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.St
 		}
 	}
 	return agent.Result{}, ErrMaxRounds
+}
+
+func (r *runtime) observeRound(
+	ctx context.Context,
+	sessionID session.ID,
+	index int,
+	messages []model.Message,
+	definitions []tool.Definition,
+	handler agent.StreamHandler,
+	lastAllowed bool,
+) (result agent.RoundResult, resultErr error) {
+	correlation, _ := observation.CorrelationFromContext(ctx)
+	correlation.RoundIndex = index
+	correlation.ToolCallID = ""
+	ctx = observation.WithCorrelation(ctx, correlation)
+	r.observation.Emit(ctx, observation.RoundStarted{})
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.observation.Emit(ctx, observation.RoundFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panic(recovered)
+		}
+		finished := observation.RoundFinished{Status: terminalStatus(resultErr), Error: errorText(resultErr)}
+		if resultErr == nil {
+			finished.Result = &result
+		}
+		r.observation.Emit(ctx, finished)
+	}()
+
+	round, err := r.invokeRoundModel(ctx, sessionID, index, messages, definitions, handler)
+	if err != nil {
+		return agent.RoundResult{}, err
+	}
+	result, resultErr = r.executeRound(ctx, round, lastAllowed)
+	return result, resultErr
 }
 
 func (r *runtime) compactRequest(ctx context.Context, sessionID session.ID, request model.Request) (model.Request, error) {

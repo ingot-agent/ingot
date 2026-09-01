@@ -252,10 +252,11 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		}
 	}
 	type pluginSpec struct {
-		directory string
-		module    string
-		name      string
-		state     bool
+		directory  string
+		module     string
+		name       string
+		state      bool
+		components []LockedComponent
 	}
 	plugins := []pluginSpec{
 		{directory: "asset-local", module: "github.com/ingot-agent/asset-local", name: "asset.local", state: true},
@@ -265,14 +266,17 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		{directory: "tool-runtime", module: "github.com/ingot-agent/tool-runtime", name: "tool.runtime"},
 		{directory: "prompt-default", module: "github.com/ingot-agent/prompt-default", name: "prompt.default"},
 		{directory: "session-jsonl", module: "github.com/ingot-agent/session-jsonl", name: "session.jsonl", state: true},
-		{directory: "agent-default", module: "github.com/ingot-agent/agent-default", name: "agent.default"},
+		{directory: "agent-default", module: "github.com/ingot-agent/agent-default", name: "agent.default", components: []LockedComponent{
+			{Name: "observation", Package: "./observation"},
+			{Name: "default", Package: "."},
+		}},
 	}
 	var goMod strings.Builder
 	goMod.WriteString("module ingot.local/multimodal-skeleton\n\ngo 1.24.0\n\nrequire (\n")
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
 	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.1\n\t%s %s\n)\n\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.3\n\t%s %s\n)\n\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "replace %s => %s\n", plugin.module, filepath.ToSlash(filepath.Join(repositoryRoot, "plugins", plugin.directory)))
 	}
@@ -302,7 +306,11 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		},
 	}
 	for _, plugin := range plugins {
-		locked := LockedPlugin{ID: plugin.module, Name: plugin.name, SourceKind: "dev", ManifestDigest: digest, RootPackage: ".", Components: []LockedComponent{{Name: "default", Package: "."}}}
+		components := plugin.components
+		if len(components) == 0 {
+			components = []LockedComponent{{Name: "default", Package: "."}}
+		}
+		locked := LockedPlugin{ID: plugin.module, Name: plugin.name, SourceKind: "dev", ManifestDigest: digest, RootPackage: ".", Components: components}
 		if plugin.state {
 			locked.HasState = true
 			locked.StateSchemaVersion = 1

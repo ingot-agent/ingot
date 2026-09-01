@@ -9,6 +9,7 @@ import (
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -137,7 +138,7 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		result, callErr := r.tools.Call(ctx, cloneCall(call))
+		result, callErr := r.executeTool(ctx, call)
 		if callErr != nil {
 			if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
 				return nil, callErr
@@ -147,9 +148,6 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 			}
 			result = tool.Result{Content: content.FromText(safeToolError(callErr))}
 		}
-		if err := content.Validate(result.Content); err != nil {
-			return nil, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
-		}
 		message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
 		message, err := r.appendMessage(ctx, sessionID, message)
 		if err != nil {
@@ -158,6 +156,33 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 		messages = append(messages, message)
 	}
 	return messages, nil
+}
+
+func (r *runtime) executeTool(ctx context.Context, call tool.Call) (result tool.Result, resultErr error) {
+	correlation, _ := observation.CorrelationFromContext(ctx)
+	correlation.ToolCallID = call.ID
+	ctx = observation.WithCorrelation(ctx, correlation)
+	r.observation.Emit(ctx, observation.ToolStarted{Call: call})
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			r.observation.Emit(ctx, observation.ToolFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panic(recovered)
+		}
+		finished := observation.ToolFinished{Status: terminalStatus(resultErr), Error: errorText(resultErr)}
+		if resultErr == nil {
+			finished.Result = &result
+		}
+		r.observation.Emit(ctx, finished)
+	}()
+	result, resultErr = r.tools.Call(ctx, cloneCall(call))
+	if resultErr != nil {
+		return tool.Result{}, resultErr
+	}
+	if err := content.Validate(result.Content); err != nil {
+		return tool.Result{}, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
+	}
+	result.Content = content.Clone(result.Content)
+	return result, nil
 }
 
 func validateRoundIdentity(original, selected agent.Round) error {
