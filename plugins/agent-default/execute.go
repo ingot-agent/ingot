@@ -2,7 +2,6 @@ package agentdefault
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
-	"github.com/ingot-agent/sdk/tool"
 )
 
 func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Result, error) {
@@ -105,57 +103,22 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.St
 	}
 	messages = cloneMessages(messages)
 	definitions := cloneDefinitions(r.tools.Definitions())
-	rounds := 0
-	for {
-		request := model.Request{
-			Provider: r.provider, Model: r.modelName, Messages: cloneMessages(messages), Tools: cloneDefinitions(definitions),
-			Temperature: copyFloat(r.temperature), MaxTokens: copyInt(r.maxTokens),
-		}
-		request, err = r.compactRequest(ctx, turn.SessionID, request)
+	for roundIndex := 0; roundIndex < r.maxRounds; roundIndex++ {
+		round, err := r.invokeRoundModel(ctx, turn.SessionID, roundIndex, messages, definitions, handler)
 		if err != nil {
 			return agent.Result{}, err
 		}
-		response, err := r.invokeModel(ctx, request, handler)
+		result, err := r.executeRound(ctx, round, roundIndex == r.maxRounds-1)
 		if err != nil {
 			return agent.Result{}, err
 		}
-		response.Message, err = r.appendMessage(ctx, turn.SessionID, response.Message)
-		if err != nil {
-			return agent.Result{}, fmt.Errorf("append assistant message: %w", err)
-		}
-		messages = append(messages, cloneMessage(response.Message))
-		if len(response.Message.ToolCalls) == 0 {
-			return agent.Result{Output: content.Clone(response.Message.Content)}, nil
-		}
-		rounds++
-		if rounds > r.maxToolRounds {
-			return agent.Result{}, ErrMaxToolRounds
-		}
-		for _, call := range response.Message.ToolCalls {
-			if err := ctx.Err(); err != nil {
-				return agent.Result{}, err
-			}
-			result, callErr := r.tools.Call(ctx, cloneCall(call))
-			if callErr != nil {
-				if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
-					return agent.Result{}, callErr
-				}
-				if r.toolErrorMode == "fail" {
-					return agent.Result{}, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
-				}
-				result = tool.Result{Content: content.FromText(safeToolError(callErr))}
-			}
-			if err := content.Validate(result.Content); err != nil {
-				return agent.Result{}, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
-			}
-			message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
-			message, err = r.appendMessage(ctx, turn.SessionID, message)
-			if err != nil {
-				return agent.Result{}, fmt.Errorf("append tool result for %q: %w", call.ID, err)
-			}
-			messages = append(messages, message)
+		messages = append(messages, cloneMessage(result.Decision))
+		messages = append(messages, cloneMessages(result.ToolMessages)...)
+		if len(result.Decision.ToolCalls) == 0 {
+			return agent.Result{Output: content.Clone(result.Decision.Content)}, nil
 		}
 	}
+	return agent.Result{}, ErrMaxRounds
 }
 
 func (r *runtime) compactRequest(ctx context.Context, sessionID session.ID, request model.Request) (model.Request, error) {
