@@ -288,33 +288,6 @@ func (p *provider) Complete(ctx context.Context, request model.Request) (model.R
 	return decodeComplete(raw, p.name)
 }
 
-// Capabilities reports the stable subset of Chat Completions content handled
-// by this adapter. The returned aggregate is caller-owned.
-func (p *provider) Capabilities(ctx context.Context, modelName string) (model.Capabilities, error) {
-	if ctx == nil {
-		return model.Capabilities{}, fmt.Errorf("nil context: %w", model.ErrCapabilitiesUnavailable)
-	}
-	if err := ctx.Err(); err != nil {
-		return model.Capabilities{}, err
-	}
-	if modelName == "" {
-		return model.Capabilities{}, fmt.Errorf("empty model: %w", model.ErrModelNotFound)
-	}
-	if len(p.models) != 0 {
-		if _, ok := p.models[modelName]; !ok {
-			return model.Capabilities{}, fmt.Errorf("model %q is not allowed by provider %q: %w", modelName, p.name, model.ErrModelNotFound)
-		}
-	}
-	return model.Capabilities{
-		Input: []model.ContentCapability{
-			{Kind: content.KindText, Roles: []model.Role{model.RoleSystem, model.RoleUser, model.RoleAssistant, model.RoleTool}},
-			{Kind: content.KindImage, Sources: []content.SourceKind{content.SourceInline, content.SourceURI, content.SourceAsset}, Roles: []model.Role{model.RoleUser}},
-		},
-		Output:          []model.ContentCapability{{Kind: content.KindText, Roles: []model.Role{model.RoleAssistant}}},
-		StreamingOutput: []content.Kind{content.KindText},
-	}, nil
-}
-
 func (p *provider) readAsset(ctx context.Context, reference asset.Reference) ([]byte, error) {
 	info, err := p.assets.Stat(ctx, reference)
 	if err != nil {
@@ -500,6 +473,5 @@ func isNil(value any) bool {
 }
 
 var (
-	_ model.StreamingProvider  = (*provider)(nil)
-	_ model.CapabilityProvider = (*provider)(nil)
+	_ model.StreamingProvider = (*provider)(nil)
 )

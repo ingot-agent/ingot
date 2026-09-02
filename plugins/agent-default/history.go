@@ -18,7 +18,7 @@ import (
 const (
 	agentMessageKind    = "agent.message"
 	agentMessageVersion = 1
-	interruptedContent  = "tool error [interrupted]: previous execution was interrupted; result unknown"
+	interruptedContent  = "tool result unavailable [interrupted]: previous execution was interrupted; outcome unknown"
 )
 
 type persistedMessage struct {
@@ -114,12 +114,21 @@ type trailingRound struct {
 }
 
 func (r *runtime) loadHistory(ctx context.Context, id session.ID) ([]model.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	entries, err := r.store.Load(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("load session %q: %w", id, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	messages := make([]model.Message, 0, len(entries))
 	for i, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if entry.Kind != agentMessageKind {
 			continue
 		}
@@ -139,6 +148,9 @@ func (r *runtime) loadHistory(ctx context.Context, id session.ID) ([]model.Messa
 }
 
 func (r *runtime) recoverTrailingRound(ctx context.Context, id session.ID, history []model.Message) ([]model.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	round, err := inspectHistory(history)
 	if err != nil {
 		return nil, err
@@ -218,14 +230,23 @@ func validateStoredMessage(message model.Message) error {
 }
 
 func (r *runtime) appendMessage(ctx context.Context, id session.ID, message model.Message) (model.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Message{}, err
+	}
 	materialized, err := r.materializeContent(ctx, message.Content)
 	if err != nil {
+		return model.Message{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return model.Message{}, err
 	}
 	message = cloneMessage(message)
 	message.Content = materialized
 	payload, err := encodePersistedMessage(message)
 	if err != nil {
+		return model.Message{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return model.Message{}, err
 	}
 	if err := r.store.Append(ctx, id, session.Entry{Kind: agentMessageKind, Version: agentMessageVersion, Payload: payload}); err != nil {

@@ -1,11 +1,11 @@
 # `model.runtime` Plugin v0.1 设计方案
 
 > 状态：Implemented v0.1
-> Exports：`model.Runtime`、`model.StreamingRuntime`、`model.RequestResolver`、`model.CapabilityResolver`
+> Exports：`model.Runtime`、`model.StreamingRuntime`、`model.RequestResolver`
 
 ## 1. 定位与 Contract
 
-`model.runtime` 是 Model complete/stream 的统一 chokepoint，负责 Named Provider registry、默认选择、独立 typed interceptor chain和 streaming capability check。
+`model.runtime` 是 Model complete/stream 的统一 chokepoint，负责 Named Provider registry、默认选择、独立 typed interceptor chain和真实stream operation的mode rejection。
 
 ```go
 type Dependencies struct {
@@ -15,10 +15,9 @@ type Dependencies struct {
 }
 
 type Exports struct {
-    Runtime      model.Runtime
-    Streaming    model.StreamingRuntime
-    Resolver     model.RequestResolver
-    Capabilities model.CapabilityResolver
+    Runtime   model.Runtime
+    Streaming model.StreamingRuntime
+    Resolver  model.RequestResolver
 }
 ```
 
@@ -41,8 +40,6 @@ type Config struct {
 Provider/Model，并验证最终选择；不会调用 Provider 或执行 Model
 Interceptor。它与 Complete/Stream 共用同一份 immutable provider/default
 registry，供 `usage.default` 等调用前能力使用。
-
-`Capabilities.ResolveCapabilities`复用相同的默认值物化与Provider lookup，再要求选中Provider实现`model.CapabilityProvider`；缺失时返回`model.ErrCapabilitiesUnavailable`。Runtime验证Provider返回的kind/source/role枚举并deep-copy aggregate，调用方修改结果不得污染后续查询。
 
 ## 3. Startup
 
@@ -70,7 +67,7 @@ Interceptor 位于 Provider lookup 外层，因此可以审计、拒绝或改写
 - Complete 调用 `Provider.Complete`；
 - Stream 要求选中 Value 实现 `model.StreamingProvider`，否则返回 `model.ErrStreamingUnsupported`；
 - StreamHandler error由 Provider/chain原样传播；
-- 不在 Runtime 隐式 fallback或 retry；相关能力通过显式 Interceptor实现；
+- Runtime自身不fallback或retry；`model.ErrStreamingUnsupported`仅表示明确的streaming mode rejection，Agent可在尚未交付Agent Event时按其Contract fallback；
 - `Messages`、`Tools`、`Stop`、所有 RawMessage和指针字段递归深拷贝，避免默认填充或恶意 Interceptor修改 caller aggregate；复制必须保留 `nil` 与“非 nil 空值”的 presence 差异，不能把 caller 明确提供的空 slice/RawMessage折叠为 `nil`；
 - 只有 terminal 实际调用 Provider 后才执行来源归一化：`Response.Provider` 强制设为最终选中的 Named Provider，`Response.Model` 非空时保留 Provider报告的实际模型，空时填入最终 Request.Model；
 - terminal成功响应必须具有assistant role、非空Provider/Model、通过`content.Validate`的Content、非负且满足`TotalTokens == InputTokens + OutputTokens`的Usage；每个ToolCall必须有非空且合法UTF-8的ID/Name和合法JSON Arguments，否则包装`ErrInvalidResponse`；
@@ -97,6 +94,6 @@ name = "default"
 package = "."
 ```
 
-测试覆盖Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Resolver默认值物化/校验/不调用Provider、Capabilities lookup/validation/ownership、Interceptor改写后不二次补默认值、unknown provider/model、multimodal request/response deep copy与presence保留、错误路径partial response ownership、terminal响应校验、complete/stream interceptor完整trace、stream part状态机/final一致性、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发Provider选择和race test。
+测试覆盖Provider empty/duplicate/typed nil、Interceptor typed nil、default resolution、Resolver默认值物化/校验/不调用Provider、Interceptor改写后不二次补默认值、unknown provider/model、multimodal request/response deep copy与presence保留、错误路径partial response ownership、terminal响应校验、complete/stream interceptor完整trace、stream part状态机/final一致性、short-circuit不做来源归一化、terminal来源归一化、streaming unsupported、handler error、并发Provider选择和race test。
 
 验收要求 Complete 与 Stream 行为对称但 chain独立；Runtime 不包含任何 OpenAI-specific logic。

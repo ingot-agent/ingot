@@ -51,6 +51,9 @@ func (r *runtime) execute(ctx context.Context, turn agent.Turn, handler agent.St
 		return agent.Result{}, err
 	}
 	defer release()
+	if err := ctx.Err(); err != nil {
+		return agent.Result{}, err
+	}
 
 	// Retain consumer failure even if a model or turn interceptor swallows it
 	// or attempts to invoke its terminal again.
@@ -102,6 +105,9 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.St
 	if err != nil {
 		return agent.Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return agent.Result{}, err
+	}
 	history, err = r.recoverTrailingRound(ctx, turn.SessionID, history)
 	if err != nil {
 		return agent.Result{}, err
@@ -117,9 +123,15 @@ func (r *runtime) runTurn(ctx context.Context, turn agent.Turn, handler agent.St
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("append user message: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return agent.Result{}, err
+	}
 	messages, err := r.prompt.Render(ctx, prompt.Request{SessionID: turn.SessionID, Input: content.Clone(user.Content), History: cloneMessages(history)})
 	if err != nil {
 		return agent.Result{}, fmt.Errorf("render prompt: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return agent.Result{}, err
 	}
 	messages = cloneMessages(messages)
 	definitions := cloneDefinitions(r.tools.Definitions())
@@ -175,12 +187,18 @@ func (r *runtime) compactRequest(ctx context.Context, sessionID session.ID, requ
 	if !r.compactor.Valid {
 		return request, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return model.Request{}, err
+	}
 	result, err := r.compactor.Value.Compact(ctx, contextwindow.CompactionRequest{
 		SessionID:  sessionID,
 		Invocation: cloneModelRequest(request),
 	})
 	if err != nil {
 		return model.Request{}, fmt.Errorf("compact model context: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return model.Request{}, err
 	}
 	request.Messages = cloneMessages(result.Messages)
 	return request, nil

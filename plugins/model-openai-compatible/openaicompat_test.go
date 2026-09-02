@@ -344,32 +344,6 @@ func TestCompleteCancellationClosesBlockedAssetReader(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesAreModelScopedAndCallerOwned(t *testing.T) {
-	provider := newProvider(t, openaicompat.ProviderConfig{Name: "p", BaseURL: "https://example.test", Models: []string{"vision"}}, clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
-		return nil, errors.New("must not be called")
-	})).(model.CapabilityProvider)
-	first, err := provider.Capabilities(context.Background(), "vision")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first.Input) != 2 || first.Input[1].Kind != content.KindImage || len(first.Input[1].Sources) != 3 || len(first.StreamingOutput) != 1 {
-		t.Fatalf("capabilities=%#v", first)
-	}
-	first.Input[1].Sources[0] = 0
-	first.Input[1].Roles[0] = "mutated"
-	first.StreamingOutput[0] = 0
-	second, err := provider.Capabilities(context.Background(), "vision")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Input[1].Sources[0] != content.SourceInline || second.Input[1].Roles[0] != model.RoleUser || second.StreamingOutput[0] != content.KindText {
-		t.Fatalf("caller mutation leaked into capabilities: %#v", second)
-	}
-	if _, err := provider.Capabilities(context.Background(), "missing"); !errors.Is(err, model.ErrModelNotFound) {
-		t.Fatalf("missing model error=%v", err)
-	}
-}
-
 func TestCompleteDecodesStringToolArgumentsIntoSDKRawJSON(t *testing.T) {
 	client := clientFunc(func(_ context.Context, _ *http.Request) (*http.Response, error) {
 		return response(http.StatusOK, `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function","function":{"name":"fs_list","arguments":"{\"path\":\".\"}"}}]},"finish_reason":"tool_calls"}]}`), nil

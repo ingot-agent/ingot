@@ -149,7 +149,7 @@ func TestRunStreamEquivalentAcrossToolRounds(t *testing.T) {
 }
 
 func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
-	for _, mode := range []string{"handler", "canceled", "unsupported", "model error"} {
+	for _, mode := range []string{"handler", "canceled", "model error"} {
 		t.Run(mode, func(t *testing.T) {
 			store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 			tools := &fakeTools{}
@@ -161,9 +161,6 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 			attempts := 0
 			streaming := modelStreamFunc(func(callCtx context.Context, _ model.Request, handler model.StreamHandler) (model.Response, error) {
 				attempts++
-				if mode == "unsupported" {
-					return model.Response{}, model.ErrStreamingUnsupported
-				}
 				if mode == "model error" {
 					return model.Response{}, providerErr
 				}
@@ -189,15 +186,12 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 				}
 				return consumerErr
 			})
-			wantErr := map[string]error{"handler": consumerErr, "canceled": context.Canceled, "unsupported": agent.ErrStreamingUnsupported, "model error": providerErr}[mode]
+			wantErr := map[string]error{"handler": consumerErr, "canceled": context.Canceled, "model error": providerErr}[mode]
 			if !errors.Is(err, wantErr) || attempts != 1 || len(tools.calls) != 0 || len(models.requests) != 0 {
 				t.Fatalf("err=%v attempts=%d tools=%v", err, attempts, tools.calls)
 			}
 			if mode == "handler" && (err != consumerErr || count != 1) {
 				t.Fatalf("handler error identity/count: %v/%d", err, count)
-			}
-			if mode == "unsupported" && !errors.Is(err, model.ErrStreamingUnsupported) {
-				t.Fatal("lost model error")
 			}
 			entries, _ := store.Load(context.Background(), "s")
 			if len(entries) != 1 {
@@ -212,7 +206,7 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 	}
 }
 
-func TestStreamRejectsMissingCapabilityAndNilHandlerBeforeSideEffects(t *testing.T) {
+func TestStreamUsesCompleteWhenStreamingDependencyIsMissing(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("ok")}}}}
 	exports, _, err := New(context.Background(), Config{Streaming: true}, Dependencies{Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
@@ -223,14 +217,12 @@ func TestStreamRejectsMissingCapabilityAndNilHandlerBeforeSideEffects(t *testing
 	if _, err := exports.Streaming.Stream(context.Background(), turn, nil); err != agent.ErrNilStreamHandler {
 		t.Fatalf("nil handler: %v", err)
 	}
-	if _, err := exports.Streaming.Stream(context.Background(), turn, func(agent.StreamEvent) error { return nil }); err != agent.ErrStreamingUnsupported {
-		t.Fatalf("unsupported: %v", err)
+	result, err := exports.Streaming.Stream(context.Background(), turn, func(agent.StreamEvent) error { return nil })
+	if err != nil || textValue(result.Output) != "ok" {
+		t.Fatalf("result=%#v error=%v", result, err)
 	}
-	if len(store.entries["s"]) != 0 || len(models.requests) != 0 {
-		t.Fatal("failed stream had side effects")
-	}
-	if _, err := exports.Runtime.Run(context.Background(), turn); err != nil {
-		t.Fatal(err)
+	if len(store.entries["s"]) != 2 || len(models.requests) != 1 {
+		t.Fatalf("entries=%d complete calls=%d", len(store.entries["s"]), len(models.requests))
 	}
 }
 

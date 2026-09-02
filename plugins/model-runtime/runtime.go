@@ -43,10 +43,9 @@ type Dependencies struct {
 // request resolver used by components that need the materialized provider and
 // model selection before invocation.
 type Exports struct {
-	Runtime      model.Runtime
-	Streaming    model.StreamingRuntime
-	Resolver     model.RequestResolver
-	Capabilities model.CapabilityResolver
+	Runtime   model.Runtime
+	Streaming model.StreamingRuntime
+	Resolver  model.RequestResolver
 }
 
 type runtime struct {
@@ -107,7 +106,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		providers: providers, defaultProvider: defaultProvider, defaultModel: cfg.DefaultModel,
 		interceptors: interceptors, streamInterceptors: streamInterceptors,
 	}
-	return Exports{Runtime: instance, Streaming: instance, Resolver: instance, Capabilities: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, Resolver: instance}, nil, nil
 }
 
 // ResolveRequest returns a caller-owned request with provider and model
@@ -131,35 +130,6 @@ func (r *runtime) ResolveRequest(ctx context.Context, request model.Request) (mo
 	return owned, nil
 }
 
-// ResolveCapabilities returns a caller-owned capability declaration using the
-// same provider and model defaulting rules as ResolveRequest.
-func (r *runtime) ResolveCapabilities(ctx context.Context, request model.CapabilityRequest) (model.Capabilities, error) {
-	if ctx == nil {
-		return model.Capabilities{}, errors.New("model capability resolver: nil context")
-	}
-	if err := ctx.Err(); err != nil {
-		return model.Capabilities{}, err
-	}
-	selected := model.Request{Provider: request.Provider, Model: request.Model}
-	r.applyDefaults(&selected)
-	provider, err := r.selectProvider(selected)
-	if err != nil {
-		return model.Capabilities{}, err
-	}
-	capabilityProvider, ok := provider.(model.CapabilityProvider)
-	if !ok || isNil(capabilityProvider) {
-		return model.Capabilities{}, fmt.Errorf("provider %q: %w", selected.Provider, model.ErrCapabilitiesUnavailable)
-	}
-	capabilities, err := capabilityProvider.Capabilities(ctx, selected.Model)
-	if err != nil {
-		return model.Capabilities{}, err
-	}
-	if err := validateCapabilities(capabilities); err != nil {
-		return model.Capabilities{}, err
-	}
-	return cloneCapabilities(capabilities), nil
-}
-
 func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Response, error) {
 	if ctx == nil {
 		return model.Response{}, errors.New("model runtime: nil context")
@@ -170,11 +140,17 @@ func (r *runtime) Complete(ctx context.Context, request model.Request) (model.Re
 	owned := cloneRequest(request)
 	r.applyDefaults(&owned)
 	terminal := func(callCtx context.Context, selected model.Request) (model.Response, error) {
+		if callCtx == nil {
+			return model.Response{}, errors.New("model runtime interceptor supplied nil context")
+		}
 		if err := validateRequest(selected); err != nil {
 			return model.Response{}, err
 		}
 		provider, err := r.selectProvider(selected)
 		if err != nil {
+			return model.Response{}, err
+		}
+		if err := callCtx.Err(); err != nil {
 			return model.Response{}, err
 		}
 		response, err := provider.Complete(callCtx, cloneRequest(selected))
@@ -214,6 +190,9 @@ func (r *runtime) Stream(ctx context.Context, request model.Request, handler mod
 	r.applyDefaults(&owned)
 	stream := newStreamValidator(handler)
 	terminal := model.StreamNext(func(callCtx context.Context, selected model.Request, selectedHandler model.StreamHandler) (model.Response, error) {
+		if callCtx == nil {
+			return model.Response{}, errors.New("model streaming interceptor supplied nil context")
+		}
 		if err := validateRequest(selected); err != nil {
 			return model.Response{}, err
 		}
@@ -224,6 +203,9 @@ func (r *runtime) Stream(ctx context.Context, request model.Request, handler mod
 		streaming, ok := provider.(model.StreamingProvider)
 		if !ok || isNil(streaming) {
 			return model.Response{}, fmt.Errorf("provider %q: %w", selected.Provider, model.ErrStreamingUnsupported)
+		}
+		if err := callCtx.Err(); err != nil {
+			return model.Response{}, err
 		}
 		response, err := streaming.Stream(callCtx, cloneRequest(selected), selectedHandler)
 		if err != nil {
@@ -380,52 +362,6 @@ func cloneMessage(message model.Message) model.Message {
 		message.ToolCalls[i] = tool.Call{ID: call.ID, Name: call.Name, Arguments: cloneRawMessage(call.Arguments)}
 	}
 	return message
-}
-
-func cloneCapabilities(value model.Capabilities) model.Capabilities {
-	result := model.Capabilities{StreamingOutput: slices.Clone(value.StreamingOutput)}
-	result.Input = cloneContentCapabilities(value.Input)
-	result.Output = cloneContentCapabilities(value.Output)
-	return result
-}
-
-func cloneContentCapabilities(value []model.ContentCapability) []model.ContentCapability {
-	if value == nil {
-		return nil
-	}
-	result := make([]model.ContentCapability, len(value))
-	for i, capability := range value {
-		result[i] = capability
-		result[i].Sources = slices.Clone(capability.Sources)
-		result[i].Roles = slices.Clone(capability.Roles)
-	}
-	return result
-}
-
-func validateCapabilities(value model.Capabilities) error {
-	for collectionName, collection := range map[string][]model.ContentCapability{"input": value.Input, "output": value.Output} {
-		for i, capability := range collection {
-			if !validContentKind(capability.Kind) {
-				return fmt.Errorf("provider %s capability[%d] has unknown kind %d: %w", collectionName, i, capability.Kind, model.ErrCapabilitiesUnavailable)
-			}
-			for j, source := range capability.Sources {
-				if source != content.SourceInline && source != content.SourceURI && source != content.SourceAsset {
-					return fmt.Errorf("provider %s capability[%d].sources[%d] is unknown: %w", collectionName, i, j, model.ErrCapabilitiesUnavailable)
-				}
-			}
-			for j, role := range capability.Roles {
-				if !validRole(role) {
-					return fmt.Errorf("provider %s capability[%d].roles[%d] is unknown: %w", collectionName, i, j, model.ErrCapabilitiesUnavailable)
-				}
-			}
-		}
-	}
-	for i, kind := range value.StreamingOutput {
-		if !validContentKind(kind) {
-			return fmt.Errorf("provider streaming_output[%d] has unknown kind %d: %w", i, kind, model.ErrCapabilitiesUnavailable)
-		}
-	}
-	return nil
 }
 
 func validContentKind(kind content.Kind) bool {
@@ -589,8 +525,7 @@ func isNil(value any) bool {
 }
 
 var (
-	_ model.Runtime            = (*runtime)(nil)
-	_ model.StreamingRuntime   = (*runtime)(nil)
-	_ model.RequestResolver    = (*runtime)(nil)
-	_ model.CapabilityResolver = (*runtime)(nil)
+	_ model.Runtime          = (*runtime)(nil)
+	_ model.StreamingRuntime = (*runtime)(nil)
+	_ model.RequestResolver  = (*runtime)(nil)
 )

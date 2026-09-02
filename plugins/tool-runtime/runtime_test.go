@@ -2,6 +2,7 @@ package toolruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -30,6 +31,24 @@ type recordingInterceptor struct {
 }
 
 type mutatingInterceptor struct{}
+
+type interceptorFunc func(context.Context, tool.Call, pipeline.Next[tool.Call, tool.Result]) (tool.Result, error)
+
+func (f interceptorFunc) Invoke(ctx context.Context, call tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+	return f(ctx, call, next)
+}
+
+type errorTool struct {
+	calls int
+	err   error
+}
+
+func (*errorTool) Definition() tool.Definition { return validDefinition("echo") }
+
+func (t *errorTool) Invoke(context.Context, tool.Call) (tool.Result, error) {
+	t.calls++
+	return tool.Result{Content: content.FromText("must be ignored")}, t.err
+}
 
 func (mutatingInterceptor) Invoke(ctx context.Context, call tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
 	for i := range call.Arguments {
@@ -170,5 +189,56 @@ func TestRuntimeRejectsInvalidDefinitions(t *testing.T) {
 		if !errors.Is(err, ErrInvalidDefinition) {
 			t.Fatalf("definition %#v error=%v", definition, err)
 		}
+	}
+}
+
+func TestRuntimeExposesReservedRejectionsOnlyBeforeDispatch(t *testing.T) {
+	for _, rejection := range []error{tool.ErrNotFound, tool.ErrInvalidArguments} {
+		t.Run(rejection.Error()+" from tool", func(t *testing.T) {
+			implementation := &errorTool{err: rejection}
+			exports, _, err := New(context.Background(), Config{}, Dependencies{Tools: []tool.Tool{implementation}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = exports.Runtime.Call(context.Background(), tool.Call{Name: "echo", Arguments: json.RawMessage(`{"x":"value"}`)})
+			if !errors.Is(err, ErrPostDispatchRejection) || errors.Is(err, rejection) || implementation.calls != 1 {
+				t.Fatalf("error=%v calls=%d", err, implementation.calls)
+			}
+		})
+
+		t.Run(rejection.Error()+" from interceptor after dispatch", func(t *testing.T) {
+			implementation := &fakeTool{definition: validDefinition("echo"), content: "ok"}
+			interceptor := interceptorFunc(func(ctx context.Context, call tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+				_, _ = next(ctx, call)
+				return tool.Result{}, rejection
+			})
+			exports, _, err := New(context.Background(), Config{}, Dependencies{
+				Tools: []tool.Tool{implementation}, Interceptors: []tool.Interceptor{interceptor},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = exports.Runtime.Call(context.Background(), tool.Call{Name: "echo", Arguments: json.RawMessage(`{"x":"value"}`)})
+			if !errors.Is(err, ErrPostDispatchRejection) || errors.Is(err, rejection) || implementation.calls != 1 {
+				t.Fatalf("error=%v calls=%d", err, implementation.calls)
+			}
+		})
+
+		t.Run(rejection.Error()+" from interceptor before dispatch", func(t *testing.T) {
+			implementation := &fakeTool{definition: validDefinition("echo"), content: "ok"}
+			interceptor := interceptorFunc(func(context.Context, tool.Call, pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+				return tool.Result{}, rejection
+			})
+			exports, _, err := New(context.Background(), Config{}, Dependencies{
+				Tools: []tool.Tool{implementation}, Interceptors: []tool.Interceptor{interceptor},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = exports.Runtime.Call(context.Background(), tool.Call{Name: "echo", Arguments: json.RawMessage(`{"x":"value"}`)})
+			if !errors.Is(err, rejection) || errors.Is(err, ErrPostDispatchRejection) || implementation.calls != 0 {
+				t.Fatalf("error=%v calls=%d", err, implementation.calls)
+			}
+		})
 	}
 }

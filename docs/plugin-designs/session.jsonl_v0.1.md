@@ -86,6 +86,8 @@ type Config struct {
 
 无论 durability policy 如何，成功 Append 都必须对本进程后续 `Load` 可见，并且不得暴露部分 JSON record。
 
+通用Store contract为：`Append == nil`表示definitely committed；任意non-nil error对caller都表示commit status unknown。Append返回时commit decision必须已经终结，之后开始且成功的Load必须能判定该entry是否进入durable history，禁止error返回后的异步晚提交。
+
 ## 5. State directory 与版本
 
 `New` 使用显式 host Dependency：
@@ -243,7 +245,7 @@ UpdatedAt => CreatedAt
 
 写操作需要处理 short write，只有全部 bytes 写完并满足 durability policy 才返回成功。
 
-如果写入、`Sync` 或 `Close` 阶段返回错误，record 可能已经存在，错误包装 `ErrCommitUnknown`；只有在打开文件前失败或明确未写入时，调用方才可以按 definitely-uncommitted 处理。
+如果写入、`Sync` 或 `Close` 阶段返回错误，record 可能已经存在，错误包装implementation-specific `ErrCommitUnknown`用于诊断。Agent Core不依赖该sentinel分类；任意Append error都立即停止当前execution且不自动retry，下一次执行只重新Load durable history。
 
 ### 8.3 `Load`
 

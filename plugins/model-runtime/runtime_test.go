@@ -88,21 +88,6 @@ func (p *eventStreamingProvider) Stream(_ context.Context, _ model.Request, hand
 	return p.response, nil
 }
 
-type capabilityProvider struct {
-	modelName    string
-	capabilities model.Capabilities
-	err          error
-}
-
-func (p *capabilityProvider) Complete(context.Context, model.Request) (model.Response, error) {
-	return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
-}
-
-func (p *capabilityProvider) Capabilities(_ context.Context, modelName string) (model.Capabilities, error) {
-	p.modelName = modelName
-	return p.capabilities, p.err
-}
-
 type streamInterceptorFunc func(context.Context, model.Request, model.StreamHandler, model.StreamNext) (model.Response, error)
 
 func (f streamInterceptorFunc) InvokeStream(ctx context.Context, request model.Request, handler model.StreamHandler, next model.StreamNext) (model.Response, error) {
@@ -277,50 +262,6 @@ func TestResolverMaterializesDefaultsWithoutInvocation(t *testing.T) {
 	}
 	if _, err := withoutDefault.Resolver.ResolveRequest(context.Background(), model.Request{Provider: "provider"}); !errors.Is(err, model.ErrModelNotFound) {
 		t.Fatalf("missing model error = %v", err)
-	}
-}
-
-func TestCapabilityResolverAppliesDefaultsAndReturnsOwnedData(t *testing.T) {
-	provider := &capabilityProvider{capabilities: model.Capabilities{
-		Input: []model.ContentCapability{{
-			Kind: content.KindImage, Sources: []content.SourceKind{content.SourceInline, content.SourceAsset}, Roles: []model.Role{model.RoleUser},
-		}},
-		Output:          []model.ContentCapability{{Kind: content.KindText, Roles: []model.Role{model.RoleAssistant}}},
-		StreamingOutput: []content.Kind{content.KindText},
-	}}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "vision"}, modelruntime.Dependencies{
-		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := exports.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provider.modelName != "vision" || len(first.Input) != 1 || len(first.Input[0].Sources) != 2 {
-		t.Fatalf("model=%q capabilities=%#v", provider.modelName, first)
-	}
-	first.Input[0].Sources[0] = 0
-	first.Input[0].Roles[0] = "mutated"
-	first.StreamingOutput[0] = 0
-	if provider.capabilities.Input[0].Sources[0] != content.SourceInline || provider.capabilities.Input[0].Roles[0] != model.RoleUser || provider.capabilities.StreamingOutput[0] != content.KindText {
-		t.Fatalf("resolver returned aliases to provider data: %#v", provider.capabilities)
-	}
-
-	plain, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
-		Providers: []ingotabi.Named[model.Provider]{{Name: "plain", Value: &fakeProvider{}}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := plain.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{}); !errors.Is(err, model.ErrCapabilitiesUnavailable) {
-		t.Fatalf("unavailable error=%v", err)
-	}
-
-	provider.capabilities.Input[0].Kind = 0
-	if _, err := exports.Capabilities.ResolveCapabilities(context.Background(), model.CapabilityRequest{}); !errors.Is(err, model.ErrCapabilitiesUnavailable) {
-		t.Fatalf("invalid capability error=%v", err)
 	}
 }
 

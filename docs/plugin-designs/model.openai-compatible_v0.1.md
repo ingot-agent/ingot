@@ -21,7 +21,7 @@ type Exports struct {
 }
 ```
 
-每个导出的 Value 实现 `model.StreamingProvider`和`model.CapabilityProvider`，因此也满足`model.Provider`。
+每个导出的 Value 实现 `model.StreamingProvider`，因此也满足`model.Provider`。
 
 ## 2. Config
 
@@ -83,7 +83,6 @@ Provider支持所有role的text以及user message中的image：
 - Asset读取先`Stat`校验大小，再受`asset_concurrency`限制执行`Open`，读取长度必须与immutable metadata一致，并在完成或Context取消时关闭body；
 - URI image只接受absolute `http`/`https` URI并原样传递；拒绝`file:`、裸路径、`data:`、非法UTF-8及其他scheme，防止绕过asset大小和MIME边界；
 - audio、video、file及非user image返回包装`content.ErrUnsupportedContent`，并携带message/part位置；
-- `Capabilities`报告上述稳定输入子集、assistant text输出和text streaming output；配置了model allowlist时同样按model scope校验。
 
 JSON mode、reasoning parameters和vendor extension仍需要新的typed Contract或明确extension map。
 
