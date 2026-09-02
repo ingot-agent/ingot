@@ -130,7 +130,8 @@ func TestCompleteMapsRequestHeadersAndResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text, ok := content.TextOnly(result.Message.Content); result.Provider != "primary" || result.Model != "actual-model" || !ok || text != "hello" {
+	if text, ok := content.TextOnly(result.Message.Content); result.Provider != "primary" || result.Model != "actual-model" ||
+		!ok || text != "hello" || !result.Usage.Reported || result.Usage.TotalTokens != 3 {
 		t.Fatalf("result=%#v", result)
 	}
 	if captured.URL.String() != "https://example.test/v1/chat/completions" {
@@ -142,6 +143,17 @@ func TestCompleteMapsRequestHeadersAndResponse(t *testing.T) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil || payload["stream"] != false || payload["model"] != "requested-model" {
 		t.Fatalf("payload=%s err=%v", body, err)
+	}
+}
+
+func TestCompletePreservesMissingUsageAsUnreported(t *testing.T) {
+	client := clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
+		return response(http.StatusOK, `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`), nil
+	})
+	provider := newProvider(t, openaicompat.ProviderConfig{Name: "p", BaseURL: "https://example.test"}, client)
+	result, err := provider.Complete(context.Background(), model.Request{Model: "m"})
+	if err != nil || result.Usage.Reported || result.Usage != (model.Usage{}) {
+		t.Fatalf("result=%#v err=%v", result, err)
 	}
 }
 
@@ -390,7 +402,8 @@ func TestStreamingDeliversOrderedTextAndRequiresDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, textOnly := content.TextOnly(result.Message.Content)
-	if strings.Join(chunks, "") != "hello" || !textOnly || text != "hello" || result.FinishReason != "stop" || result.Usage.TotalTokens != 2 {
+	if strings.Join(chunks, "") != "hello" || !textOnly || text != "hello" || result.FinishReason != "stop" ||
+		!result.Usage.Reported || result.Usage.TotalTokens != 2 {
 		t.Fatalf("chunks=%v result=%#v", chunks, result)
 	}
 	if len(events) != 4 || events[0] != model.StreamPartStart || events[1] != model.StreamPartDelta || events[2] != model.StreamPartDelta || events[3] != model.StreamPartEnd {

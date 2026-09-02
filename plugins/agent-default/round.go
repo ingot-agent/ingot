@@ -40,6 +40,7 @@ func (r *runtime) invokeRoundModel(
 	invocation := cloneModelRequest(request)
 	response, err := r.invokeModel(ctx, cloneModelRequest(request), handler)
 	if err != nil {
+		executionRecorderFrom(ctx).recordFailure(err, agent.FailureModel, &index, "")
 		return agent.Round{}, err
 	}
 	return agent.Round{
@@ -55,10 +56,13 @@ func (r *runtime) invokeRoundModel(
 // Interceptors that call next may inspect, but must not rewrite, its committed
 // result after next returns.
 func (r *runtime) executeRound(ctx context.Context, round agent.Round, lastAllowed bool) (agent.RoundResult, error) {
+	recorder := executionRecorderFrom(ctx)
 	if err := ctx.Err(); err != nil {
+		recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 		return agent.RoundResult{}, err
 	}
 	if round.Index < 0 || round.SessionID == "" || !reflect.DeepEqual(round.Decision, round.Response.Message) {
+		recorder.recordFailure(ErrInvalidRound, agent.FailureRoundControl, &round.Index, "")
 		return agent.RoundResult{}, ErrInvalidRound
 	}
 	original := cloneRound(round)
@@ -71,32 +75,40 @@ func (r *runtime) executeRound(ctx context.Context, round agent.Round, lastAllow
 	terminal := func(callCtx context.Context, selected agent.Round) (agent.RoundResult, error) {
 		if terminalCalled {
 			terminalErr = ErrInvalidRoundResult
+			recorder.recordFailure(terminalErr, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, terminalErr
 		}
 		terminalCalled = true
 		if callCtx == nil {
 			terminalErr = fmt.Errorf("nil round context: %w", ErrInvalidRound)
+			recorder.recordFailure(terminalErr, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, terminalErr
 		}
+		callCtx = restoreExecutionContext(callCtx, ctx, recorder)
 		if err := callCtx.Err(); err != nil {
 			terminalErr = err
+			recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, err
 		}
 		if err := validateRoundIdentity(original, selected); err != nil {
 			terminalErr = err
+			recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, err
 		}
 		if err := validateRoundDecisionMutation(original.Response.Message, selected.Decision); err != nil {
 			terminalErr = err
+			recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, err
 		}
 		if lastAllowed && len(selected.Decision.ToolCalls) != 0 {
 			terminalErr = ErrMaxRounds
+			recorder.recordFailure(terminalErr, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, terminalErr
 		}
 		assistant, err := r.appendMessage(callCtx, selected.SessionID, selected.Decision)
 		if err != nil {
 			terminalErr = fmt.Errorf("append assistant message: %w", err)
+			recorder.recordFailure(terminalErr, agent.FailureAssistantPersistence, &round.Index, "")
 			return agent.RoundResult{}, terminalErr
 		}
 		toolMessages, err := r.executeToolCalls(callCtx, selected.SessionID, assistant.ToolCalls)
@@ -113,24 +125,30 @@ func (r *runtime) executeRound(ctx context.Context, round agent.Round, lastAllow
 	next := pipeline.Compose[agent.Round, agent.RoundResult](terminal, r.roundInterceptors...)
 	result, err := next(ctx, cloneRound(round))
 	if err != nil {
+		recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 		return agent.RoundResult{}, err
 	}
 	if terminalErr != nil {
+		recorder.recordFailure(terminalErr, agent.FailureRoundControl, &round.Index, "")
 		return agent.RoundResult{}, terminalErr
 	}
 	if terminalCalled {
 		if committed == nil || !reflect.DeepEqual(result, *committed) {
+			recorder.recordFailure(ErrInvalidRoundResult, agent.FailureRoundControl, &round.Index, "")
 			return agent.RoundResult{}, ErrInvalidRoundResult
 		}
 		return cloneRoundResult(*committed), nil
 	}
 
 	if err := validateShortCircuitResult(result); err != nil {
+		recorder.recordFailure(err, agent.FailureRoundControl, &round.Index, "")
 		return agent.RoundResult{}, err
 	}
 	decision, err := r.appendMessage(ctx, round.SessionID, result.Decision)
 	if err != nil {
-		return agent.RoundResult{}, fmt.Errorf("append short-circuit assistant message: %w", err)
+		persistErr := fmt.Errorf("append short-circuit assistant message: %w", err)
+		recorder.recordFailure(persistErr, agent.FailureAssistantPersistence, &round.Index, "")
+		return agent.RoundResult{}, persistErr
 	}
 	return agent.RoundResult{Decision: decision}, nil
 }
@@ -139,6 +157,7 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 	messages := make([]model.Message, 0, len(calls))
 	for _, call := range calls {
 		if err := ctx.Err(); err != nil {
+			executionRecorderFrom(ctx).recordFailure(err, agent.FailureRoundControl, roundIndexFrom(ctx), "")
 			return nil, err
 		}
 		result, callErr := r.executeTool(ctx, call)
@@ -147,16 +166,20 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 				return nil, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
 			}
 			if err := ctx.Err(); err != nil {
+				executionRecorderFrom(ctx).recordFailure(err, agent.FailureTool, roundIndexFrom(ctx), call.ID)
 				return nil, err
 			}
 			result = tool.Result{Content: content.FromText(preDispatchToolResult(callErr))}
 		} else if err := ctx.Err(); err != nil {
+			executionRecorderFrom(ctx).recordFailure(err, agent.FailureTool, roundIndexFrom(ctx), call.ID)
 			return nil, err
 		}
 		message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
 		message, err := r.appendMessage(ctx, sessionID, message)
 		if err != nil {
-			return nil, fmt.Errorf("append tool result for %q: %w", call.ID, err)
+			persistErr := fmt.Errorf("append tool result for %q: %w", call.ID, err)
+			executionRecorderFrom(ctx).recordFailure(persistErr, agent.FailureToolResultPersistence, roundIndexFrom(ctx), call.ID)
+			return nil, persistErr
 		}
 		messages = append(messages, message)
 	}
@@ -167,24 +190,33 @@ func (r *runtime) executeTool(ctx context.Context, call tool.Call) (result tool.
 	correlation, _ := observation.CorrelationFromContext(ctx)
 	correlation.ToolCallID = call.ID
 	ctx = observation.WithCorrelation(ctx, correlation)
-	r.observation.Emit(ctx, observation.ToolStarted{Call: call})
+	recorder := executionRecorderFrom(ctx)
+	recorder.accounting.toolStarted()
+	recorder.emit(ctx, observation.ToolStarted{Call: call})
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			r.observation.Emit(ctx, observation.ToolFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panicErr := fmt.Errorf("%v", recovered)
+			recorder.recordFailure(panicErr, agent.FailureTool, &correlation.RoundIndex, call.ID)
+			recorder.emit(ctx, observation.ToolFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
 			panic(recovered)
 		}
 		finished := observation.ToolFinished{Status: terminalStatus(resultErr), Error: errorText(resultErr)}
 		if resultErr == nil {
 			finished.Result = &result
 		}
-		r.observation.Emit(ctx, finished)
+		recorder.emit(ctx, finished)
 	}()
 	result, resultErr = r.tools.Call(ctx, cloneCall(call))
 	if resultErr != nil {
+		if !errors.Is(resultErr, tool.ErrNotFound) && !errors.Is(resultErr, tool.ErrInvalidArguments) {
+			recorder.recordFailure(resultErr, agent.FailureTool, &correlation.RoundIndex, call.ID)
+		}
 		return tool.Result{}, resultErr
 	}
 	if err := content.Validate(result.Content); err != nil {
-		return tool.Result{}, fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
+		validationErr := fmt.Errorf("tool %q returned invalid content: %w", call.Name, err)
+		recorder.recordFailure(validationErr, agent.FailureTool, &correlation.RoundIndex, call.ID)
+		return tool.Result{}, validationErr
 	}
 	result.Content = content.Clone(result.Content)
 	return result, nil

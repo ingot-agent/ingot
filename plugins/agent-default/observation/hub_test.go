@@ -42,6 +42,10 @@ func TestHubSequencesClonesAndIsolatesObservers(t *testing.T) {
 			detail.Result.Content[0].Text = "mutated"
 		case observation.RoundFinished:
 			detail.Result.Decision.Content[0].Text = "mutated"
+		case observation.TurnFinished:
+			detail.Result.Output[0].Text = "mutated"
+			detail.Outcome.Accounting.Models[0].Model = "mutated"
+			*detail.Outcome.Failure.RoundIndex = 9
 		}
 		panic("observer failure")
 	})
@@ -74,7 +78,15 @@ func TestHubSequencesClonesAndIsolatesObservers(t *testing.T) {
 	exports.Consumer.Emit(ctx, observation.ModelFinished{Status: observation.StatusSucceeded, Response: &model.Response{Message: model.Message{Content: content.FromText("response")}}})
 	exports.Consumer.Emit(ctx, observation.ToolFinished{Status: observation.StatusSucceeded, Result: &tool.Result{Content: content.FromText("result")}})
 	exports.Consumer.Emit(ctx, observation.RoundFinished{Status: observation.StatusSucceeded, Result: &agent.RoundResult{Decision: model.Message{Content: content.FromText("decision")}}})
-	exports.Consumer.Emit(ctx, observation.TurnFinished{Status: observation.StatusSucceeded, Result: &agent.Result{Output: content.FromText("ok")}})
+	roundIndex := 1
+	exports.Consumer.Emit(ctx, observation.TurnFinished{
+		Status: observation.StatusSucceeded, Result: &agent.Result{Output: content.FromText("ok")},
+		Outcome: agent.Outcome{
+			Status: agent.OutcomeSucceeded,
+			Accounting: agent.Accounting{Models: []agent.ModelAccounting{{Provider: "p", Model: "m"}}},
+			Failure: &agent.Failure{Stage: agent.FailureModel, RoundIndex: &roundIndex},
+		},
+	})
 	if err := cleanup(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +110,11 @@ func TestHubSequencesClonesAndIsolatesObservers(t *testing.T) {
 		second[6].Detail.(observation.ToolFinished).Result.Content[0].Text != "result" ||
 		second[7].Detail.(observation.RoundFinished).Result.Decision.Content[0].Text != "decision" {
 		t.Fatal("terminal or tool progress snapshots aliased")
+	}
+	finished := second[8].Detail.(observation.TurnFinished)
+	if finished.Result.Output[0].Text != "ok" || finished.Outcome.Accounting.Models[0].Model != "m" ||
+		*finished.Outcome.Failure.RoundIndex != 1 {
+		t.Fatalf("turn outcome snapshots aliased: %#v", finished)
 	}
 }
 

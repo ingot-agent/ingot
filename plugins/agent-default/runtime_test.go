@@ -186,7 +186,7 @@ func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if textValue(result.Output) != "done" || len(tools.calls) != 1 || len(models.requests) != 2 {
+	if textValue(executionOutput(result)) != "done" || len(tools.calls) != 1 || len(models.requests) != 2 {
 		t.Fatalf("result=%#v tool calls=%d model calls=%d", result, len(tools.calls), len(models.requests))
 	}
 	entries, _ := store.Load(context.Background(), "s")
@@ -417,7 +417,7 @@ func TestAgentCompactsEveryModelInvocationWithoutReplacingRawMessages(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if textValue(result.Output) != "done" {
+	if textValue(executionOutput(result)) != "done" {
 		t.Fatalf("result=%#v", result)
 	}
 
@@ -714,4 +714,11 @@ func TestAgentRejectsInterceptorSessionIDRewriteBeforeTerminal(t *testing.T) {
 func textValue(value content.Content) string {
 	result, _ := content.TextOnly(value)
 	return result
+}
+
+func executionOutput(execution agent.Execution) content.Content {
+	if execution.Result == nil {
+		return nil
+	}
+	return execution.Result.Output
 }

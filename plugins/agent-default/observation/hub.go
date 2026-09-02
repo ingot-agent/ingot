@@ -182,12 +182,15 @@ func cloneDetail(detail observation.Detail) observation.Detail {
 		return observation.TurnStarted{Turn: cloneTurn(value.Turn)}
 	case observation.TurnFinished:
 		value.Result = cloneAgentResult(value.Result)
+		value.Outcome = cloneOutcome(value.Outcome)
 		return value
 	case *observation.TurnFinished:
 		if value == nil {
 			return nil
 		}
-		return observation.TurnFinished{Status: value.Status, Result: cloneAgentResult(value.Result), Error: value.Error}
+		return observation.TurnFinished{
+			Status: value.Status, Result: cloneAgentResult(value.Result), Outcome: cloneOutcome(value.Outcome), Error: value.Error,
+		}
 	case observation.RoundStarted:
 		return value
 	case *observation.RoundStarted:
@@ -266,6 +269,19 @@ func cloneAgentResult(value *agent.Result) *agent.Result {
 		return nil
 	}
 	return &agent.Result{Output: content.Clone(value.Output)}
+}
+
+func cloneOutcome(value agent.Outcome) agent.Outcome {
+	value.Accounting.Models = append([]agent.ModelAccounting(nil), value.Accounting.Models...)
+	if value.Failure != nil {
+		failure := *value.Failure
+		if value.Failure.RoundIndex != nil {
+			index := *value.Failure.RoundIndex
+			failure.RoundIndex = &index
+		}
+		value.Failure = &failure
+	}
+	return value
 }
 
 func cloneRoundResult(value *agent.RoundResult) *agent.RoundResult {

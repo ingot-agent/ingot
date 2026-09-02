@@ -149,10 +149,10 @@ func TestStreamFallbackRequiresZeroDeliveredAgentEvents(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("error=%v want=%v", err, tc.wantErr)
 			}
-			if tc.wantErr == nil && textValue(result.Output) != "done" {
+			if tc.wantErr == nil && textValue(executionOutput(result)) != "done" {
 				t.Fatalf("result=%#v", result)
 			}
-			if tc.wantErr != nil && len(result.Output) != 0 {
+			if tc.wantErr != nil && result.Result != nil {
 				t.Fatalf("error returned non-zero canonical result: %#v", result)
 			}
 			if completeCalls != tc.wantComplete || events != tc.wantEvents {
@@ -247,7 +247,7 @@ func TestPreDispatchToolRejectionsContinueButOtherErrorsStop(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("error=%v want=%v", err, tc.wantErr)
 			}
-			if tc.wantErr != nil && len(result.Output) != 0 {
+			if tc.wantErr != nil && result.Result != nil {
 				t.Fatalf("error returned non-zero canonical result: %#v", result)
 			}
 			var names []string
@@ -289,7 +289,7 @@ func TestCancellationAfterDurableUserStopsBeforeModelDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.Runtime.Run(ctx, agent.Turn{SessionID: "s", Input: "hello"})
-	if !errors.Is(err, context.Canceled) || len(result.Output) != 0 || modelCalls != 0 || len(store.entries["s"]) != 1 {
+	if !errors.Is(err, context.Canceled) || result.Result != nil || modelCalls != 0 || len(store.entries["s"]) != 1 {
 		t.Fatalf("result=%#v error=%v models=%d entries=%d", result, err, modelCalls, len(store.entries["s"]))
 	}
 }
@@ -309,7 +309,7 @@ func TestCancellationAfterModelSuccessStopsBeforeAssistantPersistence(t *testing
 		t.Fatal(err)
 	}
 	result, err := exports.Runtime.Run(ctx, agent.Turn{SessionID: "s", Input: "hello"})
-	if !errors.Is(err, context.Canceled) || len(result.Output) != 0 || len(store.entries["s"]) != 1 {
+	if !errors.Is(err, context.Canceled) || result.Result != nil || len(store.entries["s"]) != 1 {
 		t.Fatalf("result=%#v error=%v entries=%d", result, err, len(store.entries["s"]))
 	}
 	modelSucceeded := false
@@ -344,7 +344,7 @@ func TestCancellationAfterToolSuccessDoesNotPersistVolatileResultOrDispatchNext(
 		t.Fatal(err)
 	}
 	result, err := exports.Runtime.Run(ctx, agent.Turn{SessionID: "s", Input: "hello"})
-	if !errors.Is(err, context.Canceled) || len(result.Output) != 0 || len(tools.calls) != 1 || len(store.entries["s"]) != 2 {
+	if !errors.Is(err, context.Canceled) || result.Result != nil || len(tools.calls) != 1 || len(store.entries["s"]) != 2 {
 		t.Fatalf("result=%#v error=%v tools=%d entries=%d", result, err, len(tools.calls), len(store.entries["s"]))
 	}
 	toolSucceeded := false
@@ -398,7 +398,7 @@ func TestPersistenceErrorsStopAllDependentWork(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
-			if !errors.Is(err, persistErr) || len(result.Output) != 0 || len(store.entries["s"]) != tc.wantEntries ||
+			if !errors.Is(err, persistErr) || result.Result != nil || len(store.entries["s"]) != tc.wantEntries ||
 				len(models.requests) != tc.wantModels || len(tools.calls) != tc.wantTools || store.appends != tc.failAt {
 				t.Fatalf("result=%#v error=%v entries=%d models=%d tools=%d appends=%d", result, err,
 					len(store.entries["s"]), len(models.requests), len(tools.calls), store.appends)
@@ -435,7 +435,7 @@ func TestRecoveryPersistenceErrorStopsBeforeNewTurnWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "new input"})
-	if !errors.Is(err, persistErr) || len(result.Output) != 0 || store.appends != 1 ||
+	if !errors.Is(err, persistErr) || result.Result != nil || store.appends != 1 ||
 		len(store.entries["s"]) != 1 || len(models.requests) != 0 || len(tools.calls) != 0 {
 		t.Fatalf("result=%#v error=%v appends=%d entries=%d models=%d tools=%d", result, err,
 			store.appends, len(store.entries["s"]), len(models.requests), len(tools.calls))
@@ -461,11 +461,11 @@ func TestRecoveryUsesCommittedHistoryAfterAppendReturnedError(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "first"})
-	if !errors.Is(err, persistErr) || len(result.Output) != 0 || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
+	if !errors.Is(err, persistErr) || result.Result != nil || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
 		t.Fatalf("first result=%#v error=%v entries=%d tools=%d", result, err, len(store.entries["s"]), len(tools.calls))
 	}
 	result, err = exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "next"})
-	if err != nil || textValue(result.Output) != "continued safely" || len(store.entries["s"]) != 5 || len(tools.calls) != 0 {
+	if err != nil || textValue(executionOutput(result)) != "continued safely" || len(store.entries["s"]) != 5 || len(tools.calls) != 0 {
 		t.Fatalf("second result=%#v error=%v entries=%d tools=%d", result, err, len(store.entries["s"]), len(tools.calls))
 	}
 	recovered, err := decodePersistedMessage(store.entries["s"][2].Payload)

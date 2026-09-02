@@ -452,7 +452,7 @@ func TestProviderErrorReturnsOwnedPartialResponse(t *testing.T) {
 
 func TestTerminalRejectsInvalidResponses(t *testing.T) {
 	valid := func() model.Response {
-		return model.Response{Message: model.Message{Role: model.RoleAssistant}, Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}}
+		return model.Response{Message: model.Message{Role: model.RoleAssistant}, Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3, Reported: true}}
 	}
 	tests := []struct {
 		name   string
@@ -464,6 +464,7 @@ func TestTerminalRejectsInvalidResponses(t *testing.T) {
 		}},
 		{name: "negative usage", mutate: func(response *model.Response) { response.Usage.InputTokens = -1 }},
 		{name: "inconsistent usage", mutate: func(response *model.Response) { response.Usage.TotalTokens = 2 }},
+		{name: "unreported usage counts", mutate: func(response *model.Response) { response.Usage.Reported = false }},
 		{name: "invalid tool call id", mutate: func(response *model.Response) {
 			response.Message.ToolCalls = []tool.Call{{ID: string([]byte{0xff}), Name: "tool", Arguments: json.RawMessage(`{}`)}}
 		}},

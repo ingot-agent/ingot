@@ -253,15 +253,15 @@ projection至少包含Messages、Tools及所有可能影响profile framing的pre
 
 `usage.Counter` 给出调用前计算值；Provider成功响应中的 `model.Response.Usage` 是调用后实际值。二者不能互相覆盖。
 
-未来 `usage.monitor` 应作为 Model complete/stream interceptor观察所有模型调用：
+未来独立监控可作为 Model complete/stream interceptor观察所有模型调用：
 
 1. Provider返回Usage时优先记录Provider实际值；
-2. Provider未返回Usage时，可调用本Counter补充input估算；
+2. Provider未返回Usage时，可单独记录Counter的preflight estimate及其Accuracy，但不得用它填补`agent.Accounting`的execution Usage；
 3. 监控事件必须记录实际/计算来源和Accuracy；
 4. 主Agent调用、context summary调用和其他后台调用通过request-scoped scope区分；
 5. 默认只记录count、Provider、Model、operation、duration和status，不记录prompt/response正文。
 
-为消除“Usage缺失”和“真实0 token”的歧义，并支持cache/reasoning明细，未来监控落地前应单独扩展 `model.Usage` 的presence和details Contract。该变更不是本Plugin首版Counter实现的阻塞项，不在本设计中提前定义持久化、价格表或监控查询API。
+`model.Usage.Reported`已经区分“Usage缺失”和“Provider明确报告0 token”。它只表达presence，不表达Estimate/Exact/UpperBound；Counter的Accuracy语义保持独立，也不定义持久化、价格表或监控查询API。
 
 ## 10. `context.compact` 接入
 

@@ -278,6 +278,9 @@ func validateResponse(response model.Response) error {
 	if err := content.Validate(response.Message.Content); err != nil {
 		return fmt.Errorf("response message content: %w: %w", ErrInvalidResponse, err)
 	}
+	if !response.Usage.Reported && (response.Usage.InputTokens != 0 || response.Usage.OutputTokens != 0 || response.Usage.TotalTokens != 0) {
+		return fmt.Errorf("response usage has counts without presence: %w", ErrInvalidResponse)
+	}
 	if response.Usage.InputTokens < 0 || response.Usage.OutputTokens < 0 || response.Usage.TotalTokens < 0 {
 		return fmt.Errorf("response usage is negative: %w", ErrInvalidResponse)
 	}

@@ -11,9 +11,9 @@ import (
 	"github.com/ingot-agent/sdk/observation"
 )
 
-func (r *runtime) Stream(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Result, error) {
+func (r *runtime) Stream(ctx context.Context, turn agent.Turn, handler agent.StreamHandler) (agent.Execution, error) {
 	if handler == nil {
-		return agent.Result{}, agent.ErrNilStreamHandler
+		return agent.Execution{}, agent.ErrNilStreamHandler
 	}
 	return r.execute(ctx, turn, handler)
 }
@@ -38,7 +38,7 @@ func (r *runtime) invokeModel(ctx context.Context, request model.Request, handle
 	var handlerErr error
 	response, err := r.observeModelInvocation(ctx, invocation, func() (model.Response, error) {
 		response, streamErr := r.streaming.Value.Stream(ctx, cloneModelRequest(invocation), func(event model.StreamEvent) error {
-			r.observation.Emit(ctx, observation.ModelProgress{Progress: event})
+			executionRecorderFrom(ctx).emit(ctx, observation.ModelProgress{Progress: event})
 			if handlerErr != nil {
 				return handlerErr
 			}
@@ -58,6 +58,9 @@ func (r *runtime) invokeModel(ctx context.Context, request model.Request, handle
 			return model.Response{}, fmt.Errorf("stream model: %w", streamErr)
 		}
 		return response, nil
+	}, func(invocationErr error) bool {
+		return !delivered && (errors.Is(invocationErr, model.ErrStreamingUnsupported) ||
+			isModelSelectionRejection(invocationErr))
 	})
 	if err == nil {
 		if contextErr := ctx.Err(); contextErr != nil {
@@ -66,6 +69,7 @@ func (r *runtime) invokeModel(ctx context.Context, request model.Request, handle
 		return response, nil
 	}
 	if handlerErr != nil {
+		executionRecorderFrom(ctx).recordFailure(handlerErr, agent.FailureStreamConsumer, roundIndexFrom(ctx), "")
 		return model.Response{}, handlerErr
 	}
 	if errors.Is(err, model.ErrStreamingUnsupported) && !delivered {
@@ -91,28 +95,36 @@ func (r *runtime) invokeCompleteModel(ctx context.Context, request model.Request
 			return model.Response{}, fmt.Errorf("complete model: %w", err)
 		}
 		return response, nil
-	})
+	}, isModelSelectionRejection)
 }
 
 func (r *runtime) observeModelInvocation(
 	ctx context.Context,
 	request model.Request,
 	invoke func() (model.Response, error),
+	rejectedWithoutUsage func(error) bool,
 ) (response model.Response, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return model.Response{}, err
 	}
-	r.observation.Emit(ctx, observation.ModelStarted{Request: request})
+	recorder := executionRecorderFrom(ctx)
+	attempt := recorder.accounting.modelStarted()
+	recorder.emit(ctx, observation.ModelStarted{Request: request})
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			r.observation.Emit(ctx, observation.ModelFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
+			panicErr := fmt.Errorf("%v", recovered)
+			recorder.accounting.modelFinished(attempt, model.Response{}, panicErr, false)
+			recorder.recordFailure(panicErr, agent.FailureModel, roundIndexFrom(ctx), "")
+			recorder.emit(ctx, observation.ModelFinished{Status: observation.StatusFailed, Error: fmt.Sprint(recovered)})
 			panic(recovered)
 		}
+		rejected := rejectedWithoutUsage != nil && rejectedWithoutUsage(resultErr)
+		recorder.accounting.modelFinished(attempt, response, resultErr, rejected)
 		finished := observation.ModelFinished{Status: terminalStatus(resultErr), Error: errorText(resultErr)}
 		if resultErr == nil {
 			finished.Response = &response
 		}
-		r.observation.Emit(ctx, finished)
+		recorder.emit(ctx, finished)
 	}()
 	response, resultErr = invoke()
 	if resultErr != nil {
@@ -123,6 +135,10 @@ func (r *runtime) observeModelInvocation(
 	}
 	response = cloneModelResponse(response)
 	return response, nil
+}
+
+func isModelSelectionRejection(err error) bool {
+	return errors.Is(err, model.ErrProviderNotFound) || errors.Is(err, model.ErrModelNotFound)
 }
 
 func mapModelStreamEvent(event model.StreamEvent) (agent.StreamEvent, bool) {
