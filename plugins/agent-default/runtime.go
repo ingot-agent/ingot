@@ -46,7 +46,7 @@ var (
 	ErrCorruptHistory = errors.New("corrupt agent history")
 )
 
-// Config controls model selection, generation, and tool behavior.
+// Config controls model selection and generation.
 type Config struct {
 	Provider    string   `toml:"provider"`
 	Model       string   `toml:"model"`
@@ -55,8 +55,7 @@ type Config struct {
 	MaxRounds   int      `toml:"max_rounds"`
 	// Deprecated: retained for config compatibility and ignored. Use the
 	// Streaming export's Stream method to request incremental output.
-	Streaming     bool   `toml:"streaming"`
-	ToolErrorMode string `toml:"tool_error_mode"`
+	Streaming bool `toml:"streaming"`
 }
 
 // Dependencies contains the runtime chokepoints used by an agent turn.
@@ -97,7 +96,6 @@ type runtime struct {
 	temperature       *float64
 	maxTokens         *int
 	maxRounds         int
-	toolErrorMode     string
 }
 
 // New validates immutable dependencies and creates an independent runtime.
@@ -130,13 +128,6 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if maxRounds < 1 {
 		return Exports{}, nil, fmt.Errorf("max_rounds must be positive: %w", ErrInvalidConfig)
 	}
-	mode := cfg.ToolErrorMode
-	if mode == "" {
-		mode = "result"
-	}
-	if mode != "result" && mode != "fail" {
-		return Exports{}, nil, fmt.Errorf("tool_error_mode must be result or fail: %w", ErrInvalidConfig)
-	}
 	interceptors := make([]agent.Interceptor, len(deps.Interceptors))
 	for i, interceptor := range deps.Interceptors {
 		if isNil(interceptor) {
@@ -161,7 +152,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		roundInterceptors: roundInterceptors, observation: observationConsumer,
 		gates: newGateManager(), provider: cfg.Provider, modelName: cfg.Model,
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
-		maxRounds: maxRounds, toolErrorMode: mode,
+		maxRounds: maxRounds,
 	}
 	return Exports{Runtime: instance, Streaming: instance, History: instance}, nil, nil
 }
@@ -181,6 +172,9 @@ func (r *runtime) Load(ctx context.Context, sessionID session.ID) ([]model.Messa
 		return nil, err
 	}
 	defer release()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	messages, err := r.loadHistory(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -219,6 +213,9 @@ func (r *runtime) materializeContent(ctx context.Context, value content.Content)
 		if part.Kind == content.KindText || part.Media.Source.Kind != content.SourceInline {
 			continue
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		data := part.Media.Source.Data
 		reference, info, err := r.assets.Put(ctx, asset.PutRequest{Body: bytes.NewReader(data), Size: uint64(len(data))})
 		if err != nil {
@@ -232,14 +229,12 @@ func (r *runtime) materializeContent(ctx context.Context, value content.Content)
 	return result, nil
 }
 
-func safeToolError(err error) string {
+func preDispatchToolResult(err error) string {
 	switch {
 	case errors.Is(err, tool.ErrNotFound):
 		return "tool error [not_found]: requested tool is unavailable"
-	case errors.Is(err, tool.ErrInvalidArguments):
-		return "tool error [invalid_arguments]: tool arguments were rejected"
 	default:
-		return "tool error [execution_failed]: tool execution failed"
+		return "tool error [invalid_arguments]: tool arguments were rejected"
 	}
 }
 

@@ -247,6 +247,9 @@ func (s *store) Append(ctx context.Context, id session.ID, entry session.Entry) 
 		return err
 	}
 	defer release()
+	if err := checkStoreContext(ctx); err != nil {
+		return err
+	}
 
 	if _, err := s.loadMetadata(id); err != nil {
 		return err
@@ -275,6 +278,9 @@ func (s *store) Append(ctx context.Context, id session.ID, entry session.Entry) 
 	if err != nil {
 		return fmt.Errorf("open session %s entries: %w", id, err)
 	}
+	if contextErr := checkStoreContext(ctx); contextErr != nil {
+		return errors.Join(contextErr, file.Close())
+	}
 	writeErr := writeFull(file, line)
 	if writeErr == nil && s.syncWrites {
 		writeErr = file.Sync()
@@ -298,6 +304,9 @@ func (s *store) Load(ctx context.Context, id session.ID) ([]session.Entry, error
 		return nil, err
 	}
 	defer release()
+	if err := checkStoreContext(ctx); err != nil {
+		return nil, err
+	}
 	if _, err := s.loadMetadata(id); err != nil {
 		return nil, err
 	}
@@ -361,6 +370,10 @@ func (s *store) List(ctx context.Context, query session.Query) ([]session.Summar
 		release, err := s.gates.acquire(ctx, string(id))
 		if err != nil {
 			return nil, err
+		}
+		if contextErr := checkStoreContext(ctx); contextErr != nil {
+			release()
+			return nil, contextErr
 		}
 		metadata, metadataErr := s.loadMetadata(id)
 		if metadataErr != nil {

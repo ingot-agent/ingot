@@ -34,7 +34,10 @@ var (
 	ErrInvalidResult = errors.New("invalid tool result")
 	// ErrCallMutation indicates that an interceptor changed a validated Call.
 	ErrCallMutation = errors.New("tool call mutation is not allowed")
-	toolNamePattern = regexp.MustCompile("^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+	// ErrPostDispatchRejection indicates that a tool or interceptor returned a
+	// pre-dispatch sentinel after the Tool.Invoke dispatch boundary.
+	ErrPostDispatchRejection = errors.New("pre-dispatch tool rejection returned after dispatch")
+	toolNamePattern          = regexp.MustCompile("^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 )
 
 // Config bounds argument and result payloads. Text and inline limits apply to
@@ -233,18 +236,36 @@ func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error)
 		return tool.Result{}, fmt.Errorf("tool %q arguments do not satisfy schema: %w: %w", call.Name, tool.ErrInvalidArguments, err)
 	}
 	original := cloneCall(request)
+	if err := ctx.Err(); err != nil {
+		return tool.Result{}, err
+	}
+	dispatched := false
 	terminal := func(invokeCtx context.Context, selected tool.Call) (tool.Result, error) {
+		if invokeCtx == nil {
+			return tool.Result{}, errors.New("tool interceptor supplied nil context")
+		}
 		if !sameCall(selected, original) {
 			return tool.Result{}, fmt.Errorf("tool %q: %w", original.Name, ErrCallMutation)
 		}
 		if err := validateCallArguments(selected.Name, entry.schema, selected.Arguments); err != nil {
 			return tool.Result{}, err
 		}
-		return entry.tool.Invoke(invokeCtx, cloneCall(selected))
+		if err := invokeCtx.Err(); err != nil {
+			return tool.Result{}, err
+		}
+		dispatched = true
+		result, err := entry.tool.Invoke(invokeCtx, cloneCall(selected))
+		if err != nil && isPreDispatchRejection(err) {
+			return tool.Result{}, postDispatchRejection(original.Name, err)
+		}
+		return result, err
 	}
 	next := pipeline.Compose[tool.Call, tool.Result](terminal, r.interceptors...)
 	result, err := next(ctx, request)
 	if err != nil {
+		if dispatched && isPreDispatchRejection(err) {
+			return tool.Result{}, postDispatchRejection(original.Name, err)
+		}
 		return tool.Result{}, err
 	}
 	if !sameCall(request, original) {
@@ -254,6 +275,16 @@ func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error)
 		return tool.Result{}, err
 	}
 	return tool.Result{Content: content.Clone(result.Content)}, nil
+}
+
+func isPreDispatchRejection(err error) bool {
+	return errors.Is(err, tool.ErrNotFound) || errors.Is(err, tool.ErrInvalidArguments)
+}
+
+func postDispatchRejection(name string, err error) error {
+	// Do not wrap err: exposing either reserved sentinel through errors.Is would
+	// incorrectly assert that Tool.Invoke was definitely not dispatched.
+	return fmt.Errorf("tool %q returned %v: %w", name, err, ErrPostDispatchRejection)
 }
 
 func (r *runtime) validateResult(name string, result tool.Result) error {

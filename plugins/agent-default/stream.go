@@ -15,13 +15,90 @@ func (r *runtime) Stream(ctx context.Context, turn agent.Turn, handler agent.Str
 	if handler == nil {
 		return agent.Result{}, agent.ErrNilStreamHandler
 	}
-	if !r.streaming.Valid {
-		return agent.Result{}, agent.ErrStreamingUnsupported
-	}
 	return r.execute(ctx, turn, handler)
 }
 
-func (r *runtime) invokeModel(ctx context.Context, request model.Request, handler agent.StreamHandler) (response model.Response, resultErr error) {
+func (r *runtime) invokeModel(ctx context.Context, request model.Request, handler agent.StreamHandler) (model.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return model.Response{}, err
+	}
+	invocation := cloneModelRequest(request)
+	if handler == nil || !r.streaming.Valid {
+		response, err := r.invokeCompleteModel(ctx, invocation)
+		if err != nil {
+			return model.Response{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return model.Response{}, err
+		}
+		return response, nil
+	}
+
+	delivered := false
+	var handlerErr error
+	response, err := r.observeModelInvocation(ctx, invocation, func() (model.Response, error) {
+		response, streamErr := r.streaming.Value.Stream(ctx, cloneModelRequest(invocation), func(event model.StreamEvent) error {
+			r.observation.Emit(ctx, observation.ModelProgress{Progress: event})
+			if handlerErr != nil {
+				return handlerErr
+			}
+			if handlerErr = ctx.Err(); handlerErr != nil {
+				return handlerErr
+			}
+			if mapped, ok := mapModelStreamEvent(event); ok {
+				delivered = true
+				handlerErr = handler(mapped)
+			}
+			return handlerErr
+		})
+		if handlerErr != nil {
+			return model.Response{}, handlerErr
+		}
+		if streamErr != nil {
+			return model.Response{}, fmt.Errorf("stream model: %w", streamErr)
+		}
+		return response, nil
+	})
+	if err == nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return model.Response{}, contextErr
+		}
+		return response, nil
+	}
+	if handlerErr != nil {
+		return model.Response{}, handlerErr
+	}
+	if errors.Is(err, model.ErrStreamingUnsupported) && !delivered {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return model.Response{}, contextErr
+		}
+		response, completeErr := r.invokeCompleteModel(ctx, invocation)
+		if completeErr != nil {
+			return model.Response{}, completeErr
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			return model.Response{}, contextErr
+		}
+		return response, nil
+	}
+	return model.Response{}, err
+}
+
+func (r *runtime) invokeCompleteModel(ctx context.Context, request model.Request) (model.Response, error) {
+	return r.observeModelInvocation(ctx, request, func() (model.Response, error) {
+		response, err := r.model.Complete(ctx, cloneModelRequest(request))
+		if err != nil {
+			return model.Response{}, fmt.Errorf("complete model: %w", err)
+		}
+		return response, nil
+	})
+}
+
+func (r *runtime) observeModelInvocation(
+	ctx context.Context,
+	request model.Request,
+	invoke func() (model.Response, error),
+) (response model.Response, resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return model.Response{}, err
 	}
@@ -37,46 +114,14 @@ func (r *runtime) invokeModel(ctx context.Context, request model.Request, handle
 		}
 		r.observation.Emit(ctx, finished)
 	}()
-	var err error
-	if handler == nil {
-		response, err = r.model.Complete(ctx, request)
-		if err != nil {
-			return model.Response{}, fmt.Errorf("complete model: %w", err)
-		}
-	} else {
-		if !r.streaming.Valid {
-			return model.Response{}, agent.ErrStreamingUnsupported
-		}
-		var handlerErr error
-		response, err = r.streaming.Value.Stream(ctx, request, func(event model.StreamEvent) error {
-			r.observation.Emit(ctx, observation.ModelProgress{Progress: event})
-			if handlerErr != nil {
-				return handlerErr
-			}
-			if handlerErr = ctx.Err(); handlerErr != nil {
-				return handlerErr
-			}
-			if mapped, ok := mapModelStreamEvent(event); ok {
-				handlerErr = handler(mapped)
-			}
-			return handlerErr
-		})
-		if handlerErr != nil {
-			return model.Response{}, handlerErr
-		}
-		if err != nil {
-			if errors.Is(err, model.ErrStreamingUnsupported) {
-				return model.Response{}, fmt.Errorf("stream model: %w: %w", agent.ErrStreamingUnsupported, err)
-			}
-			return model.Response{}, fmt.Errorf("stream model: %w", err)
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return model.Response{}, err
+	response, resultErr = invoke()
+	if resultErr != nil {
+		return model.Response{}, resultErr
 	}
 	if err := validateAssistant(response.Message); err != nil {
 		return model.Response{}, err
 	}
+	response = cloneModelResponse(response)
 	return response, nil
 }
 

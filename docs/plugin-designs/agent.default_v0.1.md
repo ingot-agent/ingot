@@ -58,7 +58,6 @@ type Config struct {
     MaxTokens     *int     `toml:"max_tokens"`
     MaxRounds     int      `toml:"max_rounds"`
     Streaming     bool     `toml:"streaming"`
-    ToolErrorMode string   `toml:"tool_error_mode"`
 }
 ```
 
@@ -66,8 +65,8 @@ type Config struct {
 - temperature若存在必须是finite number且在 `[0,2]`；具体Provider可进一步收紧；
 - max tokens若存在必须 `>0`；
 - max rounds默认8，必须 `>0`；每次模型调用及其随后可能发生的assistant持久化与tool执行构成一个round；最后一个允许的round不得再请求Tool；
-- streaming字段已弃用，仅为配置解析兼容保留，值不影响执行；`Run()` 使用 Complete，`Stream()` 使用 Streaming；
-- tool error mode：`result`（默认）或 `fail`；Context cancellation/deadline无论模式都直接失败。
+- streaming字段已弃用，仅为配置解析兼容保留，值不影响执行；`Run()` 使用 Complete，`Stream()` 优先使用 Streaming并在M3允许的边界fallback；
+- Tool错误策略固定：明确的pre-dispatch rejection转为synthetic Result，其他错误立即停止执行。
 
 ## 4. Agent persistence envelope
 
@@ -121,7 +120,7 @@ Assistant tool-call message 必须先于对应 Tool result 持久化，因此进
 
 - 已存在的 Tool message 必须按 assistant `tool_calls` 顺序构成从0开始的连续前缀，`tool_call_id`逐项匹配；
 - 只允许最后一个 assistant tool-call round缺少后缀结果；缺少中间结果后又出现其他 Agent message、未知call id、重复结果或多个未完成round仍返回`ErrCorruptHistory`；
-- 下一次`Run`在写入新user message前，为每个缺失call按原顺序 Append一个synthetic RoleTool message，Content固定为只含`tool error [interrupted]: previous execution was interrupted; result unknown`的text part；
+- 下一次`Run`或`Stream`在写入新user message前，为每个缺失call按原顺序 Append一个synthetic RoleTool message，Content固定为只含`tool result unavailable [interrupted]: previous execution was interrupted; outcome unknown`的text part；
 - synthetic result只修复对话关联，不重新执行Tool。尤其不得自动重试可能已经产生副作用但commit status unknown的调用；
 - recovery Append沿用正常Context和Store原子语义。中途失败时立即返回；下次Load从已提交的更长前缀继续，不重复已存在结果。
 
@@ -162,12 +161,13 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 ### 6.2 Model 调用
 
 - `Run()` 与 `Stream()` 共用 execute、Agent Interceptor、session gate、Prompt、Compactor、Tool loop和持久化逻辑；
-- `Run()` 使用 `Model.Complete`，`Stream()` 使用可选 `model.StreamingRuntime`；完整assistant response均通过role、`content.Validate`和ToolCalls校验；
+- `Run()` 使用 `Model.Complete`；`Stream()` 在Streaming依赖缺失时直接使用同一个`Model.Complete` Turn路径，允许成功且不交付任何Event；完整assistant response均通过role、`content.Validate`和ToolCalls校验；
 - Stream仅将非空text delta按Semantic映射成 `agent.StreamReasoningDelta` 或 `agent.StreamOutputDelta`；过滤part start/end、binary、未知semantic和所有非输出事件；
 - reasoning和output在每一轮均实时输出，包含随后调用工具的轮次；最终 `Result.Output` 仍以完整正式assistant response为准，不能拼接stream重建；reasoning不写Session；
 - Handler同步有序调用，错误原样返回并终止turn，不再派发事件或工具；Context贯穿模型请求和工具调用，已完成副作用不回滚；
-- nil handler返回 `agent.ErrNilStreamHandler`；缺少Streaming依赖返回 `agent.ErrStreamingUnsupported`，均在持久化前失败；下游 `model.ErrStreamingUnsupported` 同时保留两层sentinel，不进行Complete fallback；
-- 下游模型调用前user message已持久化，模型失败（含Provider不支持Streaming）仍遵循既有失败turn语义；
+- nil handler返回 `agent.ErrNilStreamHandler`；若`model.Stream`返回`model.ErrStreamingUnsupported`且Agent尚未调用caller handler，则在同一Round以完全相同Request调用`Model.Complete`；不得重写user、重启Turn或重复已完成工作；
+- 一旦Agent调用过caller handler（包括第一次调用即返回错误），或者stream返回任何其他错误，就不得fallback。已交付Event只是transient progress，最终返回错误时不存在canonical Result；
+- 下游模型调用前user message已持久化，模型普通失败仍遵循fail-stop turn语义，不自动retry；
 - 最终assistant Message完成校验后Append，再加入本轮in-memory messages。
 
 ### 6.3 Tool loop
@@ -181,18 +181,18 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 3. 每个Call要求ID和Name非空、Arguments valid JSON；
 4. 调用`Tools.Call(ctx, call)`；
 5. 成功结果生成RoleTool Message并Append；
-6. 非Context error在mode=result时按以下固定映射转换为tool result；mode=fail时立即返回包装后的原错误，尚未产生的result由下一次Run按4.1恢复；
-7. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
+6. 仅`tool.ErrNotFound`和`tool.ErrInvalidArguments`作为明确的pre-dispatch rejection按以下固定映射转换为tool result；
+7. 其他任何错误（包括Context cancellation/deadline）都可能位于dispatch之后，立即停止Turn，不执行同轮后续Call，也不自动retry；尚未产生durable result的call由下一次执行按4.1恢复；
+8. 将assistant和所有tool messages追加到初始rendered messages，再发起下一次Model请求。
 
-`result`模式提供给模型和持久化历史的Content只包含稳定安全的text part，不拼接`err.Error()`、Go stack或其他下游诊断：
+Synthetic Result提供给模型和持久化历史的Content只包含稳定安全的text part，不拼接`err.Error()`、Go stack或其他下游诊断：
 
 | Error classification | Content |
 |---|---|
 | `errors.Is(err, tool.ErrNotFound)` | `tool error [not_found]: requested tool is unavailable` |
 | `errors.Is(err, tool.ErrInvalidArguments)` | `tool error [invalid_arguments]: tool arguments were rejected` |
-| 其他非Context error | `tool error [execution_failed]: tool execution failed` |
 
-转换后的`tool.Result`正常Append RoleTool message。原错误不向模型暴露；`fail`模式则通过`Run`错误链交给调用方。无论模式，之前已提交的assistant/tool记录不回滚。
+转换后的`tool.Result`正常Append RoleTool message并继续同轮后续Call。其他错误通过`Run`/`Stream`错误链交给调用方；之前已提交的assistant/tool记录不回滚，错误也不表示external side effect一定未发生或重试安全。
 
 ## 7. Interceptor、ownership与错误
 

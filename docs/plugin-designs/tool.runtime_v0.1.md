@@ -76,9 +76,10 @@ Context/size/JSON syntax
 - invalid JSON、超限或 schema mismatch 返回包装 `tool.ErrInvalidArguments`；
 - `Call.ID` 是 opaque correlation value，允许为空，但进入 chain 后不得修改；
 - Runtime 在进入 chain 前复制整个 `Call` 的 `Arguments`；v0.1 Interceptor 不得修改 `Call.ID`、`Call.Name` 或 `Call.Arguments`，Runtime 在 terminal 前再次验证 schema，并在检测到 mutation 时返回 `ErrCallMutation`；
-- Tool/Interceptor error 原样保留链；
+- `tool.ErrNotFound`与`tool.ErrInvalidArguments`只允许在`Tool.Invoke` dispatch boundary之前返回；lookup/JSON/schema rejection因此可被Agent安全转换为synthetic Result；
+- Tool或Interceptor在dispatch之后返回上述reserved sentinel时，Runtime改为不暴露该sentinel的`ErrPostDispatchRejection`，避免上层误判为definitely-not-executed；其他Tool/Interceptor error保留链；
 - Result.Content必须通过`content.Validate`；text总量、每个inline media及inline media总量分别不得超过对应限制，否则返回Runtime error；
-- Runtime 不把 Tool error转换成成功 Result；该策略属于 `agent.default`；
+- Runtime 不把 Tool error转换成成功 Result；只有`agent.default`可按明确的pre-dispatch sentinel生成synthetic Result；
 - 不 recover Plugin panic；panic 是实现缺陷，应由进程级诊断暴露。
 
 ## 6. 并发、生命周期和错误
@@ -87,7 +88,7 @@ Runtime startup 后 registry、definition snapshot 和 chain 都 immutable；`De
 
 Plugin 无后台任务和外部资源，成功 `New` 返回 nil Cleanup。
 
-建议额外 sentinel：`ErrInvalidDefinition`、`ErrDuplicateTool`、`ErrInvalidResult`。它们不替代 SDK 的 `ErrNotFound` 和 `ErrInvalidArguments`。
+建议额外 sentinel：`ErrInvalidDefinition`、`ErrDuplicateTool`、`ErrInvalidResult`、`ErrPostDispatchRejection`。它们不替代 SDK 的 `ErrNotFound` 和 `ErrInvalidArguments`。
 
 ## 7. Manifest、测试与验收
 

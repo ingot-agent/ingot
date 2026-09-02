@@ -155,13 +155,13 @@ func TestExecutionObservationLifecycleProgressCorrelationAndSequence(t *testing.
 	}
 }
 
-func TestToolFailureAsResultKeepsScopeStatusesAccurate(t *testing.T) {
+func TestPostDispatchToolFailureStopsExecutionAndMarksScopesFailed(t *testing.T) {
 	consumer := &recordingConsumer{}
 	models := &sequenceModel{responses: []model.Response{
 		{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{}`)}}}},
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
 	}}
-	exports, _, err := New(context.Background(), Config{ToolErrorMode: "result"}, Dependencies{
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
 		Model: models, Tools: &progressTools{observation: consumer, err: errors.New("tool failed")},
 		Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}, Assets: newMemoryAssets(),
 		Prompt: passthroughPrompt{}, Observation: consumer,
@@ -169,8 +169,8 @@ func TestToolFailureAsResultKeepsScopeStatusesAccurate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"}); err != nil {
-		t.Fatal(err)
+	if _, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"}); err == nil {
+		t.Fatal("tool error did not stop the turn")
 	}
 	var toolFinished observation.ToolFinished
 	var firstRound observation.RoundFinished
@@ -187,7 +187,7 @@ func TestToolFailureAsResultKeepsScopeStatusesAccurate(t *testing.T) {
 	if toolFinished.Status != observation.StatusFailed || toolFinished.Result != nil || toolFinished.Error == "" {
 		t.Fatalf("tool finished=%#v", toolFinished)
 	}
-	if firstRound.Status != observation.StatusSucceeded || firstRound.Result == nil || len(firstRound.Result.ToolMessages) != 1 {
+	if firstRound.Status != observation.StatusFailed || firstRound.Result != nil || firstRound.Error == "" {
 		t.Fatalf("round finished=%#v", firstRound)
 	}
 }

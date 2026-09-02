@@ -37,8 +37,9 @@ var (
 	// ErrOwnerLockUnsupported indicates that this platform cannot provide the
 	// owner lock required by session.jsonl v0.1.
 	ErrOwnerLockUnsupported = errors.New("session state owner lock unsupported")
-	// ErrCommitUnknown indicates that an Append may have reached the file even
-	// though the operation returned an error.
+	// ErrCommitUnknown is an implementation-specific diagnostic indicating that
+	// an Append may have reached the file even though the operation returned an
+	// error. Callers must conservatively treat every Append error this way.
 	ErrCommitUnknown = errors.New("session append commit status unknown")
 )
 

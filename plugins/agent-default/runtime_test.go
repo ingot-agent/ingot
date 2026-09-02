@@ -515,6 +515,7 @@ func TestAgentRecoversTrailingToolRoundWithoutRetry(t *testing.T) {
 	assistant := model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{
 		{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)},
 		{ID: "c2", Name: "echo", Arguments: json.RawMessage(`{}`)},
+		{ID: "c3", Name: "echo", Arguments: json.RawMessage(`{}`)},
 	}}
 	firstResult := model.Message{Role: model.RoleTool, Content: content.FromText("ok"), ToolCallID: "c1"}
 	assistantPayload, _ := encodePersistedMessage(assistant)
@@ -536,12 +537,14 @@ func TestAgentRecoversTrailingToolRoundWithoutRetry(t *testing.T) {
 		t.Fatalf("recovery retried tools: %d", len(tools.calls))
 	}
 	entries, _ := store.Load(context.Background(), "s")
-	if len(entries) != 5 {
+	if len(entries) != 6 {
 		t.Fatalf("entries=%d", len(entries))
 	}
-	recovered, err := decodePersistedMessage(entries[2].Payload)
-	if err != nil || recovered.Role != model.RoleTool || recovered.ToolCallID != "c2" || textValue(recovered.Content) != interruptedContent {
-		t.Fatalf("recovered=%#v err=%v", recovered, err)
+	for index, callID := range []string{"c2", "c3"} {
+		recovered, err := decodePersistedMessage(entries[index+2].Payload)
+		if err != nil || recovered.Role != model.RoleTool || recovered.ToolCallID != callID || textValue(recovered.Content) != interruptedContent {
+			t.Fatalf("recovered[%d]=%#v err=%v", index, recovered, err)
+		}
 	}
 }
 

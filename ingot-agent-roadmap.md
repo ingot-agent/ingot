@@ -290,13 +290,15 @@ Observation 与 Interaction 可以通过 execution correlation 建立关联，�
 
 # Milestone 3 — Execution Semantics Stabilization
 
+> 状态：Implemented（2026-09-02）
+
 ## 目标
 
 对已经存在的执行能力进行语义收口。
 
 这一阶段重点不是增加 feature，而是确保上层 Application 可以安全依赖 Agent contract。
 
-需要系统定义四类语义：
+系统已经收口四类语义：
 
 ```text
 Capability
@@ -307,7 +309,7 @@ Durability
 
 ## Streaming Semantics
 
-当前一个需要特别处理的问题是 streaming fallback。
+Streaming fallback固定在Agent内部完成，Application不需要以新的Run重试同一Turn。
 
 理论上 Application 很容易写成：
 
@@ -321,17 +323,11 @@ fallback Run()
 
 但如果 `Stream()` 在发现 Provider 不支持 streaming 前已经产生 durable mutation，例如已经写入 User Message，那么 fallback `Run()` 就可能重复执行同一个 Turn。
 
-因此需要明确：
-
-- Streaming capability 是否可以 preflight；
-- `ErrStreamingUnsupported` 是否保证发生在任何 durable mutation 之前；
-- Application 是否允许透明 fallback；
-- Streaming failure 后是否允许 retry；
-- Streamed progress 与最终 canonical result 的关系。
+最终规则：不建立capability preflight shadow system；缺少Streaming依赖时直接Complete。只有`model.Stream`返回`model.ErrStreamingUnsupported`且尚未交付任何Agent Event时，才允许在同一Round以相同Request fallback到Complete。其他streaming error和任何已交付Event后的错误都立即停止；Event始终是transient progress，只有`err == nil`的Result才是canonical。
 
 ## Cancellation Semantics
 
-需要明确不同阶段取消时的行为：
+不同阶段取消统一遵循forward-only语义：
 
 ```text
 before model
@@ -342,13 +338,11 @@ after tool side effect
 during persistence
 ```
 
-重点不是“能够 cancel”，而是：
-
-> cancel 后已经发生了什么，哪些状态是 durable 的，哪些结果是 unknown 的。
+Cancellation停止未来工作但不回滚已完成的durable mutation或external side effect，也不表示retry safe。in-flight operation若没有authoritative outcome，其结果按unknown处理。
 
 ## Partial Progress
 
-Agent execution 不应假装是事务。
+Agent execution不是事务。
 
 典型过程可能是：
 
@@ -361,20 +355,11 @@ Tool B side effect happened
 process interrupted
 ```
 
-因此需要明确 partial progress 的语义，并确保恢复逻辑和错误表达一致。
+恢复只读取durable history。存在Assistant Tool Call但没有对应durable Tool Result时，outcome一律视为unknown；Core补写unknown-outcome synthetic Result以恢复对话结构，但绝不自动重新执行旧Tool Call。
 
 ## Retry / Fallback Boundary
 
-当前阶段不一定立即实现 retry/failover，但必须先定义：
-
-```text
-什么时候 retry 是安全的？
-什么时候只能标记 unknown？
-什么时候允许重新执行 model？
-什么时候绝对不能重新执行 tool？
-```
-
-未来所有 retry、provider failover、checkpoint/resume 都依赖这一基础。
+M3默认不提供自动retry。明确允许的唯一transparent fallback是零Agent Event交付前的`Stream → ErrStreamingUnsupported → Complete`。任意persistence error、model普通错误、Tool post-dispatch错误、cancellation和unresolved Tool recovery都不得自动retry；unknown outcome是execution barrier。
 
 ---
 
@@ -626,6 +611,5 @@ Human Delegation
 - [ ] Execution Outcome
 - [ ] Session Management
 - [ ] app.cli v2
-
 
 

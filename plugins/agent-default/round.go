@@ -55,6 +55,9 @@ func (r *runtime) invokeRoundModel(
 // Interceptors that call next may inspect, but must not rewrite, its committed
 // result after next returns.
 func (r *runtime) executeRound(ctx context.Context, round agent.Round, lastAllowed bool) (agent.RoundResult, error) {
+	if err := ctx.Err(); err != nil {
+		return agent.RoundResult{}, err
+	}
 	if round.Index < 0 || round.SessionID == "" || !reflect.DeepEqual(round.Decision, round.Response.Message) {
 		return agent.RoundResult{}, ErrInvalidRound
 	}
@@ -140,13 +143,15 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 		}
 		result, callErr := r.executeTool(ctx, call)
 		if callErr != nil {
-			if errors.Is(callErr, context.Canceled) || errors.Is(callErr, context.DeadlineExceeded) {
-				return nil, callErr
-			}
-			if r.toolErrorMode == "fail" {
+			if !errors.Is(callErr, tool.ErrNotFound) && !errors.Is(callErr, tool.ErrInvalidArguments) {
 				return nil, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
 			}
-			result = tool.Result{Content: content.FromText(safeToolError(callErr))}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			result = tool.Result{Content: content.FromText(preDispatchToolResult(callErr))}
+		} else if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		message := model.Message{Role: model.RoleTool, Content: result.Content, ToolCallID: call.ID}
 		message, err := r.appendMessage(ctx, sessionID, message)
