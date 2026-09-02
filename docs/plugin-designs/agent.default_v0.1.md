@@ -172,7 +172,7 @@ Agent始终保留Prompt输出及随后assistant/tool消息组成的完整in-memo
 
 ### 6.3 Tool loop
 
-若assistant没有ToolCalls，返回`agent.Result{Output: Message.Content}`。调用方通过Result和`agent.History`获取最终输出及持久化消息；实时输出通过独立 `agent.StreamingRuntime` 暴露；Tool执行观察仍不属于该输出Contract，不使用通用Interaction承载领域事件。
+若assistant没有ToolCalls，成功的`agent.Execution`携带`Result{Output: Message.Content}`。调用方通过Execution/Result和`agent.History`获取最终输出及持久化消息；实时输出通过独立 `agent.StreamingRuntime` 暴露；Tool执行观察仍不属于该输出Contract，不使用通用Interaction承载领域事件。
 
 否则：
 
@@ -205,6 +205,14 @@ Round Interceptors同样按MANY stable order组合，在完整、已校验的原
 Turn、Round、Model 和 Tool 均产生 `Started`/`Finished`，Model stream 与 Tool 实现可产生 Progress。Turn 在基本输入校验和 Turn ID 生成后、等待 same-session gate 前开始，因此排队等待与等待取消属于 Turn lifecycle。Round 在 compaction/model 前开始；Model success 只表示完整 validated Response 已返回；Tool success 只表示 `tool.Runtime.Call` 返回 valid Result。后续 policy 或 persistence 失败只改变父 scope status，不改写已完成 child scope。
 
 Observation Hub 从 Context 补全 SessionID、TurnID、RoundIndex、ToolCallID，分配 per-Turn Sequence 与 materialization time，并同步 deep-copy 后入本地队列。Observer callback 在后台串行派发；每个 Observer 收到独立 snapshot，panic 被隔离。Structural lifecycle event 不丢弃；pending progress 超过内部上限时允许 best-effort drop。Cleanup 停止接收并 drain 已入队事件，受 cleanup Context 限制。
+
+## 7.2 Execution Outcome 与 Accounting
+
+`Run`和`Stream`统一返回`agent.Execution`。Turn lifecycle建立前的输入校验或Turn ID生成失败返回zero Execution；lifecycle建立后的成功、失败和取消均由Runtime直接finalize authoritative `Outcome`，不从Observation反推。只有成功Outcome包含canonical Result，失败或取消时Result为nil且原始error单独返回。
+
+Accounting与Started execution boundary对齐：Round开始时计Rounds，实际提交Model Runtime operation时计ModelInvocations，canonical Call提交`tool.Runtime.Call`时计ToolCalls。Streaming unsupported到Complete fallback在同一Round计两次Model Invocation；明确的pre-stream rejection不产生未知Usage。Token只聚合`model.Usage.Reported`的成功Response，普通失败或成功但未报告Usage会通过Unavailable/Partial/Complete coverage保留不确定性。Provider/Model明细只依据成功Response归属。
+
+Failure记录Session gate、history/recovery、user/assistant/tool-result persistence、prompt/compaction、model、round/tool/turn control与stream consumer等明确stage；它和Outcome status都不表示rollback、commit certainty、external side effect、retry safety或cost。
 
 所有从Store、Prompt、Model、Tool得到的aggregate在保留前deep-copy；传给Interceptor和下游的Request不复用caller Turn中的Attachments、Content、ToolCalls或JSON bytes。
 
@@ -261,9 +269,10 @@ Agent自身不声明Plugin State；durable data由`session.Store` Plugin拥有�
 - optional Compactor absent/typed-nil、完整Request输入、每轮调用、replacement ownership和错误传播；
 - Agent Interceptor outermost/short-circuit；Round Interceptor mutation/reject/result integrity；
 - Turn/Round/Model/Tool lifecycle、Model/Tool progress、correlation、per-Turn sequence、failure status与partial persistence boundary；
+- Run/Stream统一Execution envelope、started attempt计数、stream fallback双invocation、Usage coverage、Provider/Model attribution与FailureStage；
 - Observer异步非阻塞、panic isolation、callback serialization、deep ownership和cleanup drain；
 - same-session ticket order、等待取消、cross-session并发；
 - partial failure不回滚已提交Entry；
 - aggregate ownership和race test。
 
-Outcome/accounting仍不由 Observation 代替；aggregate usage 与最终 accounting 留待独立 contract。
+Outcome/accounting由Runtime execution recorder直接结算，Observation只携带同一authoritative Outcome的detached snapshot，不参与聚合或定义结果。

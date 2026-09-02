@@ -279,7 +279,7 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 			Provider: "p", Model: "m", Messages: []model.Message{{Role: model.RoleUser, Content: content.FromText("hello")}},
 			Tools: []tool.Definition{{Name: "echo", Description: "Echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}, Stop: []string{},
 		}
-		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("hi")}, FinishReason: "stop", Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}, Provider: "p", Model: "m"}
+		response := model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("hi")}, FinishReason: "stop", Usage: model.Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3, Reported: true}, Provider: "p", Model: "m"}
 		got, err := exports.ModelInterceptors[0].Invoke(context.Background(), request, func(context.Context, model.Request) (model.Response, error) { return response, nil })
 		if err != nil || !reflect.DeepEqual(got, response) {
 			t.Fatalf("response=%#v error=%v", got, err)

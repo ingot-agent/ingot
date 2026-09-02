@@ -342,5 +342,7 @@ func decodeUsage(value *chatUsage) (model.Usage, error) {
 	if *value.InputTokens < 0 || *value.OutputTokens < 0 || *value.TotalTokens < 0 || *value.TotalTokens != *value.InputTokens+*value.OutputTokens {
 		return model.Usage{}, protocolError("invalid usage counts")
 	}
-	return model.Usage{InputTokens: *value.InputTokens, OutputTokens: *value.OutputTokens, TotalTokens: *value.TotalTokens}, nil
+	return model.Usage{
+		InputTokens: *value.InputTokens, OutputTokens: *value.OutputTokens, TotalTokens: *value.TotalTokens, Reported: true,
+	}, nil
 }

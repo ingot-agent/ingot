@@ -114,7 +114,7 @@ func TestRoundInterceptorInspectsActualInvocationAndModifiesCanonicalDecision(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if textValue(result.Output) != "done" || !decisionWasIndependent || len(seen) != 2 || seen[0].Index != 0 || seen[1].Index != 1 {
+	if textValue(executionOutput(result)) != "done" || !decisionWasIndependent || len(seen) != 2 || seen[0].Index != 0 || seen[1].Index != 1 {
 		t.Fatalf("result=%#v independent=%v seen=%#v", result, decisionWasIndependent, seen)
 	}
 	if textValue(seen[0].Invocation.Messages[0].Content) != "actual invocation 0" ||
@@ -251,7 +251,7 @@ func TestRoundRejectAndShortCircuitHaveDistinctPersistence(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
-		if err != nil || textValue(result.Output) != "blocked" || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
+		if err != nil || textValue(executionOutput(result)) != "blocked" || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
 			t.Fatalf("result=%#v error=%v entries=%d tools=%#v", result, err, len(store.entries["s"]), tools.calls)
 		}
 	})
@@ -380,7 +380,7 @@ func TestMaxRoundsCountsEveryModelInvocationAndChecksBeforeTools(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "s", Input: "hello"})
-		if err != nil || textValue(result.Output) != "stopped before tool" || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
+		if err != nil || textValue(executionOutput(result)) != "stopped before tool" || len(store.entries["s"]) != 2 || len(tools.calls) != 0 {
 			t.Fatalf("result=%#v error=%v entries=%d tools=%d", result, err, len(store.entries["s"]), len(tools.calls))
 		}
 	})

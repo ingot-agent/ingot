@@ -365,6 +365,8 @@ M3默认不提供自动retry。明确允许的唯一transparent fallback是零Ag
 
 # Milestone 4 — Execution Outcome & Accounting
 
+> 状态：Implemented（2026-09-02）
+
 ## 目标
 
 让 Agent Core 能够统一描述一次执行最终发生了什么、消耗了多少资源、以什么状态结束。
@@ -407,11 +409,15 @@ Provider / Model 使用情况
 
 ## Outcome 的方向
 
-暂时不急于决定最终全部进入 `agent.Result`，还是主要由 Observation 聚合。
+最终采用独立的 `agent.Execution` envelope：成功时携带 canonical
+`agent.Result`，Turn lifecycle 建立后的失败或取消仍携带 authoritative
+`Outcome` 与 `Accounting`。Outcome 不进入 Result，也不依赖 Observer 聚合。
 
-但路线图层面需要确定：
-
-> Agent Execution 应具有统一的 Outcome / Accounting semantics。
+Accounting 统计 started Round、Model Runtime operation 与 canonical Tool
+Runtime attempt；Usage 只聚合 provider-reported execution usage，并通过
+Unavailable / Partial / Complete 表达覆盖度。Provider / Model 只依据成功的
+authoritative Response 归属。Failure 使用 execution stage 定位终止位置，但
+不推导 rollback、durability、external side effect 或 retry safety。
 
 未来它将直接服务于：
 

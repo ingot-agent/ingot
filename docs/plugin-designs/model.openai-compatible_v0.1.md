@@ -114,7 +114,7 @@ Provider 不在 v0.1 自动 retry。重试、fallback和速率策略应由 Model
 - 累积 role、content、finish reason和 tool-call delta，最终构造完整 `model.Response`；Response.Provider 固定为 Named Provider name，Response.Model 使用 stream 中一致的非空 model；
 - malformed SSE、invalid UTF-8、oversize event、invalid tool arguments 或提前 EOF 返回 protocol error；
 - Complete 和 Stream 在 Context cancel 时主动 close body；因 close 唤醒的阻塞读取必须归一化为 Context error；
-- 最终 response 的 Message.Content 与已交付Content delta一致，排除transient reasoning；usage 缺失时保持 zero value。
+- 最终 response 的 Message.Content 与已交付Content delta一致，排除transient reasoning；usage存在时设置`Reported=true`，缺失时保持zero value且`Reported=false`。
 
 ## 6. 并发、生命周期和错误
 

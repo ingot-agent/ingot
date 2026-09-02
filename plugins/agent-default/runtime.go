@@ -182,7 +182,7 @@ func (r *runtime) Load(ctx context.Context, sessionID session.ID) ([]model.Messa
 	return cloneMessages(messages), nil
 }
 
-func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+func (r *runtime) Run(ctx context.Context, turn agent.Turn) (agent.Execution, error) {
 	return r.execute(ctx, turn, nil)
 }
 

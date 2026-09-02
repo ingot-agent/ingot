@@ -53,7 +53,7 @@ func TestModelEventMapping(t *testing.T) {
 
 func TestRunStreamEquivalentAcrossToolRounds(t *testing.T) {
 	type observation struct {
-		result      agent.Result
+		result      agent.Execution
 		entries     []session.Entry
 		history     []model.Message
 		requests    []model.Request
@@ -105,7 +105,7 @@ func TestRunStreamEquivalentAcrossToolRounds(t *testing.T) {
 			t.Fatalf("exports=%v cleanup=%v err=%v", exports, cleanup != nil, err)
 		}
 		turn := agent.Turn{SessionID: "s", Input: "hello"}
-		var result agent.Result
+		var result agent.Execution
 		var events []agent.StreamEvent
 		if stream {
 			result, err = exports.Streaming.Stream(context.Background(), turn, func(event agent.StreamEvent) error { events = append(events, event); return nil })
@@ -115,6 +115,7 @@ func TestRunStreamEquivalentAcrossToolRounds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		result.Outcome.Duration = 0
 		if stream {
 			want := []agent.StreamEvent{
 				{Kind: agent.StreamReasoningDelta, TextDelta: "think"}, {Kind: agent.StreamReasoningDelta, TextDelta: " more"}, {Kind: agent.StreamOutputDelta, TextDelta: "working"},
@@ -218,7 +219,7 @@ func TestStreamUsesCompleteWhenStreamingDependencyIsMissing(t *testing.T) {
 		t.Fatalf("nil handler: %v", err)
 	}
 	result, err := exports.Streaming.Stream(context.Background(), turn, func(agent.StreamEvent) error { return nil })
-	if err != nil || textValue(result.Output) != "ok" {
+	if err != nil || textValue(executionOutput(result)) != "ok" {
 		t.Fatalf("result=%#v error=%v", result, err)
 	}
 	if len(store.entries["s"]) != 2 || len(models.requests) != 1 {
