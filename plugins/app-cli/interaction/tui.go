@@ -21,6 +21,7 @@ import (
 	appcli "github.com/ingot-agent/app-cli"
 	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/ingot-abi/lifecycle"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -52,6 +53,8 @@ type tuiFrontend struct {
 	releaseLease func()
 	errMu        sync.Mutex
 	runErr       error
+	stateMu      sync.Mutex
+	states       map[string]interaction.State
 	nextRequest  atomic.Uint64
 }
 
@@ -63,7 +66,7 @@ type inputResult struct {
 type requestState struct {
 	id       uint64
 	response chan inputResult
-	ask      *interaction.AskRequest
+	ask      *askRequest
 	selected int
 	custom   bool
 }
@@ -107,7 +110,7 @@ type tuiModel struct {
 	viewport viewport.Model
 
 	current         session.ID
-	sessions        []session.Summary
+	sessions        []session.Metadata
 	selectedSession int
 	blocks          []transcriptBlock
 	activeAssistant bool
@@ -151,7 +154,7 @@ type beginInputMsg struct {
 
 type beginAskMsg struct {
 	id       uint64
-	request  interaction.AskRequest
+	request  askRequest
 	response chan inputResult
 	ack      chan error
 }
@@ -175,6 +178,7 @@ func newTUI(ctx context.Context, cfg appcli.Config, invocationValue invocation.I
 		runCtx: runCtx, cancel: cancel, invocation: invocationValue, lifecycle: lifecycleValue,
 		inputGate: make(chan struct{}, 1), interrupts: make(chan appcli.Interrupt, 4),
 		ready: make(chan struct{}), done: make(chan struct{}), releaseLease: releaseLease,
+		states: make(map[string]interaction.State),
 	}
 	frontend.inputGate <- struct{}{}
 	model := newTUIModel(frontend, normalized, cfg.Interaction.InputPrompt)
@@ -468,7 +472,7 @@ func (m *tuiModel) handleAskKey(key string, msg tea.KeyPressMsg) tea.Cmd {
 			return nil
 		case "enter":
 			if m.request.selected < len(request.Options) {
-				m.answer(request.Options[m.request.selected].Label)
+				m.answer(request.Options[m.request.selected].Value)
 			} else {
 				m.request.custom = true
 				m.composer.Reset()
@@ -577,7 +581,7 @@ func (m *tuiModel) emitInterrupt(kind appcli.InterruptKind) {
 	}
 }
 
-func (m *tuiModel) requestAskWithOptions() *interaction.AskRequest {
+func (m *tuiModel) requestAskWithOptions() *askRequest {
 	if m.request == nil || m.request.ask == nil || len(m.request.ask.Options) == 0 || m.request.custom {
 		return nil
 	}
@@ -585,59 +589,26 @@ func (m *tuiModel) requestAskWithOptions() *interaction.AskRequest {
 }
 
 func (m *tuiModel) applyEvent(event interaction.Event) error {
-	switch value := event.(type) {
-	case interaction.TextEvent:
-		text := sanitizeText(value.Text)
-		if text == "" {
-			return nil
-		}
-		if m.activeAssistant && len(m.blocks) > 0 && m.blocks[len(m.blocks)-1].kind == blockAssistant {
-			m.blocks[len(m.blocks)-1].text += text
-		} else {
-			m.blocks = append(m.blocks, transcriptBlock{kind: blockAssistant, text: text})
-			m.activeAssistant = true
-		}
-	case interaction.StatusEvent:
-		m.blocks = append(m.blocks, transcriptBlock{kind: blockStatus, text: sanitizeText(value.Text)})
-		m.activeAssistant = false
-	case interaction.ErrorEvent:
-		if value.Err != nil {
-			m.blocks = append(m.blocks, transcriptBlock{kind: blockError, text: sanitizeText(value.Err.Error())})
-		}
-		m.activeAssistant = false
-	case interaction.ToolCallEvent:
-		m.blocks = append(m.blocks, transcriptBlock{
-			kind: blockTool, toolID: sanitizeText(value.Call.ID), toolName: sanitizeText(value.Call.Name),
-			arguments: append(json.RawMessage(nil), value.Call.Arguments...),
-		})
-		m.activeAssistant = false
-	case interaction.ToolResultEvent:
-		attached := false
-		for index := len(m.blocks) - 1; index >= 0; index-- {
-			if m.blocks[index].kind == blockTool && m.blocks[index].toolID == value.Call.ID {
-				m.blocks[index].toolResult = sanitizeText(value.Result.Content)
-				m.blocks[index].toolDone = true
-				attached = true
-				break
-			}
-		}
-		if !attached {
-			m.blocks = append(m.blocks, transcriptBlock{
-				kind: blockTool, toolID: sanitizeText(value.Call.ID), toolName: sanitizeText(value.Call.Name),
-				toolResult: sanitizeText(value.Result.Content), toolDone: true,
-			})
-		}
-		m.activeAssistant = false
-	default:
-		return fmt.Errorf("unsupported interaction event %T", event)
+	text := sanitizeText(event.Message)
+	if text == "" {
+		text = sanitizeText(event.Name)
 	}
+	if text == "" {
+		return nil
+	}
+	kind := blockStatus
+	if event.Level == interaction.LevelError {
+		kind = blockError
+	}
+	m.blocks = append(m.blocks, transcriptBlock{kind: kind, text: text})
+	m.activeAssistant = false
 	m.dirty = true
 	return nil
 }
 
 func (m *tuiModel) applySessionView(view appcli.SessionView) {
 	m.current = view.Current
-	m.sessions = append([]session.Summary(nil), view.Sessions...)
+	m.sessions = append([]session.Metadata(nil), view.Sessions...)
 	m.selectedSession = 0
 	for index, summary := range m.sessions {
 		if summary.ID == m.current {
@@ -655,10 +626,10 @@ func blocksFromHistory(messages []model.Message) []transcriptBlock {
 	for _, message := range messages {
 		switch message.Role {
 		case model.RoleUser:
-			blocks = append(blocks, transcriptBlock{kind: blockUser, text: sanitizeText(message.Content)})
+			blocks = append(blocks, transcriptBlock{kind: blockUser, text: sanitizeText(displayContent(message.Content))})
 		case model.RoleAssistant:
-			if message.Content != "" {
-				blocks = append(blocks, transcriptBlock{kind: blockAssistant, text: sanitizeText(message.Content)})
+			if len(message.Content) != 0 {
+				blocks = append(blocks, transcriptBlock{kind: blockAssistant, text: sanitizeText(displayContent(message.Content))})
 			}
 			for _, call := range message.ToolCalls {
 				blocks = append(blocks, transcriptBlock{
@@ -670,14 +641,14 @@ func blocksFromHistory(messages []model.Message) []transcriptBlock {
 			attached := false
 			for index := len(blocks) - 1; index >= 0; index-- {
 				if blocks[index].kind == blockTool && blocks[index].toolID == message.ToolCallID {
-					blocks[index].toolResult = sanitizeText(message.Content)
+					blocks[index].toolResult = sanitizeText(displayContent(message.Content))
 					blocks[index].toolDone = true
 					attached = true
 					break
 				}
 			}
 			if !attached {
-				blocks = append(blocks, transcriptBlock{kind: blockTool, toolID: sanitizeText(message.ToolCallID), toolResult: sanitizeText(message.Content), toolDone: true})
+				blocks = append(blocks, transcriptBlock{kind: blockTool, toolID: sanitizeText(message.ToolCallID), toolResult: sanitizeText(displayContent(message.Content)), toolDone: true})
 			}
 		}
 	}
@@ -864,7 +835,7 @@ func (m *tuiModel) renderSidebarList(width, height int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m *tuiModel) renderAskOptions(request interaction.AskRequest, width int) string {
+func (m *tuiModel) renderAskOptions(request askRequest, width int) string {
 	lines := []string{m.labelStyle("assistant").Render("Question"), lipgloss.Wrap(sanitizeText(request.Prompt), width, ""), ""}
 	for index, option := range request.Options {
 		prefix := "  "
@@ -1008,15 +979,19 @@ func (t *tuiFrontend) ReadLine(ctx context.Context, prompt string) (string, erro
 	})
 }
 
-func (t *tuiFrontend) Ask(ctx context.Context, request interaction.AskRequest) (interaction.AskResponse, error) {
+func (t *tuiFrontend) Request(ctx context.Context, request interaction.Request) (interaction.Response, error) {
+	return collectResponse(ctx, request, t.ask)
+}
+
+func (t *tuiFrontend) ask(ctx context.Context, request askRequest) (string, error) {
 	if err := validateAskRequest(request); err != nil {
-		return interaction.AskResponse{}, err
+		return "", err
 	}
 	text, err := t.withInput(ctx, func(callCtx context.Context) (string, error) {
 		id := t.nextRequest.Add(1)
 		response := make(chan inputResult, 1)
 		acknowledged := make(chan error, 1)
-		request.Options = append([]interaction.AskOption(nil), request.Options...)
+		request.Options = append([]askOption(nil), request.Options...)
 		if err := t.send(callCtx, beginAskMsg{id: id, request: request, response: response, ack: acknowledged}, acknowledged); err != nil {
 			return "", err
 		}
@@ -1034,18 +1009,46 @@ func (t *tuiFrontend) Ask(ctx context.Context, request interaction.AskRequest) (
 		}
 	})
 	if err != nil {
-		return interaction.AskResponse{}, err
+		return "", err
 	}
-	return interaction.AskResponse{Text: text}, nil
+	return text, nil
 }
 
-func (t *tuiFrontend) Render(ctx context.Context, event interaction.Event) error {
-	if ctx == nil || isNil(event) {
+func (t *tuiFrontend) Emit(ctx context.Context, event interaction.Event) error {
+	if ctx == nil || !utf8.ValidString(event.Name) || !utf8.ValidString(event.Message) {
 		return interaction.ErrUnavailable
 	}
-	event = cloneInteractionEvent(event)
 	acknowledged := make(chan error, 1)
 	return t.send(ctx, renderEventMsg{event: event, ack: acknowledged}, acknowledged)
+}
+
+func (t *tuiFrontend) Set(ctx context.Context, value interaction.State) error {
+	if ctx == nil || value.Name == "" || !utf8.ValidString(value.Name) {
+		return interaction.ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.stateMu.Lock()
+	if t.states == nil {
+		t.states = make(map[string]interaction.State)
+	}
+	t.states[value.Name] = cloneState(value)
+	t.stateMu.Unlock()
+	return nil
+}
+
+func (t *tuiFrontend) Clear(ctx context.Context, name string) error {
+	if ctx == nil || name == "" || !utf8.ValidString(name) {
+		return interaction.ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	t.stateMu.Lock()
+	delete(t.states, name)
+	t.stateMu.Unlock()
+	return nil
 }
 
 func (t *tuiFrontend) Sync(ctx context.Context, view appcli.SessionView) error {
@@ -1157,7 +1160,7 @@ func ack(channel chan<- error, err error) {
 }
 
 func cloneSessionView(view appcli.SessionView) appcli.SessionView {
-	view.Sessions = append([]session.Summary(nil), view.Sessions...)
+	view.Sessions = append([]session.Metadata(nil), view.Sessions...)
 	view.Messages = cloneModelMessages(view.Messages)
 	return view
 }
@@ -1166,6 +1169,7 @@ func cloneModelMessages(messages []model.Message) []model.Message {
 	result := make([]model.Message, len(messages))
 	for index, message := range messages {
 		result[index] = message
+		result[index].Content = content.Clone(message.Content)
 		result[index].ToolCalls = make([]tool.Call, len(message.ToolCalls))
 		for callIndex, call := range message.ToolCalls {
 			result[index].ToolCalls[callIndex] = call
@@ -1175,16 +1179,34 @@ func cloneModelMessages(messages []model.Message) []model.Message {
 	return result
 }
 
-func cloneInteractionEvent(event interaction.Event) interaction.Event {
-	switch value := event.(type) {
-	case interaction.ToolCallEvent:
-		value.Call.Arguments = append(json.RawMessage(nil), value.Call.Arguments...)
-		return value
-	case interaction.ToolResultEvent:
-		value.Call.Arguments = append(json.RawMessage(nil), value.Call.Arguments...)
-		return value
+func displayContent(value content.Content) string {
+	var result strings.Builder
+	for _, part := range value {
+		if part.Kind == content.KindText {
+			result.WriteString(part.Text)
+			continue
+		}
+		name := part.Media.Name
+		if name == "" {
+			name = part.Media.MIMEType
+		}
+		fmt.Fprintf(&result, "[%s: %s]", contentKindName(part.Kind), emptyFallback(name, "attachment"))
+	}
+	return result.String()
+}
+
+func contentKindName(kind content.Kind) string {
+	switch kind {
+	case content.KindImage:
+		return "image"
+	case content.KindAudio:
+		return "audio"
+	case content.KindVideo:
+		return "video"
+	case content.KindFile:
+		return "file"
 	default:
-		return event
+		return "content"
 	}
 }
 

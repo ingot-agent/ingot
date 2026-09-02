@@ -493,7 +493,7 @@ ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 的历史基线�
 | `tool.runtime` | tool lookup、校验与 interceptor chain | Consume tools/interceptors; export `tool.Runtime` |
 | `interceptor.approval` | tool approval | Consume optional interaction; export `[]tool.Interceptor` |
 | `interceptor.script` | runtime-configured executable hook | Export typed interceptors |
-| `session.jsonl` | append-oriented session store与标题metadata更新 | Export `session.MutableStore`（可赋值给`session.Store`）；own persistent State |
+| `session.sqlite` | opaque session persistence、lifecycle与discovery | Export `session.Store`、`session.Manager`、`session.Query`；own persistent State |
 | `prompt.default` | prompt rendering | Consume contributors; export `prompt.Renderer` |
 | `context.compact` | non-destructive invocation context compaction | Consume `model.Runtime`与`session.Store`; export `contextwindow.Compactor` |
 | `agent.default` | default agent turn | Consume model/tool/session/asset store/prompt/optional context compactor/interaction/interceptors; export `agent.Runtime` |
@@ -519,7 +519,7 @@ flowchart LR
     ModelRuntime -->|model.Runtime| Agent["agent.default"]
     ModelRuntime -->|model.Runtime| CLIApp["app.cli/app"]
     ToolRuntime -->|tool.Runtime| Agent
-    Session["session.jsonl"] -->|session.Store| Agent
+    Session["session.sqlite"] -->|session.Store| Agent
     Session -->|session.Store| Compactor
     Prompt["prompt.default"] -->|prompt.Renderer| Agent
     Compactor -->|contextwindow.Compactor| Agent
@@ -527,7 +527,7 @@ flowchart LR
 
     Agent -->|agent.Runtime| CLIApp
     CLIChannel -->|interaction.Channel| CLIApp
-    Session -->|session.MutableStore| CLIApp
+    Session -->|session.Store / Manager / Query| CLIApp
 ```
 
 ## 12. 实施顺序
@@ -548,7 +548,7 @@ flowchart LR
 
 - `filesystem.local`、`tool.fs`、`tool.ask`；
 - `model.openai-compatible`、`model.runtime`；
-- `session.jsonl`、`prompt.default`、`context.compact`、`agent.default`。
+- `session.sqlite`、`prompt.default`、`context.compact`、`agent.default`。
 
 ### Phase 3：Composite Frontend
 

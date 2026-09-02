@@ -33,12 +33,11 @@ func (toolRuntime) Call(context.Context, tool.Call) (tool.Result, error) {
 
 type sessionStore struct{}
 
-func (sessionStore) Create(context.Context, session.Metadata) (session.ID, error) { return "s", nil }
-func (sessionStore) Append(context.Context, session.ID, session.Entry) error      { return nil }
-func (sessionStore) Load(context.Context, session.ID) ([]session.Entry, error)    { return nil, nil }
-func (sessionStore) List(context.Context, session.Query) ([]session.Summary, error) {
-	return nil, nil
+func (sessionStore) Create(_ context.Context, request session.CreateRequest) (session.Metadata, error) {
+	return session.Metadata{ID: "s", Title: request.Title}, nil
 }
+func (sessionStore) Append(context.Context, session.ID, session.Entry) error   { return nil }
+func (sessionStore) Load(context.Context, session.ID) ([]session.Entry, error) { return nil, nil }
 
 type assetStore struct{}
 

@@ -9,7 +9,6 @@ import (
 	"io"
 	"reflect"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	appcli "github.com/ingot-agent/app-cli"
@@ -32,7 +31,9 @@ type Dependencies struct {
 	Model       model.Runtime
 	Interaction interaction.Channel
 	Frontend    appcli.Frontend
-	Store       session.MutableStore
+	Store       session.Store
+	Manager     session.Manager
+	Query       session.Query
 	// Invocation is the runtime invocation metadata injected by the
 	// generated runtime.
 	Invocation invocation.Invocation
@@ -50,7 +51,9 @@ type application struct {
 	model            model.Runtime
 	interaction      interaction.Channel
 	frontend         appcli.Frontend
-	store            session.MutableStore
+	store            session.Store
+	manager          session.Manager
+	query            session.Query
 	invocationData   invocation.Invocation
 	lifecycle        lifecycle.Controller
 	inputPrompt      string
@@ -58,14 +61,13 @@ type application struct {
 	titleProvider    string
 	titleModel       string
 	showBanner       bool
-	now              func() time.Time
 	current          session.ID
 	autoTitlePending bool
 }
 
 // New starts one instance-owned CLI loop and returns promptly.
 func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
-	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Model) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) || isNil(deps.Invocation) || isNil(deps.Lifecycle) {
+	if ctx == nil || isNil(deps.Agent) || isNil(deps.History) || isNil(deps.Model) || isNil(deps.Interaction) || isNil(deps.Frontend) || isNil(deps.Store) || isNil(deps.Manager) || isNil(deps.Query) || isNil(deps.Invocation) || isNil(deps.Lifecycle) {
 		return Exports{}, nil, fmt.Errorf("construct app.cli app: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
@@ -84,11 +86,12 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, in
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	instance := &application{
-		agent: deps.Agent, history: deps.History, model: deps.Model, interaction: deps.Interaction, frontend: deps.Frontend, store: deps.Store,
+		agent: deps.Agent, history: deps.History, model: deps.Model, interaction: deps.Interaction, frontend: deps.Frontend,
+		store: deps.Store, manager: deps.Manager, query: deps.Query,
 		invocationData: deps.Invocation, lifecycle: deps.Lifecycle,
 		inputPrompt: inputPrompt, initialTitle: cfg.App.InitialSessionTitle,
 		titleProvider: cfg.App.TitleProvider, titleModel: cfg.App.TitleModel,
-		showBanner: cfg.App.ShowBanner, now: time.Now,
+		showBanner: cfg.App.ShowBanner,
 	}
 	go func() {
 		err := instance.loop(runCtx)
@@ -117,7 +120,7 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, in
 
 func (a *application) loop(ctx context.Context) error {
 	if a.showBanner {
-		if err := a.interaction.Render(ctx, interaction.StatusEvent{Text: "ingot CLI"}); err != nil {
+		if err := a.emitStatus(ctx, "ingot CLI"); err != nil {
 			return err
 		}
 	}
@@ -134,7 +137,7 @@ func (a *application) loop(ctx context.Context) error {
 			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 				return err
 			case errors.Is(err, appcli.ErrInputLimit), errors.Is(err, appcli.ErrInvalidInput):
-				if renderErr := a.interaction.Render(ctx, interaction.ErrorEvent{Err: err}); renderErr != nil {
+				if renderErr := a.emitError(ctx, err); renderErr != nil {
 					return renderErr
 				}
 				continue
@@ -152,7 +155,7 @@ func (a *application) loop(ctx context.Context) error {
 				if errors.Is(commandErr, context.Canceled) || errors.Is(commandErr, context.DeadlineExceeded) {
 					return commandErr
 				}
-				if err := a.interaction.Render(ctx, interaction.ErrorEvent{Err: commandErr}); err != nil {
+				if err := a.emitError(ctx, commandErr); err != nil {
 					return err
 				}
 			}
@@ -165,7 +168,7 @@ func (a *application) loop(ctx context.Context) error {
 		if a.current == "" {
 			title := temporarySessionTitle(line, a.initialTitle)
 			if err := a.createSession(ctx, title); err != nil {
-				if renderErr := a.interaction.Render(ctx, interaction.ErrorEvent{Err: err}); renderErr != nil {
+				if renderErr := a.emitError(ctx, err); renderErr != nil {
 					return renderErr
 				}
 				continue
@@ -192,26 +195,29 @@ func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type outcome struct {
-		result agent.Result
-		err    error
+		execution agent.Execution
+		err       error
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		result, err := a.agent.Run(turnCtx, agent.Turn{SessionID: a.current, Input: input})
-		done <- outcome{result: result, err: err}
+		execution, err := a.agent.Run(turnCtx, agent.Turn{SessionID: a.current, Input: input})
+		done <- outcome{execution: execution, err: err}
 	}()
 	state := appcli.TurnCompleted
 	var turnErr error
-	var result agent.Result
+	var execution agent.Execution
 	interrupts := a.frontend.Interrupts()
 	for {
 		select {
 		case completed := <-done:
-			result, turnErr = completed.result, completed.err
+			execution, turnErr = completed.execution, completed.err
 			if turnErr != nil {
 				if ctx.Err() != nil {
 					return false, ctx.Err()
 				}
+				state = appcli.TurnFailed
+			} else if execution.Result == nil {
+				turnErr = errors.New("agent returned a successful execution without a result")
 				state = appcli.TurnFailed
 			}
 		case interrupt, ok := <-interrupts:
@@ -232,7 +238,7 @@ func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
 			if err := a.syncSession(ctx); err != nil {
 				return false, err
 			}
-			if err := a.interaction.Render(ctx, interaction.StatusEvent{Text: "turn canceled"}); err != nil {
+			if err := a.emitStatus(ctx, "turn canceled"); err != nil {
 				return false, err
 			}
 			return false, nil
@@ -247,13 +253,13 @@ func (a *application) runTurn(ctx context.Context, input string) (bool, error) {
 		return false, err
 	}
 	if turnErr == nil && shouldGenerateTitle {
-		a.generateAndRenameTitle(ctx, input, result.Output)
+		a.generateAndRenameTitle(ctx, input, execution.Result.Output)
 	}
 	if err := a.syncSession(ctx); err != nil {
 		return false, err
 	}
 	if turnErr != nil {
-		if err := a.interaction.Render(ctx, interaction.ErrorEvent{Err: fmt.Errorf("session %q: %w", a.current, turnErr)}); err != nil {
+		if err := a.emitError(ctx, fmt.Errorf("session %q: %w", a.current, turnErr)); err != nil {
 			return false, err
 		}
 	}
@@ -276,7 +282,7 @@ func (a *application) command(ctx context.Context, line string) (bool, error) {
 			if err := a.syncSession(ctx); err != nil {
 				return false, err
 			}
-			return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "new session: send a message to start"})
+			return false, a.emitStatus(ctx, "new session: send a message to start")
 		}
 		title, err := manualSessionTitle(argument)
 		if err != nil {
@@ -294,51 +300,51 @@ func (a *application) command(ctx context.Context, line string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if err := a.store.Rename(ctx, a.current, title); err != nil {
+		if _, err := a.manager.Rename(ctx, a.current, title); err != nil {
 			return false, fmt.Errorf("rename session %q: %w", a.current, err)
 		}
 		a.autoTitlePending = false
 		if err := a.syncSession(ctx); err != nil {
 			return false, err
 		}
-		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "renamed session to " + title})
+		return false, a.emitStatus(ctx, "renamed session to "+title)
 	case "/use":
 		if argument == "" {
 			return false, errors.New("usage: /use <id>")
 		}
 		id := session.ID(argument)
-		if _, err := a.history.Load(ctx, id); err != nil {
-			return false, fmt.Errorf("load session %q: %w", id, err)
+		if _, err := a.manager.Get(ctx, id); err != nil {
+			return false, fmt.Errorf("get session %q: %w", id, err)
 		}
 		a.current = id
 		a.autoTitlePending = false
 		if err := a.syncSession(ctx); err != nil {
 			return false, err
 		}
-		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "using session " + argument})
+		return false, a.emitStatus(ctx, "using session "+argument)
 	case "/list":
 		if argument != "" {
 			return false, errors.New("usage: /list")
 		}
-		items, err := a.store.List(ctx, session.Query{Limit: 100})
+		items, err := a.query.List(ctx)
 		if err != nil {
 			return false, fmt.Errorf("list sessions: %w", err)
 		}
 		if len(items) == 0 {
-			return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "no sessions"})
+			return false, a.emitStatus(ctx, "no sessions")
 		}
 		for _, item := range items {
 			marker := " "
 			if item.ID == a.current {
 				marker = "*"
 			}
-			if err := a.interaction.Render(ctx, interaction.StatusEvent{Text: fmt.Sprintf("%s %s  %s", marker, item.ID, item.Title)}); err != nil {
+			if err := a.emitStatus(ctx, fmt.Sprintf("%s %s  %s", marker, item.ID, item.Title)); err != nil {
 				return false, err
 			}
 		}
 		return false, nil
 	case "/help":
-		return false, a.interaction.Render(ctx, interaction.StatusEvent{Text: "/new [title]  /rename <title>  /use <id>  /list  /help  /exit"})
+		return false, a.emitStatus(ctx, "/new [title]  /rename <title>  /use <id>  /list  /help  /exit")
 	default:
 		return false, fmt.Errorf("unknown command %q", command)
 	}
@@ -351,19 +357,19 @@ func (a *application) createSession(ctx context.Context, title string) error {
 	if title == "" {
 		title = "New Session"
 	}
-	id, err := a.store.Create(ctx, session.Metadata{Title: title, CreatedAt: a.now().UTC()})
+	metadata, err := a.store.Create(ctx, session.CreateRequest{Title: title})
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
-	a.current = id
+	a.current = metadata.ID
 	if err := a.syncSession(ctx); err != nil {
 		return err
 	}
-	return a.interaction.Render(ctx, interaction.StatusEvent{Text: "using session " + string(id)})
+	return a.emitStatus(ctx, "using session "+string(metadata.ID))
 }
 
 func (a *application) syncSession(ctx context.Context) error {
-	summaries, err := a.store.List(ctx, session.Query{Limit: 100})
+	summaries, err := a.query.List(ctx)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
@@ -375,6 +381,17 @@ func (a *application) syncSession(ctx context.Context) error {
 		}
 	}
 	return a.frontend.Sync(ctx, appcli.SessionView{Current: a.current, Sessions: summaries, Messages: messages})
+}
+
+func (a *application) emitStatus(ctx context.Context, message string) error {
+	return a.interaction.Emit(ctx, interaction.Event{Name: "app.cli.status", Level: interaction.LevelInfo, Message: message})
+}
+
+func (a *application) emitError(ctx context.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	return a.interaction.Emit(ctx, interaction.Event{Name: "app.cli.error", Level: interaction.LevelError, Message: err.Error()})
 }
 
 func isNil(value any) bool {

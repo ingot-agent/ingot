@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/ingot-agent/ingot/internal/layout"
+	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/semver"
 )
 
 const tomlSum = "h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4="
@@ -265,7 +267,7 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		{directory: "model-runtime", module: "github.com/ingot-agent/model-runtime", name: "model.runtime"},
 		{directory: "tool-runtime", module: "github.com/ingot-agent/tool-runtime", name: "tool.runtime"},
 		{directory: "prompt-default", module: "github.com/ingot-agent/prompt-default", name: "prompt.default"},
-		{directory: "session-jsonl", module: "github.com/ingot-agent/session-jsonl", name: "session.jsonl", state: true},
+		{directory: "session-sqlite", module: "github.com/ingot-agent/session-sqlite", name: "session.sqlite", state: true},
 		{directory: "agent-default", module: "github.com/ingot-agent/agent-default", name: "agent.default", components: []LockedComponent{
 			{Name: "observation", Package: "./observation"},
 			{Name: "default", Package: "."},
@@ -273,10 +275,45 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 	}
 	var goMod strings.Builder
 	goMod.WriteString("module ingot.local/multimodal-skeleton\n\ngo 1.24.0\n\nrequire (\n")
+	pluginModules := make(map[string]struct{}, len(plugins))
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
+		pluginModules[plugin.module] = struct{}{}
 	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.4\n\t%s %s\n)\n\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.6\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	indirectRequirements := make(map[string]string)
+	for _, plugin := range plugins {
+		path := filepath.Join(repositoryRoot, "plugins", plugin.directory, "go.mod")
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		moduleFile, err := modfile.Parse(path, content, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, requirement := range moduleFile.Require {
+			if requirement.Mod.Path == IngotABIModulePath || requirement.Mod.Path == "github.com/ingot-agent/sdk" || requirement.Mod.Path == RuntimeSupportTOMLModule {
+				continue
+			}
+			if _, direct := pluginModules[requirement.Mod.Path]; direct {
+				continue
+			}
+			current := indirectRequirements[requirement.Mod.Path]
+			if current == "" || semver.Compare(requirement.Mod.Version, current) > 0 {
+				indirectRequirements[requirement.Mod.Path] = requirement.Mod.Version
+			}
+		}
+	}
+	indirectPaths := make([]string, 0, len(indirectRequirements))
+	for path := range indirectRequirements {
+		indirectPaths = append(indirectPaths, path)
+	}
+	sort.Strings(indirectPaths)
+	for _, path := range indirectPaths {
+		fmt.Fprintf(&goMod, "\t%s %s // indirect\n", path, indirectRequirements[path])
+	}
+	goMod.WriteString(")\n\n")
 	for _, plugin := range plugins {
 		fmt.Fprintf(&goMod, "replace %s => %s\n", plugin.module, filepath.ToSlash(filepath.Join(repositoryRoot, "plugins", plugin.directory)))
 	}

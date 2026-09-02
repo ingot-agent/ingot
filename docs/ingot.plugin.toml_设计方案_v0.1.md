@@ -506,7 +506,7 @@ license = "Apache-2.0"
 
 ```toml
 manifest_version = 1
-name = "session.jsonl"
+name = "session.sqlite"
 ingot = ">=0.3.0 <0.4.0"
 config_package = "."
 

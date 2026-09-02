@@ -12,7 +12,6 @@ import (
 
 	appcli "github.com/ingot-agent/app-cli"
 	"github.com/ingot-agent/sdk/interaction"
-	"github.com/ingot-agent/sdk/tool"
 )
 
 type fakeInput struct {
@@ -60,21 +59,21 @@ func TestChannelSerializesInputAndRendersEvents(t *testing.T) {
 		inputGate: make(chan struct{}, 1), stdout: stdout, stderr: stderr, maxLine: 64, askPrompt: "? ",
 	}
 	instance.inputGate <- struct{}{}
-	answer, err := instance.Ask(context.Background(), interaction.AskRequest{Prompt: "question"})
-	if err != nil || answer.Text != "answer" {
+	answer, err := instance.Request(context.Background(), interaction.Request{Name: "question", Fields: []interaction.Field{{Name: "answer", Label: "question", Kind: interaction.FieldString, Required: true}}})
+	if err != nil || len(answer.Values) != 1 || answer.Values[0].Value.String != "answer" {
 		t.Fatalf("answer=%#v err=%v", answer, err)
 	}
 	line, err := instance.ReadLine(context.Background(), "> ")
 	if err != nil || line != "line" {
 		t.Fatalf("line=%q err=%v", line, err)
 	}
-	if err := instance.Render(context.Background(), interaction.TextEvent{Text: "hello"}); err != nil {
+	if err := instance.Emit(context.Background(), interaction.Event{Name: "text", Message: "hello"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := instance.Render(context.Background(), interaction.ErrorEvent{Err: io.ErrUnexpectedEOF}); err != nil {
+	if err := instance.Emit(context.Background(), interaction.Event{Name: "error", Level: interaction.LevelError, Message: io.ErrUnexpectedEOF.Error()}); err != nil {
 		t.Fatal(err)
 	}
-	if stdout.String() != "question\n? > hello" {
+	if stdout.String() != "question\n? > hello\n" {
 		t.Fatalf("stdout=%q", stdout.String())
 	}
 	if stderr.String() != "error: unexpected EOF\n" {
@@ -91,15 +90,13 @@ func TestChannelPresentsAndReturnsSelectedOption(t *testing.T) {
 		inputGate: make(chan struct{}, 1), stdout: stdout, stderr: &bytes.Buffer{}, maxLine: 64, askPrompt: "? ",
 	}
 	instance.inputGate <- struct{}{}
-	answer, err := instance.Ask(context.Background(), interaction.AskRequest{
-		Prompt: "Deploy where?",
-		Options: []interaction.AskOption{
-			{Label: "Staging", Description: "Verify first"},
-			{Label: "Production"},
-		},
-		AllowTextInput: true,
+	answer, err := instance.Request(context.Background(), interaction.Request{
+		Name: "deploy", Fields: []interaction.Field{{
+			Name: "target", Label: "Deploy where?", Kind: interaction.FieldString, Required: true,
+			Options: []interaction.Option{{Value: "staging", Label: "Staging", Description: "Verify first"}, {Value: "production", Label: "Production"}},
+		}},
 	})
-	if err != nil || answer.Text != "Production" {
+	if err != nil || len(answer.Values) != 1 || answer.Values[0].Value.String != "production" {
 		t.Fatalf("answer=%#v err=%v", answer, err)
 	}
 	want := "Deploy where?\n1. Staging\n   Verify first\n2. Production\n3. Other (enter your own response)\n? "
@@ -117,14 +114,13 @@ func TestChannelKeepsCustomChoiceInsideOneAsk(t *testing.T) {
 		inputGate: make(chan struct{}, 1), stdout: stdout, stderr: &bytes.Buffer{}, maxLine: 64, askPrompt: "? ",
 	}
 	instance.inputGate <- struct{}{}
-	answer, err := instance.Ask(context.Background(), interaction.AskRequest{
-		Prompt: "Choose",
-		Options: []interaction.AskOption{
-			{Label: "Preset"},
-		},
-		AllowTextInput: true,
+	answer, err := instance.Request(context.Background(), interaction.Request{
+		Name: "choose", Fields: []interaction.Field{{
+			Name: "answer", Label: "Choose", Kind: interaction.FieldString, Required: true,
+			Options: []interaction.Option{{Value: "preset", Label: "Preset"}},
+		}},
 	})
-	if err != nil || answer.Text != "my own answer" {
+	if err != nil || len(answer.Values) != 1 || answer.Values[0].Value.String != "my own answer" {
 		t.Fatalf("answer=%#v err=%v", answer, err)
 	}
 	want := "Choose\n1. Preset\n2. Other (enter your own response)\n? Enter your response:\n? "
@@ -141,7 +137,7 @@ func TestChannelRejectsInvalidPlainAskPrompt(t *testing.T) {
 		inputGate: make(chan struct{}, 1), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, maxLine: 64, askPrompt: "? ",
 	}
 	instance.inputGate <- struct{}{}
-	_, err := instance.Ask(context.Background(), interaction.AskRequest{Prompt: string([]byte{0xff})})
+	_, err := instance.Request(context.Background(), interaction.Request{Name: "ask", Description: string([]byte{0xff}), Fields: []interaction.Field{{Name: "answer", Kind: interaction.FieldString}}})
 	if err == nil {
 		t.Fatal("Ask() accepted an invalid UTF-8 prompt")
 	}
@@ -156,10 +152,10 @@ func TestChannelRepromptsEmptyCustomChoice(t *testing.T) {
 		inputGate: make(chan struct{}, 1), stdout: stdout, stderr: &bytes.Buffer{}, maxLine: 64, askPrompt: "? ",
 	}
 	instance.inputGate <- struct{}{}
-	answer, err := instance.Ask(context.Background(), interaction.AskRequest{
-		Prompt: "Choose", Options: []interaction.AskOption{{Label: "Preset"}}, AllowTextInput: true,
+	answer, err := instance.Request(context.Background(), interaction.Request{
+		Name: "choose", Fields: []interaction.Field{{Name: "answer", Label: "Choose", Kind: interaction.FieldString, Required: true, Options: []interaction.Option{{Value: "preset", Label: "Preset"}}}},
 	})
-	if err != nil || answer.Text != "custom" {
+	if err != nil || len(answer.Values) != 1 || answer.Values[0].Value.String != "custom" {
 		t.Fatalf("answer=%#v err=%v", answer, err)
 	}
 	want := "Choose\n1. Preset\n2. Other (enter your own response)\n? Enter your response:\n? Please enter a response.\n? "
@@ -220,7 +216,7 @@ func TestTerminalLeaseIsExclusiveAndReusable(t *testing.T) {
 	releaseAgain()
 }
 
-func TestRenderSerializesCompleteEvents(t *testing.T) {
+func TestEmitSerializesCompleteEvents(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stdout := &bytes.Buffer{}
@@ -230,7 +226,7 @@ func TestRenderSerializesCompleteEvents(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			if err := instance.Render(context.Background(), interaction.StatusEvent{Text: "complete"}); err != nil {
+			if err := instance.Emit(context.Background(), interaction.Event{Name: "status", Message: "complete"}); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -269,22 +265,21 @@ func TestWaitingInputObservesContextCancellation(t *testing.T) {
 	}
 }
 
-func TestRenderFormatsStatusAndToolEvents(t *testing.T) {
+func TestEmitFormatsSemanticEvents(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	stdout := &bytes.Buffer{}
 	instance := &channel{runCtx: runCtx, cancel: cancel, stdout: stdout, stderr: &bytes.Buffer{}}
 	events := []interaction.Event{
-		interaction.StatusEvent{Text: "ready"},
-		interaction.ToolCallEvent{Call: tool.Call{ID: "c1", Name: "echo", Arguments: []byte("{ \"x\": 1 }")}},
-		interaction.ToolResultEvent{Call: tool.Call{ID: "c1", Name: "echo"}, Result: tool.Result{Content: "ok"}},
+		{Name: "ready", Level: interaction.LevelInfo, Message: "ready"},
+		{Name: "warning", Level: interaction.LevelWarning, Message: "check this"},
 	}
 	for _, event := range events {
-		if err := instance.Render(context.Background(), event); err != nil {
+		if err := instance.Emit(context.Background(), event); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want := "ready\ntool echo (c1): {\"x\":1}\ntool echo (c1) => ok\n"
+	want := "ready\ncheck this\n"
 	if stdout.String() != want {
 		t.Fatalf("stdout=%q want=%q", stdout.String(), want)
 	}

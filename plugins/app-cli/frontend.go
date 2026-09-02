@@ -38,7 +38,7 @@ type Interrupt struct{ Kind InterruptKind }
 // Sync returns.
 type SessionView struct {
 	Current  session.ID
-	Sessions []session.Summary
+	Sessions []session.Metadata
 	Messages []model.Message
 }
 
