@@ -19,7 +19,7 @@ Plugin 设计必须遵循：
 | [`asset.local`](./asset.local_v0.1.md) | Implemented v0.1 | `asset.Store`（同时满足 `asset.Resolver`） | immutable blob、原子发布、容量与并发边界、重启恢复 |
 | [`http.default`](./http.default_v0.1.md) | Implemented v0.1 | `httpx.Client` | Context authority、请求不可变、共享连接池 |
 | [`filesystem.local`](./filesystem.local_v0.1.md) | Implemented v0.1 | `filesystem.FS` | workspace boundary、安全路径、原子文件操作 |
-| [`session.jsonl`](./session.jsonl_v0.1.md) | Implemented v0.1 | `session.MutableStore` | append total order、原子标题更新、持久化格式、State compatibility |
+| [`session.sqlite`](./session.sqlite_v0.1.md) | Implemented v0.1 (M5) | `session.Store` + `session.Manager` + `session.Query` | transaction ordering、opaque Fork、archive lifecycle、deterministic discovery |
 | [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | 子进程树、环境隔离、输出与时间边界 |
 | [`tool.fs`](./tool.fs_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Filesystem-to-Tool typed adapter |
 | [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
@@ -39,7 +39,7 @@ Plugin 设计必须遵循：
 ## 依赖与建议实施批次
 
 ```text
-Batch 1  asset.local / http.default / filesystem.local / session.jsonl
+Batch 1  asset.local / http.default / filesystem.local / session.sqlite
 Batch 2  tool.shell / tool.fs / tool.ask / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
@@ -52,8 +52,8 @@ ABI 的 `lifecycle.Controller.RequestShutdown` 向 generated main 报告结束�
 调用元数据通过 `invocation.Invocation` 读取；二者均为显式 host Dependencies。
 Component 不新增 Builder root 特例，不调用 `os.Exit`，也不使用隐藏全局
 channel。多模态迁移覆盖的官方 Plugin 依赖 SDK v0.2.0，Component ABI 与 host
-Contract 依赖 ingot ABI v0.1.0。`app.cli` 按当前迁移决议暂时保持 SDK v0.1.3
-源码不变，等待后续完整重写，因此不属于本批 v0.2.0 构建验收范围。
+Contract 依赖 ingot ABI v0.1.0。`app.cli` 使用当前 SDK interaction 与 M5
+Session capability contracts。
 
 `app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
 

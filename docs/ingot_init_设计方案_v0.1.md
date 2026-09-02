@@ -61,7 +61,7 @@ ingot 的核心是 Plugin/Component 组合系统，但最终产品不应只是�
 - `model.runtime`
 - `tool.runtime`
 - `prompt.default`
-- `session.jsonl`
+- `session.sqlite`
 - `app.cli`
 
 这些是“运行时骨架”，没有它们很难形成开箱即用的 Agent。
@@ -198,7 +198,7 @@ ingot init --no-build
 
 | Profile | 插件数 | 内容 |
 |---|---|---|
-| `default` | 14 | 骨架（`asset.local`、`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.jsonl`、`agent.default`、`app.cli`） |
+| `default` | 14 | 骨架（`asset.local`、`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.sqlite`、`agent.default`、`app.cli`） |
 | `minimal` | 9 | 最小组合：骨架 + 一个模型 Provider + 其 HTTP 与 Asset 依赖 |
 
 ### 9.5 默认配置模板

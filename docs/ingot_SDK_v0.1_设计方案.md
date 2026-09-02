@@ -740,44 +740,56 @@ package session
 type ID string
 
 type Metadata struct {
-    Title     string
-    CreatedAt time.Time
+	ID         ID
+	Title      string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	ArchivedAt *time.Time
 }
 
 type Entry struct {
     Kind    string
     Version int
-    Payload json.RawMessage
+	Payload []byte
 }
 
-type Query struct {
-    Limit  int
-    Offset int
+type CreateRequest struct {
+	Title string
 }
 
-type Summary struct {
-    ID        ID
-    Title     string
-    CreatedAt time.Time
-    UpdatedAt time.Time
+type ForkRequest struct {
+	Title string
 }
 
 type Store interface {
-    Create(context.Context, Metadata) (ID, error)
-    Append(context.Context, ID, Entry) error
-    Load(context.Context, ID) ([]Entry, error)
-    List(context.Context, Query) ([]Summary, error)
+	Create(context.Context, CreateRequest) (Metadata, error)
+	Append(context.Context, ID, Entry) error
+	Load(context.Context, ID) ([]Entry, error)
 }
 
-type MutableStore interface {
-    Store
-    Rename(context.Context, ID, string) error
+type Manager interface {
+	Get(context.Context, ID) (Metadata, error)
+	Rename(context.Context, ID, string) (Metadata, error)
+	Archive(context.Context, ID) (Metadata, error)
+	Restore(context.Context, ID) (Metadata, error)
+	Delete(context.Context, ID) error
+	Fork(context.Context, ID, ForkRequest) (Metadata, error)
 }
 
-var ErrNotFound = errors.New("session not found")
+type Query interface {
+	List(context.Context) ([]Metadata, error)
+}
+
+var (
+	ErrNotFound = errors.New("session not found")
+	ErrArchived = errors.New("session archived")
+)
 ```
 
-`Entry` 是版本化 Durable Persistence Envelope。`Entry.Version` 表示该 Kind payload schema；Manifest `[state]` 表示整个 Plugin persistent format。
+`Entry` 是 opaque、版本化 Durable Persistence Envelope。Session implementation
+只保留 Kind、Version、Payload bytes 与 append order，不解释 payload。Store 负责
+创建 ID 与 timestamps；Manager 只处理已知 identity 的 lifecycle；Query 只处理
+discovery。
 
 ### 14.2 Append 语义
 
@@ -787,11 +799,15 @@ Power-loss durability 由 Store implementation 的 fsync/WAL policy 定义。需
 
 Store 打开 persistent data 时按 Plugin State reader window 校验兼容性。
 
-### 14.3 Title 更新（SDK v0.1.3）
+### 14.3 Lifecycle 与 discovery（M5）
 
-`MutableStore` 自 SDK v0.1.3 起提供，是 `Store` 的可选扩展能力，只允许修改 Session 的展示标题。`Rename` 不改变 Session ID、Entry committed sequence、`CreatedAt` 或 `UpdatedAt`，也不向 Entry sequence 写入元数据事件。同一 Session 的 Rename 与 Append/Load 使用相同的有序边界，不同 Session 仍可并行。
+`UpdatedAt` 只表示最后一次 committed Entry mutation；Rename、Archive、Restore
+都不修改它。Archive/Restore 是 idempotent desired-state operation，Archived
+Session 允许 Load/Fork 但 Append 返回 `ErrArchived`。Fork opaque-copy committed
+Entries，创建新的 active identity，不复制 Asset 或 source lifecycle state。
 
-Title 必须是非空 valid UTF-8；不存在的 Session 返回包装 `session.ErrNotFound`。具体 Store 可以使用原子 metadata replacement、事务或数据库 update 实现，但成功返回后后续 `List` 必须可见新标题。
+`Query.List` 返回 active 与 archived Session。M5 不提供 pagination、search、tag、
+workspace association 或 arbitrary metadata。
 
 ## 15. `prompt`
 
@@ -1169,7 +1185,7 @@ Public struct 示例使用 keyed literal。`Message`、`Request`、`Response`、
 
 ### Phase 4：Persistence 与 Prompt
 
-- `session.jsonl`、`prompt.default`；
+- `session.sqlite`、`prompt.default`；
 - `contextwindow.Compactor` Contract 与 `context.compact`；
 - Append、State compatibility、Contributor order、optional compaction wiring。
 

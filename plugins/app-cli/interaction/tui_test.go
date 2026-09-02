@@ -6,6 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	appcli "github.com/ingot-agent/app-cli"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -21,7 +22,7 @@ func TestTUIResponsiveSessionLayout(t *testing.T) {
 	model := testTUIModel()
 	model.applySessionView(appcli.SessionView{
 		Current:  "s2",
-		Sessions: []session.Summary{{ID: "s1", Title: "First"}, {ID: "s2", Title: "Second"}},
+		Sessions: []session.Metadata{{ID: "s1", Title: "First"}, {ID: "s2", Title: "Second"}},
 	})
 	model.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	if !model.showSidebar || model.mainWidth >= model.width {
@@ -40,27 +41,20 @@ func TestTUIResponsiveSessionLayout(t *testing.T) {
 	}
 }
 
-func TestTUIStreamsMarkdownAndPairsToolResult(t *testing.T) {
+func TestTUIAppliesSemanticEvents(t *testing.T) {
 	model := testTUIModel()
-	if err := model.applyEvent(interaction.TextEvent{Text: "# Result\n\n**hel"}); err != nil {
+	if err := model.applyEvent(interaction.Event{Name: "status", Level: interaction.LevelInfo, Message: "ready"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := model.applyEvent(interaction.TextEvent{Text: "lo** and `code`"}); err != nil {
+	if err := model.applyEvent(interaction.Event{Name: "error", Level: interaction.LevelError, Message: "failed"}); err != nil {
 		t.Fatal(err)
 	}
-	call := tool.Call{ID: "c1", Name: "shell", Arguments: []byte(`{"command":"pwd"}`)}
-	if err := model.applyEvent(interaction.ToolCallEvent{Call: call}); err != nil {
-		t.Fatal(err)
-	}
-	if err := model.applyEvent(interaction.ToolResultEvent{Call: call, Result: tool.Result{Content: "/workspace"}}); err != nil {
-		t.Fatal(err)
-	}
-	if len(model.blocks) != 2 || model.blocks[0].text != "# Result\n\n**hello** and `code`" || !model.blocks[1].toolDone {
+	if len(model.blocks) != 2 || model.blocks[0].text != "ready" || model.blocks[1].kind != blockError {
 		t.Fatalf("blocks=%#v", model.blocks)
 	}
 	model.rebuildTranscript(true)
 	content := model.viewport.View()
-	for _, want := range []string{"Result", "hello", "code", "Tool", "shell", "/workspace"} {
+	for _, want := range []string{"ready", "failed"} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("transcript missing %q: %q", want, content)
 		}
@@ -70,9 +64,9 @@ func TestTUIStreamsMarkdownAndPairsToolResult(t *testing.T) {
 func TestTUILoadsHistoryAndOwnsMutableToolCalls(t *testing.T) {
 	ui := testTUIModel()
 	view := appcli.SessionView{Current: "s1", Messages: []model.Message{
-		{Role: model.RoleUser, Content: "question"},
-		{Role: model.RoleAssistant, Content: "answer", ToolCalls: []tool.Call{{ID: "c1", Name: "read", Arguments: []byte(`{"path":"a"}`)}}},
-		{Role: model.RoleTool, ToolCallID: "c1", Content: "contents"},
+		{Role: model.RoleUser, Content: content.FromText("question")},
+		{Role: model.RoleAssistant, Content: content.FromText("answer"), ToolCalls: []tool.Call{{ID: "c1", Name: "read", Arguments: []byte(`{"path":"a"}`)}}},
+		{Role: model.RoleTool, ToolCallID: "c1", Content: content.FromText("contents")},
 	}}
 	cloned := cloneSessionView(view)
 	view.Messages[1].ToolCalls[0].Arguments[0] = '!'
@@ -93,10 +87,10 @@ func TestTUIInputAndAskResponses(t *testing.T) {
 	}
 
 	askResponse := make(chan inputResult, 1)
-	request := interaction.AskRequest{Prompt: "Approve?", Options: []interaction.AskOption{{Label: "Yes"}, {Label: "No"}}}
+	request := askRequest{Prompt: "Approve?", Options: []askOption{{Value: "yes", Label: "Yes"}, {Value: "no", Label: "No"}}}
 	model.request = &requestState{id: 2, response: askResponse, ask: &request, selected: 1}
-	model.answer(request.Options[model.request.selected].Label)
-	if result := <-askResponse; result.text != "No" {
+	model.answer(request.Options[model.request.selected].Value)
+	if result := <-askResponse; result.text != "no" {
 		t.Fatalf("ask response=%#v", result)
 	}
 }
@@ -110,7 +104,7 @@ func TestTUISanitizesControlSequencesAndTruncatesUTF8(t *testing.T) {
 	if !truncated || value != "ab世" {
 		t.Fatalf("truncateUTF8()=(%q, %v)", value, truncated)
 	}
-	if err := testTUIModel().applyEvent(nil); err == nil || !strings.Contains(err.Error(), "unsupported") {
-		t.Fatalf("nil event error=%v", err)
+	if err := testTUIModel().applyEvent(interaction.Event{}); err != nil {
+		t.Fatalf("empty event error=%v", err)
 	}
 }
