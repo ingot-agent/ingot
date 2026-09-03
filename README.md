@@ -41,7 +41,7 @@ the graph.
 | Binary assets | `asset.local` | Object storage, shared media service, encrypted or remote immutable blobs |
 | Tools | `tool.shell`, `tool.fs`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
 | Policy | `interceptor.approval`, `interceptor.script` | Audit, authorization, rate limits, organization-specific guardrails |
-| State and context | `session.jsonl`, `context.compact`, `prompt.default` | Database-backed sessions, retrieval, custom memory and prompting |
+| State and context | `session.sqlite`, `context.compact`, `prompt.default` | Alternate session backends, retrieval, custom memory and prompting |
 
 The boundary is deliberately broad: customization does not stop at tools or
 model providers. It extends down to the HTTP client and up through the agent

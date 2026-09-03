@@ -24,8 +24,8 @@ type memoryStore struct {
 	appendErr error
 }
 
-func (s *memoryStore) Create(context.Context, session.Metadata) (session.ID, error) {
-	return "", errors.New("not implemented")
+func (s *memoryStore) Create(context.Context, session.CreateRequest) (session.Metadata, error) {
+	return session.Metadata{}, errors.New("not implemented")
 }
 
 func (s *memoryStore) Append(_ context.Context, id session.ID, entry session.Entry) error {
@@ -52,10 +52,6 @@ func (s *memoryStore) Load(_ context.Context, id session.ID) ([]session.Entry, e
 		result[i] = entry
 	}
 	return result, nil
-}
-
-func (s *memoryStore) List(context.Context, session.Query) ([]session.Summary, error) {
-	return nil, nil
 }
 
 type fakeModel struct {

@@ -13,7 +13,7 @@ use (
 	./plugins/model-openai-compatible
 	./plugins/model-runtime
 	./plugins/prompt-default
-	./plugins/session-jsonl
+	./plugins/session-sqlite
 	./plugins/tool-ask
 	./plugins/tool-fs
 	./plugins/tool-runtime

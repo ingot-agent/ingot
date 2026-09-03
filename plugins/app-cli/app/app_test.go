@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	appcli "github.com/ingot-agent/app-cli"
 	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/sdk/agent"
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
@@ -29,8 +31,8 @@ type fakeFrontend struct {
 	renderErr  error
 }
 
-func (f *fakeFrontend) Ask(context.Context, interaction.AskRequest) (interaction.AskResponse, error) {
-	return interaction.AskResponse{}, errors.New("unused")
+func (f *fakeFrontend) Request(context.Context, interaction.Request) (interaction.Response, error) {
+	return interaction.Response{}, errors.New("unused")
 }
 
 func (f *fakeFrontend) ReadLine(ctx context.Context, _ string) (string, error) {
@@ -51,7 +53,7 @@ func (f *fakeFrontend) ReadLine(ctx context.Context, _ string) (string, error) {
 	return line, nil
 }
 
-func (f *fakeFrontend) Render(_ context.Context, event interaction.Event) error {
+func (f *fakeFrontend) Emit(_ context.Context, event interaction.Event) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.renderErr != nil {
@@ -61,10 +63,14 @@ func (f *fakeFrontend) Render(_ context.Context, event interaction.Event) error 
 	return nil
 }
 
+func (*fakeFrontend) Set(context.Context, interaction.State) error { return nil }
+
+func (*fakeFrontend) Clear(context.Context, string) error { return nil }
+
 func (f *fakeFrontend) Sync(_ context.Context, view appcli.SessionView) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	view.Sessions = append([]session.Summary(nil), view.Sessions...)
+	view.Sessions = append([]session.Metadata(nil), view.Sessions...)
 	view.Messages = append([]model.Message(nil), view.Messages...)
 	f.views = append(f.views, view)
 	return nil
@@ -97,7 +103,7 @@ type fakeAgent struct {
 	output   string
 }
 
-func (f *fakeAgent) Run(ctx context.Context, turn agent.Turn) (agent.Result, error) {
+func (f *fakeAgent) Run(ctx context.Context, turn agent.Turn) (agent.Execution, error) {
 	f.mu.Lock()
 	f.turns = append(f.turns, turn)
 	block := f.blockRun
@@ -105,13 +111,17 @@ func (f *fakeAgent) Run(ctx context.Context, turn agent.Turn) (agent.Result, err
 	f.mu.Unlock()
 	if block {
 		<-ctx.Done()
-		return agent.Result{}, ctx.Err()
+		return agent.Execution{Outcome: agent.Outcome{Status: agent.OutcomeCanceled}}, ctx.Err()
+	}
+	if err != nil {
+		return agent.Execution{Outcome: agent.Outcome{Status: agent.OutcomeFailed}}, err
 	}
 	output := f.output
 	if output == "" {
 		output = "assistant answer"
 	}
-	return agent.Result{Output: output}, err
+	result := agent.Result{Output: content.FromText(output)}
+	return agent.Execution{Result: &result, Outcome: agent.Outcome{Status: agent.OutcomeSucceeded}}, nil
 }
 
 func (f *fakeAgent) Load(_ context.Context, id session.ID) ([]model.Message, error) {
@@ -122,10 +132,10 @@ func (f *fakeAgent) Load(_ context.Context, id session.ID) ([]model.Message, err
 }
 
 type fakeStore struct {
-	created   []session.Metadata
+	created   []session.CreateRequest
 	createID  session.ID
 	createErr error
-	summaries []session.Summary
+	summaries []session.Metadata
 	listErr   error
 	renamed   []struct {
 		id    session.ID
@@ -134,30 +144,48 @@ type fakeStore struct {
 	renameErr error
 }
 
-func (f *fakeStore) Create(_ context.Context, metadata session.Metadata) (session.ID, error) {
-	f.created = append(f.created, metadata)
+func (f *fakeStore) Create(_ context.Context, request session.CreateRequest) (session.Metadata, error) {
+	f.created = append(f.created, request)
 	if f.createErr != nil {
-		return "", f.createErr
+		return session.Metadata{}, f.createErr
 	}
 	if f.createID != "" {
-		return f.createID, nil
+		return session.Metadata{ID: f.createID, Title: request.Title}, nil
 	}
-	return "s1", nil
+	return session.Metadata{ID: "s1", Title: request.Title}, nil
 }
 
 func (*fakeStore) Append(context.Context, session.ID, session.Entry) error   { return nil }
 func (*fakeStore) Load(context.Context, session.ID) ([]session.Entry, error) { return nil, nil }
 
-func (f *fakeStore) List(context.Context, session.Query) ([]session.Summary, error) {
-	return append([]session.Summary(nil), f.summaries...), f.listErr
+func (f *fakeStore) List(context.Context) ([]session.Metadata, error) {
+	return append([]session.Metadata(nil), f.summaries...), f.listErr
 }
 
-func (f *fakeStore) Rename(_ context.Context, id session.ID, title string) error {
+func (f *fakeStore) Get(_ context.Context, id session.ID) (session.Metadata, error) {
+	return session.Metadata{ID: id}, nil
+}
+
+func (f *fakeStore) Rename(_ context.Context, id session.ID, title string) (session.Metadata, error) {
 	f.renamed = append(f.renamed, struct {
 		id    session.ID
 		title string
 	}{id: id, title: title})
-	return f.renameErr
+	return session.Metadata{ID: id, Title: title}, f.renameErr
+}
+
+func (*fakeStore) Archive(_ context.Context, id session.ID) (session.Metadata, error) {
+	return session.Metadata{ID: id}, nil
+}
+
+func (*fakeStore) Restore(_ context.Context, id session.ID) (session.Metadata, error) {
+	return session.Metadata{ID: id}, nil
+}
+
+func (*fakeStore) Delete(context.Context, session.ID) error { return nil }
+
+func (*fakeStore) Fork(_ context.Context, id session.ID, _ session.ForkRequest) (session.Metadata, error) {
+	return session.Metadata{ID: id + "-fork"}, nil
 }
 
 type fakeModel struct {
@@ -172,7 +200,7 @@ func (f *fakeModel) Complete(_ context.Context, request model.Request) (model.Re
 		return model.Response{}, f.err
 	}
 	if f.response.Message.Role == "" {
-		return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "Generated title"}}, nil
+		return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("Generated title")}}, nil
 	}
 	return f.response, nil
 }
@@ -205,7 +233,14 @@ func (f *fakeProcess) RequestShutdown(err error) {
 func testApplication(frontend *fakeFrontend, runtime *fakeAgent, store *fakeStore, process *fakeProcess) *application {
 	return &application{
 		agent: runtime, history: runtime, model: &fakeModel{}, interaction: frontend, frontend: frontend,
-		store: store, invocationData: process, lifecycle: process, inputPrompt: "> ", now: func() time.Time { return time.Unix(10, 0) },
+		store: store, manager: store, query: store, invocationData: process, lifecycle: process, inputPrompt: "> ",
+	}
+}
+
+func testDependencies(frontend *fakeFrontend, runtime *fakeAgent, store *fakeStore, process *fakeProcess) Dependencies {
+	return Dependencies{
+		Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend,
+		Store: store, Manager: store, Query: store, Invocation: process, Lifecycle: process,
 	}
 }
 
@@ -247,7 +282,7 @@ func TestNewReturnsPromptlyAndCleanupCancelsOnlyOwnedLoop(t *testing.T) {
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
 	start := time.Now()
-	_, cleanup, err := New(parent, appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
+	_, cleanup, err := New(parent, appcli.Config{}, testDependencies(frontend, runtime, &fakeStore{}, process))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +302,7 @@ func TestNewReturnsPromptlyAndCleanupCancelsOnlyOwnedLoop(t *testing.T) {
 func TestLoopCommandsProduceDeterministicTranscript(t *testing.T) {
 	frontend := &fakeFrontend{lines: []string{"/new Work", "/list", "/use s2", "/help", "/exit"}}
 	runtime := &fakeAgent{}
-	store := &fakeStore{createID: "s1", summaries: []session.Summary{{ID: "s1", Title: "Work"}, {ID: "s2", Title: "Other"}}}
+	store := &fakeStore{createID: "s1", summaries: []session.Metadata{{ID: "s1", Title: "Work"}, {ID: "s2", Title: "Other"}}}
 	instance := testApplication(frontend, runtime, store, &fakeProcess{})
 
 	if err := instance.loop(context.Background()); err != nil {
@@ -287,8 +322,7 @@ func TestLoopCommandsProduceDeterministicTranscript(t *testing.T) {
 		t.Fatalf("events=%#v", frontend.events)
 	}
 	for index, event := range frontend.events {
-		status, ok := event.(interaction.StatusEvent)
-		if !ok || status.Text != want[index] {
+		if event.Level != interaction.LevelInfo || event.Message != want[index] {
 			t.Fatalf("event %d=%#v want=%q", index, event, want[index])
 		}
 	}
@@ -306,8 +340,8 @@ func TestLoopRendersAgentErrorAfterHistorySyncAndContinues(t *testing.T) {
 	if len(frontend.events) != 2 {
 		t.Fatalf("events=%#v", frontend.events)
 	}
-	errorEvent, ok := frontend.events[1].(interaction.ErrorEvent)
-	if !ok || !errors.Is(errorEvent.Err, wantErr) {
+	errorEvent := frontend.events[1]
+	if errorEvent.Level != interaction.LevelError || !strings.Contains(errorEvent.Message, wantErr.Error()) {
 		t.Fatalf("error event=%#v", frontend.events[1])
 	}
 	if len(frontend.finishes) != 1 || frontend.finishes[0] != appcli.TurnFailed {
@@ -408,12 +442,14 @@ func TestNewRejectsTypedNilDependenciesAndMissingProcess(t *testing.T) {
 	validModel := &fakeModel{}
 	validFrontend := &fakeFrontend{}
 	tests := []Dependencies{
-		{Agent: nilAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: nilAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Model: nilModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: nilFrontend, Frontend: validFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: nilFrontend, Store: &fakeStore{}},
-		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: nilStore},
+		{Agent: nilAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: nilAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: nilModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: nilFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: nilFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: nilStore, Manager: &fakeStore{}, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: nilStore, Query: &fakeStore{}},
+		{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Manager: &fakeStore{}, Query: nilStore},
 	}
 	process := &fakeProcess{}
 	for index, deps := range tests {
@@ -423,8 +459,10 @@ func TestNewRejectsTypedNilDependenciesAndMissingProcess(t *testing.T) {
 			t.Fatalf("case %d New() error=%v", index, err)
 		}
 	}
-	valid := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process}
-	missingHosts := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: &fakeStore{}}
+	validStore := &fakeStore{}
+	valid := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: validStore, Manager: validStore, Query: validStore, Invocation: process, Lifecycle: process}
+	missingStore := &fakeStore{}
+	missingHosts := Dependencies{Agent: validAgent, History: validAgent, Model: validModel, Interaction: validFrontend, Frontend: validFrontend, Store: missingStore, Manager: missingStore, Query: missingStore}
 	if _, _, err := New(context.Background(), appcli.Config{}, missingHosts); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("missing host dependency error=%v", err)
 	}
@@ -437,7 +475,7 @@ func TestCheckModeValidatesGraphWithoutStartingLoop(t *testing.T) {
 	process := &fakeProcess{mode: invocation.ModeCheck}
 	frontend := &fakeFrontend{block: true}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(context.Background(), appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
+	_, cleanup, err := New(context.Background(), appcli.Config{}, testDependencies(frontend, runtime, &fakeStore{}, process))
 	if err != nil || cleanup != nil {
 		t.Fatalf("cleanup=%v err=%v", cleanup, err)
 	}
@@ -448,7 +486,7 @@ func TestFatalLoopErrorRequestsProcessShutdownAndCleanupReturnsIt(t *testing.T) 
 	process := &fakeProcess{done: make(chan struct{})}
 	frontend := &fakeFrontend{readErr: wantErr}
 	runtime := &fakeAgent{}
-	_, cleanup, err := New(context.Background(), appcli.Config{}, Dependencies{Agent: runtime, History: runtime, Model: &fakeModel{}, Interaction: frontend, Frontend: frontend, Store: &fakeStore{}, Invocation: process, Lifecycle: process})
+	_, cleanup, err := New(context.Background(), appcli.Config{}, testDependencies(frontend, runtime, &fakeStore{}, process))
 	if err != nil {
 		t.Fatal(err)
 	}

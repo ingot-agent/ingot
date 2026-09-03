@@ -3,9 +3,7 @@
 package interactioncomponent
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +62,8 @@ type channel struct {
 	driver       inputDriver
 	inputGate    chan struct{}
 	outputMu     sync.Mutex
+	stateMu      sync.Mutex
+	states       map[string]interaction.State
 	lifecycleMu  sync.Mutex
 	closed       bool
 	active       int
@@ -103,6 +103,7 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, in
 		instance := &channel{
 			runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
 			stdout: io.Discard, stderr: io.Discard, maxLine: normalized.maxLine, askPrompt: normalized.askPrompt,
+			states: make(map[string]interaction.State),
 		}
 		instance.inputGate <- struct{}{}
 		return Exports{Channel: instance, Frontend: instance}, ingotabi.Cleanup(instance.cleanup), nil
@@ -122,7 +123,7 @@ func New(ctx context.Context, cfg appcli.Config, deps Dependencies) (Exports, in
 	instance := &channel{
 		runCtx: runCtx, cancel: cancel, inputGate: make(chan struct{}, 1),
 		stdout: os.Stdout, stderr: os.Stderr, color: false,
-		maxLine: normalized.maxLine, askPrompt: normalized.askPrompt,
+		maxLine: normalized.maxLine, askPrompt: normalized.askPrompt, states: make(map[string]interaction.State),
 	}
 	instance.inputGate <- struct{}{}
 	driver, err := newTerminalInput(os.Stdin, os.Stdout)
@@ -202,7 +203,11 @@ func normalizeConfig(cfg appcli.InteractionConfig) (normalizedConfig, error) {
 	return normalizedConfig{askPrompt: cfg.AskPrompt, color: color, maxLine: maxLine}, nil
 }
 
-func (c *channel) Ask(ctx context.Context, request interaction.AskRequest) (interaction.AskResponse, error) {
+func (c *channel) Request(ctx context.Context, request interaction.Request) (interaction.Response, error) {
+	return collectResponse(ctx, request, c.ask)
+}
+
+func (c *channel) ask(ctx context.Context, request askRequest) (string, error) {
 	line, err := c.withInput(ctx, func(callCtx context.Context) (string, error) {
 		if err := validateAskRequest(request); err != nil {
 			return "", err
@@ -217,9 +222,9 @@ func (c *channel) Ask(ctx context.Context, request interaction.AskRequest) (inte
 		return c.readChoiceHeld(callCtx, request)
 	})
 	if err != nil {
-		return interaction.AskResponse{}, err
+		return "", err
 	}
-	return interaction.AskResponse{Text: line}, nil
+	return line, nil
 }
 
 func (c *channel) ReadLine(ctx context.Context, prompt string) (string, error) {
@@ -283,7 +288,7 @@ func (c *channel) readLineHeld(ctx context.Context, prompt string) (string, erro
 	return line, nil
 }
 
-func (c *channel) readChoiceHeld(ctx context.Context, request interaction.AskRequest) (string, error) {
+func (c *channel) readChoiceHeld(ctx context.Context, request askRequest) (string, error) {
 	prompt := formatChoicePrompt(request, c.askPrompt)
 	for {
 		line, err := c.readLineHeld(ctx, prompt)
@@ -298,7 +303,7 @@ func (c *channel) readChoiceHeld(ctx context.Context, request interaction.AskReq
 		if selected, err := strconv.Atoi(trimmed); err == nil {
 			switch {
 			case selected >= 1 && selected <= len(request.Options):
-				return request.Options[selected-1].Label, nil
+				return request.Options[selected-1].Value, nil
 			case request.AllowTextInput && selected == len(request.Options)+1:
 				return c.readNonEmptyLineHeld(ctx, "Enter your response:\n"+c.askPrompt)
 			default:
@@ -307,8 +312,8 @@ func (c *channel) readChoiceHeld(ctx context.Context, request interaction.AskReq
 			}
 		}
 		for _, option := range request.Options {
-			if line == option.Label {
-				return option.Label, nil
+			if line == option.Label || line == option.Value {
+				return option.Value, nil
 			}
 		}
 		if request.AllowTextInput {
@@ -331,27 +336,7 @@ func (c *channel) readNonEmptyLineHeld(ctx context.Context, prompt string) (stri
 	}
 }
 
-func validateAskRequest(request interaction.AskRequest) error {
-	if !utf8.ValidString(request.Prompt) {
-		return fmt.Errorf("ask prompt must be valid UTF-8")
-	}
-	labels := make(map[string]struct{}, len(request.Options))
-	for index, option := range request.Options {
-		if option.Label == "" || !utf8.ValidString(option.Label) {
-			return fmt.Errorf("ask option %d label must be a non-empty UTF-8 string", index)
-		}
-		if !utf8.ValidString(option.Description) {
-			return fmt.Errorf("ask option %d description must be valid UTF-8", index)
-		}
-		if _, exists := labels[option.Label]; exists {
-			return fmt.Errorf("ask option %d duplicates label %q", index, option.Label)
-		}
-		labels[option.Label] = struct{}{}
-	}
-	return nil
-}
-
-func formatChoicePrompt(request interaction.AskRequest, askPrompt string) string {
+func formatChoicePrompt(request askRequest, askPrompt string) string {
 	var prompt strings.Builder
 	if request.Prompt != "" {
 		prompt.WriteString(request.Prompt)
@@ -370,8 +355,8 @@ func formatChoicePrompt(request interaction.AskRequest, askPrompt string) string
 	return prompt.String()
 }
 
-func (c *channel) Render(ctx context.Context, event interaction.Event) error {
-	if ctx == nil || isNil(event) {
+func (c *channel) Emit(ctx context.Context, event interaction.Event) error {
+	if ctx == nil || !utf8.ValidString(event.Name) || !utf8.ValidString(event.Message) {
 		return interaction.ErrUnavailable
 	}
 	callCtx, cancel := mergeContext(ctx, c.runCtx)
@@ -381,25 +366,43 @@ func (c *channel) Render(ctx context.Context, event interaction.Event) error {
 	}
 	c.outputMu.Lock()
 	defer c.outputMu.Unlock()
-	switch value := event.(type) {
-	case interaction.TextEvent:
-		_, err := io.WriteString(c.stdout, value.Text)
-		return err
-	case interaction.StatusEvent:
-		return c.writeLine(c.stdout, value.Text, "36")
-	case interaction.ErrorEvent:
-		if value.Err == nil {
-			return nil
-		}
-		return c.writeLine(c.stderr, "error: "+value.Err.Error(), "31")
-	case interaction.ToolCallEvent:
-		arguments := compactJSON(value.Call.Arguments)
-		return c.writeLine(c.stdout, fmt.Sprintf("tool %s (%s): %s", value.Call.Name, value.Call.ID, arguments), "36")
-	case interaction.ToolResultEvent:
-		return c.writeLine(c.stdout, fmt.Sprintf("tool %s (%s) => %s", value.Call.Name, value.Call.ID, value.Result.Content), "36")
-	default:
-		return fmt.Errorf("unsupported interaction event %T", event)
+	message := event.Message
+	if message == "" {
+		message = event.Name
 	}
+	if event.Level == interaction.LevelError {
+		return c.writeLine(c.stderr, "error: "+message, "31")
+	}
+	return c.writeLine(c.stdout, message, "36")
+}
+
+func (c *channel) Set(ctx context.Context, value interaction.State) error {
+	if ctx == nil || value.Name == "" || !utf8.ValidString(value.Name) {
+		return interaction.ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.stateMu.Lock()
+	if c.states == nil {
+		c.states = make(map[string]interaction.State)
+	}
+	c.states[value.Name] = cloneState(value)
+	c.stateMu.Unlock()
+	return nil
+}
+
+func (c *channel) Clear(ctx context.Context, name string) error {
+	if ctx == nil || name == "" || !utf8.ValidString(name) {
+		return interaction.ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.stateMu.Lock()
+	delete(c.states, name)
+	c.stateMu.Unlock()
+	return nil
 }
 
 func (c *channel) Sync(ctx context.Context, _ appcli.SessionView) error {
@@ -432,14 +435,6 @@ func (c *channel) writeLine(writer io.Writer, text, color string) error {
 	}
 	_, err := fmt.Fprintln(writer, text)
 	return err
-}
-
-func compactJSON(raw json.RawMessage) string {
-	var buffer bytes.Buffer
-	if json.Compact(&buffer, raw) != nil {
-		return "null"
-	}
-	return buffer.String()
 }
 
 func mergeContext(caller, owner context.Context) (context.Context, context.CancelFunc) {

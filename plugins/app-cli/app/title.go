@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 )
 
@@ -56,12 +57,16 @@ func manualSessionTitle(input string) (string, error) {
 	return title, nil
 }
 
-func (a *application) generateAndRenameTitle(ctx context.Context, user, assistant string) {
+func (a *application) generateAndRenameTitle(ctx context.Context, user string, assistantContent content.Content) {
+	assistant, ok := content.TextOnly(assistantContent)
+	if !ok {
+		return
+	}
 	title, err := a.generateTitle(ctx, user, assistant)
 	if err != nil {
 		return
 	}
-	_ = a.store.Rename(ctx, a.current, title)
+	_, _ = a.manager.Rename(ctx, a.current, title)
 }
 
 func (a *application) generateTitle(ctx context.Context, user, assistant string) (string, error) {
@@ -79,8 +84,8 @@ func (a *application) generateTitle(ctx context.Context, user, assistant string)
 		Provider: a.titleProvider,
 		Model:    a.titleModel,
 		Messages: []model.Message{
-			{Role: model.RoleSystem, Content: titleSystemPrompt},
-			{Role: model.RoleUser, Content: string(conversation)},
+			{Role: model.RoleSystem, Content: content.FromText(titleSystemPrompt)},
+			{Role: model.RoleUser, Content: content.FromText(string(conversation))},
 		},
 		Temperature: &temperature,
 		MaxTokens:   &maxTokens,
@@ -91,7 +96,11 @@ func (a *application) generateTitle(ctx context.Context, user, assistant string)
 	if response.Message.Role != model.RoleAssistant || len(response.Message.ToolCalls) != 0 {
 		return "", errors.New("title model returned an invalid message")
 	}
-	return generatedSessionTitle(response.Message.Content)
+	generated, ok := content.TextOnly(response.Message.Content)
+	if !ok {
+		return "", errors.New("title model returned non-text content")
+	}
+	return generatedSessionTitle(generated)
 }
 
 func generatedSessionTitle(input string) (string, error) {

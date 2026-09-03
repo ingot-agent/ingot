@@ -24,7 +24,7 @@ ingot 是一个面向 Agent 的构建期组合系统。它不把 Agent 看成只
 | 二进制 Asset | `asset.local` | 对象存储、共享媒体服务、加密或远程不可变 Blob |
 | 工具 | `tool.shell`、`tool.fs`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
 | 策略 | `interceptor.approval`、`interceptor.script` | 审计、鉴权、限流、组织专用安全策略 |
-| 状态与上下文 | `session.jsonl`、`context.compact`、`prompt.default` | 数据库存储、检索、自定义记忆与 Prompt |
+| 状态与上下文 | `session.sqlite`、`context.compact`、`prompt.default` | 可替换 Session 后端、检索、自定义记忆与 Prompt |
 
 这个边界刻意设计得很宽：定制能力并不止于工具和模型 Provider，而是向下覆盖 HTTP Client，向上贯穿 Agent Loop，直至承载 Agent 的应用本身。
 

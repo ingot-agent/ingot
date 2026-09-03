@@ -17,7 +17,9 @@ app.cli/interaction --interaction.Channel----> app.cli/app
 agent.default ------agent.Runtime---------> app.cli/app
 agent.default ------agent.History----------> app.cli/app
 model.runtime ------model.Runtime----------> app.cli/app
-session.jsonl ------session.MutableStore----> app.cli/app
+session.sqlite -----session.Store-----------> app.cli/app
+session.sqlite -----session.Manager---------> app.cli/app
+session.sqlite -----session.Query-----------> app.cli/app
 ```
 
 进程级调用元数据与关闭请求分别由 generated main 以
@@ -99,7 +101,7 @@ type Frontend interface {
 
 ### 3.3 ModePlain
 
-普通行式前端：`Ask`/`ReadLine` 通过 Context-aware input gate 严格串行；UTF-8 与 `max_line_bytes` 校验、EOF 语义、Options 编号选择与自由输入重试均同 v0.1（plain 模式固定无色输出，color 配置只影响 TUI）。
+普通行式前端：`Request`/`ReadLine` 通过 Context-aware input gate 严格串行；UTF-8 与 `max_line_bytes` 校验、EOF 语义、字段类型解析、Options 编号选择与自由输入重试均同 v0.1（plain 模式固定无色输出，color 配置只影响 TUI）。
 
 `Frontend` 由同一 `channel` 实例承担：
 
@@ -132,18 +134,18 @@ Transcript 渲染：
 | `Ctrl+Q` | 退出（turn 进行中先取消再退出） |
 | `F1` | 帮助浮层，`Esc`/`q` 关闭 |
 
-Ask 渲染：选项列表（`›` 标记 + 编号），`↑/↓` 或 `j/k` 或 `1-9` 选择，`Enter` 确认；`AllowTextInput` 时追加 `Other…` 入口，选择后的输入仍属于同一次持锁 Ask，空输入继续提示；`Esc`/`Ctrl+C` 取消当前 turn，`Ctrl+Q` 退出。
+Request 渲染：按字段依次显示问题；选项列表（`›` 标记 + 编号），`↑/↓` 或 `j/k` 或 `1-9` 选择，允许自由输入时追加 `Other…` 入口，选择后的输入仍属于同一次持锁 Request，空输入继续提示；`Esc`/`Ctrl+C` 取消当前 turn，`Ctrl+Q` 退出。
 
-生命周期：`New` 启动 program goroutine、等待 first frame `ready` 后返回；`Render`/`Sync`/`StartTurn`/`FinishTurn` 通过 `program.Send` 投递并等待 ack（观察调用 Context 与 program done）；`ReadLine`/`Ask` 复用 input gate 串行化。Cleanup：取消 instance context → program 结束 → 释放终端租约 → 返回 program fatal error；非取消类 fatal error 通过 `Lifecycle.RequestShutdown` 上报。
+生命周期：`New` 启动 program goroutine、等待 first frame `ready` 后返回；`Emit`/`Sync`/`StartTurn`/`FinishTurn` 通过 `program.Send` 投递并等待 ack（观察调用 Context 与 program done）；`ReadLine`/`Request` 复用 input gate 串行化。Cleanup：取消 instance context → program 结束 → 释放终端租约 → 返回 program fatal error；非取消类 fatal error 通过 `Lifecycle.RequestShutdown` 上报。
 
 ### 3.5 Channel 语义（两种模式共同）
 
-- `Render` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
-- `Ask`严格串行，通过Context-aware input gate；行输入是frontend-local的`appcli.LineInput`能力，由同一实现层gate与`Ask`串行，但不属于SDK `interaction.Channel`契约；
+- `Emit` concurrent-safe，通过output mutex保证每个Event完整写入，不交错半行；
+- `Request`严格串行，通过Context-aware input gate；行输入是frontend-local的`appcli.LineInput`能力，由同一实现层gate与`Request`串行，但不属于SDK `interaction.Channel`契约；
 - 所有`AskRequest`（包括无Options的纯文本提问）在输出前验证Prompt、Options和UTF-8；`AskRequest.Options` 非空时按顺序显示编号、label 和可选 description；`AllowTextInput` 为 true 时追加“Other”入口，选择该入口后的第二次读取仍属于同一次持锁的 Ask，空白自由输入继续提示而不作为有效回答返回；
 - 选择预设项返回其 label，自由输入返回原文；没有 options 时保持普通文本询问；
 - 等gate和等用户输入都观察Context；
-- TextEvent写普通输出，StatusEvent使用可降级状态行，ErrorEvent写stderr，Tool events使用稳定人类可读格式；
+- `Event` 按 Level 输出到 stdout/stderr；`State` 使用替换语义，`Clear` 删除指定状态；
 - 非TTY时关闭color和in-place status，只输出plain text；
 - input超过limit时丢弃到line boundary并返回`ErrInputLimit`；
 - EOF返回可识别`io.EOF`；
@@ -168,7 +170,9 @@ type Dependencies struct {
     Model       model.Runtime
     Interaction interaction.Channel
     Frontend    appcli.Frontend
-    Store       session.MutableStore
+    Store       session.Store
+    Manager     session.Manager
+    Query       session.Query
     Invocation  invocation.Invocation
     Lifecycle   lifecycle.Controller
 }
@@ -193,12 +197,12 @@ CLI commands首版固定为：
 | `/new <title>` | 立即Create并切换人工命名Session，不触发AI改名 |
 | `/new` | 回到无current Session状态；下一条普通消息创建Session |
 | `/rename <title>` | 原子修改当前Session标题，随后 `syncSession` |
-| `/use <id>` | 通过 `History.Load` 验证后切换Session并 `syncSession` |
+| `/use <id>` | 通过 `Manager.Get` 验证后切换Session并 `syncSession` |
 | `/list` | List并渲染Session摘要 |
 | `/help` | 展示命令 |
 | `/exit` | 请求正常进程退出（`Lifecycle.RequestShutdown(nil)`） |
 
-非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。App仅在首轮成功后将`Result.Output`与首条用户输入交给标题模型。没有current Session时首次输入前创建一个Session，CreatedAt使用注入clock的UTC now。
+非`/`输入调用`Agent.Run`。在官方Graph中`agent.default`获得同一个Interaction Channel，并负责渲染assistant文本、stream delta和Tool events；App不得再次渲染`agent.Result.Output`造成重复。App仅在首轮成功后将`Result.Output`与首条用户输入交给标题模型。没有current Session时首次输入前以`Store.Create(CreateRequest)`创建Session；ID与时间完全由Session implementation产生。
 
 ### 4.1 Session标题生命周期
 
@@ -206,7 +210,7 @@ CLI commands首版固定为：
 
 1. 收到首条普通消息后，合并空白、移除简单Markdown前缀并截断到48个rune，立即作为临时Title创建Session和`syncSession`；清理后为空才回退`initial_session_title`或`New Session`；
 2. 首个Agent turn成功后，以第一条用户消息和`agent.Result.Output`组成JSON请求，调用同一个`model.Runtime`生成正式标题；请求不携带Tools，temperature=0.2、max_tokens=1024、超时10秒，user/assistant文本各截断到4KiB；较高生成预算用于兼容默认先输出reasoning tokens的模型，最终展示标题仍受32-rune边界约束；
-3. 返回值必须是assistant单行文本、无tool call、清理后非空且不超过32个rune；合法时调用`MutableStore.Rename`并再次同步Session；
+3. 返回值必须是assistant单行文本、无tool call、清理后非空且不超过32个rune；合法时调用`Manager.Rename`并再次同步Session；
 4. 无论标题Model调用、返回校验或Rename成功与否，每个自动Session最多尝试一次。失败静默保留临时标题，不改变已成功的Agent turn；
 5. `/new <title>`与`/rename <title>`是人工标题，规范化空白后最多80个rune，永不被自动覆盖；`/use`切换已有Session也不触发自动命名；
 6. 标题在首次自动替换后保持稳定，后续turn不再自动重写。
@@ -215,7 +219,7 @@ CLI commands首版固定为：
 
 ### 4.2 会话同步
 
-`syncSession` 在每个关键点被调用（启动、`/new`、`/rename`、`/use`、自动标题替换、每个 turn 结束、turn 取消后）：`store.List(limit 100)` 取摘要 + `history.Load(current)` 取已持久化 model 消息，打包为 `SessionView` 交给 `Frontend.Sync`。TUI 用它重建 transcript 与侧栏；plain 模式无操作。
+`syncSession` 在每个关键点被调用（启动、`/new`、`/rename`、`/use`、自动标题替换、每个 turn 结束、turn 取消后）：`query.List()` 取Metadata + `history.Load(current)` 取已持久化 model 消息，打包为 `SessionView` 交给 `Frontend.Sync`。TUI 用它重建 transcript 与侧栏；plain 模式无操作。
 
 ### 4.3 Turn 生命周期
 
@@ -226,7 +230,7 @@ Frontend.StartTurn(input)
 → Frontend.FinishTurn(TurnCompleted | TurnCanceled | TurnFailed)
 → 首个自动命名turn成功: best-effort生成并Rename标题
 → syncSession
-→ turn 出错: interaction.ErrorEvent（"session %q: %w"）后继续下一条输入
+→ turn 出错: interaction.Event（"session %q: %w"）后继续下一条输入
 ```
 
 - `InterruptCancel`：取消 turnCtx、等待 goroutine join、`FinishTurn(TurnCanceled)`、同步并渲染 status "turn canceled"，继续读取下一条输入；
@@ -271,7 +275,7 @@ Cleanup
 
 - `/exit`、stdin EOF 与 TUI `Ctrl+Q` 正常停止 frontend loop 并调用 `RequestShutdown(nil)`：当前 runtime 进程退出码 0；
 - loop 内部无法继续的 fatal error（如 terminal adapter failure）：best-effort 渲染后保存，`RequestShutdown(err)`——进程以 1 退出；
-- 单条命令、Store、Agent 业务错误只渲染 `interaction.ErrorEvent`，不会结束进程；
+- 单条命令、Store、Agent 业务错误只 Emit `interaction.Event`，不会结束进程；
 - Cleanup 主动取消造成的 `context.Canceled`/`DeadlineExceeded` 不作为 loop failure 重复上报；取消前已记录的独立 fatal error 仍返回；
 - 进程退出仍由 generated main 统一完成，Component 不调用 `os.Exit`、不发信号、不取消 parent Context——`app.cli` 只通过 ingot ABI lifecycle Contract 报告结束原因；
 - current Session只保存在app instance内存中，不写Plugin State；Session数据本身由Store持久化。

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
 )
 
@@ -31,7 +32,7 @@ func TestTemporaryAndManualSessionTitles(t *testing.T) {
 
 func TestGenerateTitleUsesConfiguredModelAndOwnedConversation(t *testing.T) {
 	t.Parallel()
-	provider := &fakeModel{response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: "# 标题：会话标题设计。"}}}
+	provider := &fakeModel{response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("# 标题：会话标题设计。")}}}
 	app := &application{model: provider, titleProvider: "cheap", titleModel: "small"}
 	title, err := app.generateTitle(context.Background(), "用户问题", "模型回答")
 	if err != nil {
@@ -48,7 +49,11 @@ func TestGenerateTitleUsesConfiguredModelAndOwnedConversation(t *testing.T) {
 		t.Fatalf("request=%#v", request)
 	}
 	var conversation titleConversation
-	if err := json.Unmarshal([]byte(request.Messages[1].Content), &conversation); err != nil {
+	payload, ok := content.TextOnly(request.Messages[1].Content)
+	if !ok {
+		t.Fatal("title request content is not text-only")
+	}
+	if err := json.Unmarshal([]byte(payload), &conversation); err != nil {
 		t.Fatal(err)
 	}
 	if conversation.User != "用户问题" || conversation.Assistant != "模型回答" {

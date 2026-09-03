@@ -32,8 +32,8 @@ type memoryStore struct {
 	entries map[session.ID][]session.Entry
 }
 
-func (s *memoryStore) Create(context.Context, session.Metadata) (session.ID, error) {
-	return "created", nil
+func (s *memoryStore) Create(_ context.Context, request session.CreateRequest) (session.Metadata, error) {
+	return session.Metadata{ID: "created", Title: request.Title}, nil
 }
 func (s *memoryStore) Append(_ context.Context, id session.ID, entry session.Entry) error {
 	s.mu.Lock()
@@ -104,9 +104,6 @@ func (t *imageTools) Definitions() []tool.Definition {
 
 func (t *imageTools) Call(context.Context, tool.Call) (tool.Result, error) {
 	return tool.Result{Content: content.Content{content.Inline(content.KindImage, "image/png", "tool.png", t.value)}}, nil
-}
-func (s *memoryStore) List(context.Context, session.Query) ([]session.Summary, error) {
-	return nil, nil
 }
 
 type sequenceModel struct {

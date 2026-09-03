@@ -328,7 +328,7 @@ Runtime 机制由 Builder 生成，Plugin 只表达运行结果和资源释放�
 - 所有 Component constructor 改用 `ingotabi.Cleanup`；
 - Dependencies/Exports 中的 `Optional` 与 `Named` 改用 ingot ABI；
 - `app.cli` 显式依赖 Invocation 和 Lifecycle；
-- `session.jsonl` 显式依赖 State scope；
+- `session.sqlite` 显式依赖 State scope；
 - 删除 Plugin 对 `application.FromContext` 和 `config.StateDir` 的依赖。
 
 ### 阶段 4：精简 Agent SDK 与配置面
