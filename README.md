@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./asset/icon.png" alt="ingot logo" width="180">
+</p>
+
 # ingot
 
 > Compose the agent you need from plugins. Ship it as one immutable binary.
