@@ -3,6 +3,7 @@ go 1.24.2
 use (
 	.
 	./plugins/agent-default
+	./plugins/app-webui
 	./plugins/app-cli
 	./plugins/asset-local
 	./plugins/context-compact
