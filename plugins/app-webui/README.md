@@ -20,7 +20,7 @@ go build -o ingot ./cmd/ingot
 ./ingot web
 ```
 
-然后打开 `http://127.0.0.1:7316/`。`web` 是转发给 Runtime Image 的命令；HTTP 监听由应用组件的生命周期启动，不依赖 Builder 的专用命令或插件特判。不要同时保留 CLI 的 Interaction 提供者。
+`ingot web` 启动成功后会输出可点击的 Web 地址和打开提示；按 `Ctrl+C` 可停止服务。`web` 是转发给 Runtime Image 的命令；HTTP 监听由应用组件的生命周期启动，不依赖 Builder 的专用命令或插件特判。不要同时保留 CLI 的 Interaction 提供者。
 
 前端产物通过 Go `embed` 编入 Runtime Image；运行时不需要 Node、Vite 或外部 CDN。修改前端后需重新构建前端，再执行 `ingot apply`。开发命令见 [前端说明](../../web/app-webui/README.md)。
 

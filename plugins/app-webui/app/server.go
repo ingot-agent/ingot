@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -113,11 +115,33 @@ func New(ctx context.Context, cfg appbackend.Config, deps Dependencies) (Exports
 		IdleTimeout:       60 * time.Second,
 	}
 	go instance.serve(deps.Lifecycle)
+	if isWebInvocation(deps.Invocation.Arguments()) {
+		_, _ = fmt.Fprint(os.Stdout, webStartupMessage(normalized.Address))
+	}
 	cleanup := ingotabi.Cleanup(func(cleanupCtx context.Context) error {
 		cancel()
 		return instance.shutdown(cleanupCtx)
 	})
 	return Exports{}, cleanup, nil
+}
+
+func isWebInvocation(arguments []string) bool {
+	return len(arguments) > 0 && arguments[0] == "web"
+}
+
+func webURL(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "http://" + strings.TrimRight(address, "/") + "/"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
+}
+
+func webStartupMessage(address string) string {
+	return fmt.Sprintf("Web UI is ready. Open the following link in your browser:\n%s\nPress Ctrl+C to stop the Web UI.\n", webURL(address))
 }
 
 func (a *application) serve(process lifecycle.Controller) {

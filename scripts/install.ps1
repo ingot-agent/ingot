@@ -20,12 +20,12 @@
 param(
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'ingot'),
     [string]$DestDir = '',
-    [string]$Home = (Join-Path $env:USERPROFILE '.ingot'),
+    [Alias('Home')]
+    [string]$HomeDir = (Join-Path $env:USERPROFILE '.ingot'),
     [ValidateSet('default', 'minimal')]
     [string]$Profile = 'default',
     [switch]$NoConfigure,
-    [switch]$NoApply,
-    [switch]$NoOpen
+    [switch]$NoApply
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,6 +34,71 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BinaryDir = Join-Path $Prefix 'bin'
 $ShareDir = Join-Path $Prefix 'share\ingot'
 $PluginDir = Join-Path $ShareDir 'plugins'
+
+function Join-StagedInstallPath {
+    param(
+        [string]$StagingRoot,
+        [string]$InstallPath
+    )
+
+    if ([string]::IsNullOrEmpty($StagingRoot)) {
+        return $InstallPath
+    }
+    if (-not [IO.Path]::IsPathRooted($InstallPath)) {
+        return Join-Path $StagingRoot $InstallPath
+    }
+
+    # DESTDIR is a filesystem root prepended to the install prefix. Windows
+    # drive-qualified paths cannot be concatenated directly, so drop the
+    # drive root before joining (D:\stage + D:\ingot\bin ->
+    # D:\stage\ingot\bin).
+    $root = [IO.Path]::GetPathRoot($InstallPath)
+    $relative = $InstallPath.Substring($root.Length).TrimStart('\', '/')
+    if ([string]::IsNullOrEmpty($relative)) {
+        return $StagingRoot
+    }
+    return Join-Path $StagingRoot $relative
+}
+
+function Add-UserPathEntry {
+    param(
+        [string]$PathEntry
+    )
+
+    $normalized = [IO.Path]::GetFullPath($PathEntry).TrimEnd('\', '/')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $userEntries = if ([string]::IsNullOrEmpty($userPath)) {
+        @()
+    } else {
+        @($userPath -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $alreadyInUserPath = $userEntries | Where-Object {
+        $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase)
+    }
+
+    if (-not $alreadyInUserPath) {
+        $updatedUserPath = if ([string]::IsNullOrEmpty($userPath)) {
+            $normalized
+        } else {
+            "$userPath;$normalized"
+        }
+        [Environment]::SetEnvironmentVariable('Path', $updatedUserPath, 'User')
+    }
+
+    $processEntries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $alreadyInProcessPath = $processEntries | Where-Object {
+        $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase)
+    }
+    if (-not $alreadyInProcessPath) {
+        $env:Path = if ([string]::IsNullOrEmpty($env:Path)) {
+            $normalized
+        } else {
+            "$env:Path;$normalized"
+        }
+    }
+
+    return [bool]$alreadyInUserPath
+}
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     throw 'install.ps1: go 1.24+ is required to build ingot'
@@ -57,14 +122,22 @@ try {
         Pop-Location
     }
 
-    $targetBin = Join-Path $DestDir $BinaryDir.TrimStart('\')
-    $targetPlugin = Join-Path $DestDir $PluginDir.TrimStart('\')
+    $targetBin = Join-StagedInstallPath $DestDir $BinaryDir
+    $targetPlugin = Join-StagedInstallPath $DestDir $PluginDir
     Write-Host "==> installing to $targetBin"
     New-Item -ItemType Directory -Force -Path $targetBin, $targetPlugin | Out-Null
     Copy-Item (Join-Path $staging 'ingot.exe') (Join-Path $targetBin 'ingot.exe') -Force
 
     Write-Host "==> installing official plugins to $targetPlugin"
     Copy-Item (Join-Path $Root 'plugins\*') $targetPlugin -Recurse -Force
+
+    if (-not $DestDir) {
+        if (Add-UserPathEntry $BinaryDir) {
+            Write-Host "==> $BinaryDir is already in the current user's PATH"
+        } else {
+            Write-Host "==> added $BinaryDir to the current user's PATH"
+        }
+    }
 
     Write-Host ''
     Write-Host 'ingot installed:'
@@ -74,24 +147,34 @@ try {
 
     if ($DestDir) {
         Write-Host 'Staged packaging complete (DestDir set). To prepare a usable home:'
-        Write-Host "  $BinaryDir\ingot.exe --home `"$Home`" init --profile $Profile --bundle `"$PluginDir`""
+        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile --bundle `"$PluginDir`""
         return
     }
 
     $Ingot = Join-Path $BinaryDir 'ingot.exe'
+    $defaultHomeDir = Join-Path $env:USERPROFILE '.ingot'
+    $normalizedHomeDir = [IO.Path]::GetFullPath($HomeDir).TrimEnd('\', '/')
+    $normalizedDefaultHomeDir = [IO.Path]::GetFullPath($defaultHomeDir).TrimEnd('\', '/')
+    $homeArgument = if ($normalizedHomeDir.Equals($normalizedDefaultHomeDir, [StringComparison]::OrdinalIgnoreCase)) {
+        ''
+    } else {
+        "--home `"$HomeDir`""
+    }
+    $applyCommand = if ($homeArgument) { "ingot $homeArgument apply" } else { 'ingot apply' }
+    $webCommand = if ($homeArgument) { "ingot $homeArgument web" } else { 'ingot web' }
 
     # --- init -----------------------------------------------------------------
-    if (Test-Path (Join-Path $Home 'plugins.toml')) {
-        Write-Host "==> home $Home is already initialized; skipping init"
+    if (Test-Path (Join-Path $HomeDir 'plugins.toml')) {
+        Write-Host "==> home $HomeDir is already initialized; skipping init"
     } else {
-        Write-Host "==> initializing ingot home $Home (profile: $Profile)"
-        New-Item -ItemType Directory -Force -Path $Home | Out-Null
-        & $Ingot --home $Home init --profile $Profile --bundle $PluginDir
+        Write-Host "==> initializing ingot home $HomeDir (profile: $Profile)"
+        New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
+        & $Ingot --home $HomeDir init --profile $Profile --bundle $PluginDir
         if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
     }
 
     # --- model provider configuration -----------------------------------------
-    $Config = Join-Path $Home 'config.toml'
+    $Config = Join-Path $HomeDir 'config.toml'
     $Configured = $true
     if ((Test-Path $Config) -and (Select-String -Path $Config -Pattern 'api_key = ""' -Quiet)) {
         $Configured = $false
@@ -120,18 +203,18 @@ try {
             Write-Host "==> wrote provider $ProviderName ($Model) to $Config"
         } else {
             Write-Warning 'no API key provided; skipping configuration'
-            Write-Warning "edit $Config manually, then run: $Ingot --home `"$Home`" apply"
+            Write-Warning "edit $Config manually, then run: $Ingot --home `"$HomeDir`" apply"
         }
     }
 
     # --- apply ----------------------------------------------------------------
     if ($NoApply) {
-        Write-Host "==> skipping apply (NoApply); run later: $Ingot --home `"$Home`" apply"
+        Write-Host "==> skipping apply (NoApply); run later: $Ingot --home `"$HomeDir`" apply"
     } else {
         Write-Host '==> building runtime image (first build downloads modules and may take a few minutes)'
         $applyAttempts = 0
         while ($true) {
-            & $Ingot --home $Home apply
+            & $Ingot --home $HomeDir apply
             if ($LASTEXITCODE -eq 0) { break }
             $applyAttempts++
             if ($applyAttempts -ge 2) {
@@ -143,29 +226,15 @@ try {
         Write-Host '==> active image ready'
     }
 
-    # --- start ----------------------------------------------------------------
-    if (-not $NoApply) {
-        $Start = $true
-        if ($Host.Name -eq 'ConsoleHost' -and -not [Environment]::GetEnvironmentVariable('CI')) {
-            $Start = $false
-            $Answer = Read-Host 'Start the web UI now? [Y/n]'
-            if ($Answer -notmatch '^(n|no)$') { $Start = $true }
-        }
-        if ($Start) {
-            $Log = Join-Path $Home 'web.log'
-            Write-Host "==> starting web UI in the background (log: $Log)"
-            Start-Process -FilePath $Ingot -ArgumentList "--home `"$Home`"", 'web' -RedirectStandardOutput $Log -RedirectStandardError $Log -WindowStyle Hidden
-            Start-Sleep -Seconds 1
-            Write-Host '    listening on http://127.0.0.1:7316/'
-            if (-not $NoOpen) {
-                Start-Process 'http://127.0.0.1:7316/' -ErrorAction SilentlyContinue
-            }
-        }
+    Write-Host ''
+    Write-Host 'Agent home is ready. Next steps:'
+    if ($NoApply) {
+        Write-Host "1. $applyCommand"
+        Write-Host '2. Start the Web UI with the following command:'
+        Write-Host $webCommand
     } else {
-        Write-Host ''
-        Write-Host 'Agent home is ready. Next steps:'
-        Write-Host "  $Ingot --home `"$Home`" apply"
-        Write-Host "  $Ingot --home `"$Home`" web   # then open http://127.0.0.1:7316/"
+        Write-Host 'Start the Web UI with the following command:'
+        Write-Host $webCommand
     }
 } finally {
     Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
