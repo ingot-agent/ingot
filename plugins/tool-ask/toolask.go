@@ -63,6 +63,18 @@ type askTool struct {
 	maxOptions, maxOptionsBytes      int
 }
 
+// businessResult reports a deterministic ask_user failure as a normal tool
+// result so the model can read the reason and continue, mirroring the tool.shell
+// and tool.fs convention that known business outcomes carry a nil error. A
+// canceled or expired parent context is preserved as an error so the surrounding
+// turn stops.
+func (t *askTool) businessResult(ctx context.Context, err error) (tool.Result, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return tool.Result{}, ctxErr
+	}
+	return tool.Result{Content: content.FromText(fmt.Sprintf("ask_user error: %v", err))}, nil
+}
+
 type askArguments struct {
 	Prompt  *string            `json:"prompt"`
 	Options askOptionArguments `json:"options"`
@@ -171,10 +183,13 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 		return tool.Result{}, fmt.Errorf("prompt must be a non-empty UTF-8 string: %w", ErrInvalidArguments)
 	}
 	if len([]byte(*args.Prompt)) > t.maxPromptBytes {
-		return tool.Result{}, ErrPromptLimit
+		return t.businessResult(ctx, ErrPromptLimit)
 	}
 	options, err := t.validateOptions(args.Options)
 	if err != nil {
+		if errors.Is(err, ErrOptionsLimit) {
+			return t.businessResult(ctx, err)
+		}
 		return tool.Result{}, err
 	}
 	response, err := t.channel.Request(ctx, interaction.Request{
@@ -193,13 +208,13 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 	}
 	answer, ok := responseString(response, answerFieldName)
 	if !ok {
-		return tool.Result{}, ErrInvalidResponse
+		return t.businessResult(ctx, ErrInvalidResponse)
 	}
 	if !utf8.ValidString(answer) {
-		return tool.Result{}, fmt.Errorf("response is not valid UTF-8")
+		return t.businessResult(ctx, fmt.Errorf("response is not valid UTF-8"))
 	}
 	if len([]byte(answer)) > t.maxResponseBytes {
-		return tool.Result{}, ErrResponseLimit
+		return t.businessResult(ctx, ErrResponseLimit)
 	}
 	return tool.Result{Content: content.FromText(answer)}, nil
 }

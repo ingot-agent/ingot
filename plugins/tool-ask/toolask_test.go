@@ -3,6 +3,7 @@ package toolask
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ingot-agent/sdk/content"
@@ -27,6 +28,11 @@ func (c *fakeChannel) Request(_ context.Context, request interaction.Request) (i
 func (*fakeChannel) Emit(context.Context, interaction.Event) error { return nil }
 func (*fakeChannel) Set(context.Context, interaction.State) error  { return nil }
 func (*fakeChannel) Clear(context.Context, string) error           { return nil }
+
+func resultText(result tool.Result) string {
+	value, _ := content.TextOnly(result.Content)
+	return value
+}
 
 func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {
 	channel := &fakeChannel{response: "approved"}
@@ -78,9 +84,12 @@ func TestAskUserLimitsAndUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"prompt\":\"long\"}")})
-	if !errors.Is(err, ErrPromptLimit) {
-		t.Fatalf("prompt limit = %v", err)
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"prompt\":\"long\"}")})
+	if err != nil {
+		t.Fatalf("prompt limit should be a result, got error: %v", err)
+	}
+	if !strings.Contains(resultText(result), "prompt exceeds configured limit") {
+		t.Fatalf("prompt limit result = %q", resultText(result))
 	}
 	channel.err = interaction.ErrUnavailable
 	exports, _, err = New(context.Background(), Config{}, Dependencies{Interaction: channel})
@@ -99,21 +108,36 @@ func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tests := []struct {
+	invalidArgs := []struct {
 		name      string
 		arguments string
-		want      error
 	}{
-		{name: "empty", arguments: `{"prompt":"p","options":[]}`, want: ErrInvalidArguments},
-		{name: "null", arguments: `{"prompt":"p","options":null}`, want: ErrInvalidArguments},
-		{name: "count", arguments: `{"prompt":"p","options":[{"label":"a"},{"label":"b"}]}`, want: ErrOptionsLimit},
-		{name: "bytes", arguments: `{"prompt":"p","options":[{"label":"large"}]}`, want: ErrOptionsLimit},
+		{name: "empty", arguments: `{"prompt":"p","options":[]}`},
+		{name: "null", arguments: `{"prompt":"p","options":null}`},
 	}
-	for _, test := range tests {
+	for _, test := range invalidArgs {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(test.arguments)})
-			if !errors.Is(err, test.want) {
-				t.Fatalf("error=%v want chain %v", err, test.want)
+			if !errors.Is(err, ErrInvalidArguments) {
+				t.Fatalf("error=%v want chain %v", err, ErrInvalidArguments)
+			}
+		})
+	}
+	limits := []struct {
+		name      string
+		arguments string
+	}{
+		{name: "count", arguments: `{"prompt":"p","options":[{"label":"a"},{"label":"b"}]}`},
+		{name: "bytes", arguments: `{"prompt":"p","options":[{"label":"large"}]}`},
+	}
+	for _, test := range limits {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(test.arguments)})
+			if err != nil {
+				t.Fatalf("options limit should be a result, got error: %v", err)
+			}
+			if !strings.Contains(resultText(result), "options exceed configured limit") {
+				t.Fatalf("options limit result = %q", resultText(result))
 			}
 		})
 	}
@@ -148,9 +172,12 @@ func TestAskUserRejectsMalformedInteractionResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(`{"prompt":"question"}`)})
-			if !errors.Is(err, ErrInvalidResponse) {
-				t.Fatalf("error=%v, want ErrInvalidResponse", err)
+			result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(`{"prompt":"question"}`)})
+			if err != nil {
+				t.Fatalf("invalid response should be a result, got error: %v", err)
+			}
+			if !strings.Contains(resultText(result), "invalid tool.ask interaction response") {
+				t.Fatalf("invalid response result = %q", resultText(result))
 			}
 		})
 	}
