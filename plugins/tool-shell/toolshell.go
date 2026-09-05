@@ -31,6 +31,10 @@ const (
 	defaultTimeoutSeconds  = 120
 	defaultMaxOutputBytes  = 1024 * 1024
 	outputTruncationMarker = "[output truncated]"
+	// timeoutExitCode mirrors GNU timeout(1): a command that exceeded its
+	// time budget is reported to the caller as a normal tool result, not as a
+	// context error that would interrupt the surrounding turn.
+	timeoutExitCode = 124
 )
 
 var (
@@ -287,10 +291,21 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 		if closeErr := controller.Close(); closeErr != nil {
 			cleanupErr = errors.Join(cleanupErr, closeErr)
 		}
-		if cleanupErr != nil {
-			return tool.Result{}, errors.Join(runCtx.Err(), cleanupErr)
+		if ctx.Err() == nil {
+			// The tool's own timeout expired while the parent context is still
+			// valid. Report the timeout as a normal shell result so the agent can
+			// hand it back to the model instead of interrupting the whole turn.
+			if cleanupErr != nil {
+				return tool.Result{}, fmt.Errorf("shell_exec timed out after %s: %w", timeout, cleanupErr)
+			}
+			return tool.Result{Content: content.FromText(collector.formatTimeout(timeout))}, nil
 		}
-		return tool.Result{}, runCtx.Err()
+		// The parent context was canceled or expired: preserve cancellation
+		// semantics so the surrounding turn stops.
+		if cleanupErr != nil {
+			return tool.Result{}, errors.Join(ctx.Err(), cleanupErr)
+		}
+		return tool.Result{}, ctx.Err()
 	}
 	closeErr := controller.Close()
 	if closeErr != nil {
@@ -419,6 +434,16 @@ func (c *outputCollector) write(stderr bool, p []byte) {
 	}
 }
 func (c *outputCollector) format(code int) string {
+	return c.formatWithNote(code, "")
+}
+
+// formatTimeout formats a tool-level timeout as an ordinary command result
+// carrying timeoutExitCode plus a human-readable note in the stderr section.
+func (c *outputCollector) formatTimeout(timeout time.Duration) string {
+	return c.formatWithNote(timeoutExitCode, "shell_exec: command timed out after "+timeout.String())
+}
+
+func (c *outputCollector) formatWithNote(code int, note string) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	stdout, stderr := c.stdout.String(), c.stderr.String()
@@ -429,6 +454,15 @@ func (c *outputCollector) format(code int) string {
 	if c.stderrTruncated {
 		stderr = trimIncompleteUTF8Suffix(stderr)
 		stderr += "\n" + outputTruncationMarker
+	}
+	if note != "" {
+		if stderr != "" && !strings.HasSuffix(stderr, "\n") {
+			stderr += "\n"
+		}
+		if stderr != "" {
+			stderr += "\n"
+		}
+		stderr += note
 	}
 	return fmt.Sprintf("exit_code: %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 }
