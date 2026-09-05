@@ -110,6 +110,11 @@ writes `builder.toml`, `plugins.toml`, and a `config.toml` template. Pass
 `--profile minimal` for the smallest runnable graph. See the
 [Usage Guide](./docs/USAGE.md) for installation options and the full workflow.
 
+For the browser workspace, replace the CLI with [app.backend](./plugins/app-webui/README.md).
+Its Vue + Tailwind frontend is embedded in the native Runtime Image and includes
+conversations, streaming, approvals, attachments, execution details, and operations.
+It is intended for trusted local, single-user use.
+
 ## How build-time composition works
 
 ```mermaid

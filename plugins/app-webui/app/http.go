@@ -38,6 +38,7 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("POST /api/interactions/{id}/response", a.handleInteractionResponse)
 
 	mux.HandleFunc("POST /api/assets", a.handleUploadAsset)
+	mux.HandleFunc("GET /api/assets/{id}", a.handleReadAsset)
 	mux.HandleFunc("GET /api/operations", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, a.operations.List()) })
 	mux.HandleFunc("POST /api/operations/{name}", a.handleInvokeOperation)
 	mux.HandleFunc("DELETE /api/operation-invocations/{id}", a.handleCancelOperation)
@@ -45,6 +46,10 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions/{id}/archive", a.handleSessionLifecycle("session.archived", a.sessions.Archive))
 	mux.HandleFunc("POST /api/sessions/{id}/restore", a.handleSessionLifecycle("session.restored", a.sessions.Restore))
 	mux.HandleFunc("POST /api/sessions/{id}/fork", a.handleForkSession)
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {
+		writeAPIError(w, http.StatusNotFound, "not_found", "API endpoint not found")
+	})
+	mux.Handle("/", webHandler())
 	return mux
 }
 
@@ -59,6 +64,7 @@ func (a *application) handleState(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, appbackend.StateSnapshot{
 		Cursor:               cursor,
 		Agent:                appbackend.AgentState{Capabilities: a.agent.Capabilities()},
+		Assets:               appbackend.AssetState{Available: a.assets != nil, MaxBytes: a.config.MaxAssetBytes},
 		Sessions:             sessions,
 		Operations:           a.operations.List(),
 		Turns:                a.turns.Snapshots(),
@@ -285,6 +291,34 @@ func (a *application) handleUploadAsset(w http.ResponseWriter, r *http.Request) 
 		ID   string `json:"id"`
 		Size uint64 `json:"size"`
 	}{ID: reference.ID, Size: info.Size})
+}
+
+func (a *application) handleReadAsset(w http.ResponseWriter, r *http.Request) {
+	noCache(w)
+	if a.assets == nil {
+		writeAPIError(w, http.StatusNotImplemented, "asset_store_unavailable", "no asset store is configured")
+		return
+	}
+	reference := asset.Reference{ID: r.PathValue("id")}
+	info, err := a.assets.Stat(r.Context(), reference)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	reader, err := a.assets.Open(r.Context(), reference)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer reader.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
+	if _, err := io.Copy(w, reader); err != nil {
+		// A truncated successful response must not look like a complete asset.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func (a *application) handleInvokeOperation(w http.ResponseWriter, r *http.Request) {
