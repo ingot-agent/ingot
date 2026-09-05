@@ -51,6 +51,7 @@ var profiles = map[string]*Profile{
 			"tool-runtime",
 			"tool-shell",
 			"tool-fs",
+			"tool-edit",
 			"tool-ask",
 			"interceptor-approval",
 			"filesystem-local",
