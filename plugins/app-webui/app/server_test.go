@@ -53,6 +53,37 @@ func TestCheckModeDoesNotOpenListener(t *testing.T) {
 	}
 }
 
+func TestWebStartupMessage(t *testing.T) {
+	message := webStartupMessage("127.0.0.1:7316")
+	want := "Web UI is ready. Open the following link in your browser:\nhttp://127.0.0.1:7316/\nPress Ctrl+C to stop the Web UI.\n"
+	if message != want {
+		t.Fatalf("startup message = %q, want %q", message, want)
+	}
+}
+
+func TestWebURLUsesBrowserReachableHost(t *testing.T) {
+	tests := map[string]string{
+		":7316":          "http://127.0.0.1:7316/",
+		"0.0.0.0:7316":   "http://127.0.0.1:7316/",
+		"[::1]:7316":     "http://[::1]:7316/",
+		"localhost:7316": "http://localhost:7316/",
+	}
+	for address, want := range tests {
+		if got := webURL(address); got != want {
+			t.Errorf("webURL(%q) = %q, want %q", address, got, want)
+		}
+	}
+}
+
+func TestIsWebInvocation(t *testing.T) {
+	if !isWebInvocation([]string{"web"}) {
+		t.Fatal("web invocation was not detected")
+	}
+	if isWebInvocation([]string{"chat"}) || isWebInvocation(nil) {
+		t.Fatal("non-web invocation was detected as web")
+	}
+}
+
 func TestConstructorRequiresProcessControl(t *testing.T) {
 	deps := testDependencies(t, &testAgent{}, &testStore{})
 	deps.Lifecycle = nil
