@@ -74,6 +74,35 @@ describe('runtime request and event ordering', () => {
     expect(runtime.turns).toEqual({})
   })
 
+  it('retains ordered tool cards after detailed trace retention rolls over', () => {
+    const runtime = useRuntime()
+    runtime.bootstrap(snapshot())
+    runtime.receive(5, { type: 'agent.invocation.started', data: { id: 'web', sessionId: 's', revision: 0, reasoning: '', output: '' } })
+    const scope = { agent: { sessionId: 's', turnId: 'sdk', toolCallId: 'tool' } }
+    runtime.receive(6, { type: 'agent.tool.started', scope, data: { call: { id: 'tool', name: 'inspect', arguments: {} } } })
+    for (let id = 7; id < 550; id++) runtime.receive(id, { type: 'agent.model.progress', scope, data: {} })
+    runtime.receive(550, { type: 'agent.tool.finished', scope, data: { status: 'succeeded', result: { content: [{ kind: 'text', text: 'Done' }] } } })
+    runtime.receive(551, { type: 'agent.reasoning.delta', data: { invocationId: 'web', revision: 1, text: 'Next thought' } })
+    runtime.receive(551, { type: 'agent.reasoning.delta', data: { invocationId: 'web', revision: 1, text: 'Duplicate' } })
+    expect(runtime.traces.s).toHaveLength(500)
+    expect(runtime.turns.web.blocks).toMatchObject([
+      { kind: 'tool', status: 'succeeded', content: [{ text: 'Done' }] },
+      { kind: 'reasoning', text: 'Next thought' },
+    ])
+  })
+
+  it('keeps a completed invocation anchored before subsequent history', async () => {
+    const runtime = useRuntime()
+    runtime.turns.web = { id: 'web', sessionId: 's', revision: 1, reasoning: '', output: 'Partial', status: 'canceled' }
+    const first: Message[] = [{ role: 'user', content: [{ kind: 'text', text: 'First request' }] }]
+    vi.mocked(request).mockResolvedValueOnce(first)
+    await runtime.loadHistory('s')
+    expect(runtime.turns.web.historyEnd).toBe(1)
+    vi.mocked(request).mockResolvedValueOnce([...first, { role: 'user', content: [{ kind: 'text', text: 'Next request' }] }])
+    await runtime.loadHistory('s')
+    expect(runtime.turns.web.historyEnd).toBe(1)
+  })
+
   it('keeps large integer operation input byte-for-byte', async () => {
     const runtime = useRuntime()
     vi.mocked(request).mockResolvedValueOnce({ id: 'op' })

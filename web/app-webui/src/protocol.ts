@@ -46,8 +46,16 @@ export interface Turn {
   reasoning: string
   output: string
 }
+export type TurnBlock =
+  | { id: string; kind: 'output' | 'reasoning'; text: string; boundary: number }
+  | { id: string; kind: 'tool'; call: ToolCall; status: string; content?: Part[]; error?: string }
+  | { id: string; kind: 'interaction'; interactionId: string }
 export interface LiveTurn extends Turn {
   status: Status
+  blocks?: TurnBlock[]
+  streamBoundary?: number
+  sdkTurnId?: string
+  historyEnd?: number
   stopping?: boolean
   reconciled?: boolean
   outcome?: Outcome

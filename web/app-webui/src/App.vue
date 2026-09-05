@@ -2,7 +2,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { PanelLeft, Inbox, X, ArrowUpRight, Sun, Moon, Monitor } from 'lucide-vue-next'
+import { Inbox, X, ArrowUpRight, Sun, Moon, Monitor } from 'lucide-vue-next'
 import { useRuntime } from './stores/runtime'
 import { readPreference, savePreference, applyTheme } from './theme'
 import Navigation from './components/Navigation.vue'
@@ -40,15 +40,8 @@ onBeforeUnmount(() => { runtime.disconnect(); window.removeEventListener('keydow
   <div class="app-shell" :class="{ 'nav-collapsed': collapsed }">
     <aside class="desktop-navigation"><Navigation @navigate="mobileNavigation = false" @settings="settings = true" @collapse="collapsed = true" /></aside>
     <main class="workspace">
-      <div class="workspace-utilities">
-        <button class="icon-button nav-toggle" :aria-label="t('conversations')" @click="showNavigation"><PanelLeft :size="19" /></button>
-        <div class="ml-auto flex items-center gap-3">
-          <span class="connection-label"><i class="connection-dot" :class="{ online: runtime.connection === 'online' }" />{{ t('connection.' + runtime.connection) }}</span>
-          <button class="icon-button pending-button" :aria-label="t('pending')" @click="pending = true"><Inbox :size="18" /><span v-if="runtime.pendingCount" class="pending-count">{{ runtime.pendingCount }}</span></button>
-        </div>
-      </div>
       <div v-if="runtime.connection === 'reconnecting'" class="connection-banner" role="status" :title="runtime.connectionError">{{ t('disconnected') }}</div>
-      <RouterView />
+      <RouterView v-slot="{ Component }"><component :is="Component" @navigation="showNavigation" @pending="pending = true" /></RouterView>
     </main>
     <Overlay :open="mobileNavigation" :title="t('conversations')" drawer @update:open="mobileNavigation = $event">
       <Navigation @navigate="mobileNavigation = false" @settings="mobileNavigation = false; settings = true" @collapse="mobileNavigation = false" />

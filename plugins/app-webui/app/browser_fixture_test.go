@@ -108,6 +108,13 @@ func (b *browserAgent) Stream(ctx context.Context, turn agent.Turn, handler agen
 	if err = handler(agent.StreamEvent{Kind: agent.StreamReasoningDelta, TextDelta: "Checking the request."}); err != nil {
 		return result, err
 	}
+	timeline := strings.Contains(turn.Input, "timeline")
+	commentary := "I'll inspect the workspace first."
+	if timeline {
+		if err = handler(agent.StreamEvent{Kind: agent.StreamOutputDelta, TextDelta: commentary}); err != nil {
+			return result, err
+		}
+	}
 	correlation.ToolCallID = "tool-" + string(correlation.TurnID)
 	call := tool.Call{ID: correlation.ToolCallID, Name: "workspace.inspect", Arguments: json.RawMessage("{\"path\":\".\"}")}
 	emit(observation.ToolStarted{Call: call})
@@ -124,6 +131,50 @@ func (b *browserAgent) Stream(ctx context.Context, turn agent.Turn, handler agen
 		}
 	}
 	emit(observation.ToolFinished{Status: observation.StatusSucceeded, Result: &tool.Result{Content: content.FromText("Workspace is ready.")}})
+	if timeline {
+		b.mu.Lock()
+		b.history[turn.SessionID] = append(b.history[turn.SessionID],
+			model.Message{Role: model.RoleAssistant, Content: content.FromText(commentary), ToolCalls: []tool.Call{call}},
+			model.Message{Role: model.RoleTool, ToolCallID: call.ID, Content: content.FromText("Workspace is ready.")})
+		b.mu.Unlock()
+		correlation.ToolCallID = ""
+		emit(observation.RoundFinished{Status: observation.StatusSucceeded})
+		correlation.RoundIndex++
+		emit(observation.RoundStarted{})
+		for _, chunk := range []string{"Reviewing the inspection. ", "Planning a verification."} {
+			if err = handler(agent.StreamEvent{Kind: agent.StreamReasoningDelta, TextDelta: chunk}); err != nil {
+				return result, err
+			}
+		}
+		commentary = "The first check is complete. I'll verify the result."
+		if err = handler(agent.StreamEvent{Kind: agent.StreamOutputDelta, TextDelta: commentary}); err != nil {
+			return result, err
+		}
+		correlation.ToolCallID = "verify-" + string(correlation.TurnID)
+		call = tool.Call{ID: correlation.ToolCallID, Name: "workspace.verify", Arguments: json.RawMessage(`{}`)}
+		emit(observation.ToolStarted{Call: call})
+		ctx = observation.WithCorrelation(ctx, correlation)
+		if _, err = b.host.Interactions().Request(ctx, interaction.Request{
+			Name: "verification", Description: "Continue with verification?",
+			Fields: []interaction.Field{{Name: "answer", Label: "Answer", Kind: interaction.FieldString, Required: true}},
+		}); err != nil {
+			return result, err
+		}
+		emit(observation.ToolProgress{Progress: tool.Progress{Content: content.FromText("Verification in progress.")}})
+		emit(observation.ToolFinished{Status: observation.StatusSucceeded, Result: &tool.Result{Content: content.FromText("Verification complete.")}})
+		b.mu.Lock()
+		b.history[turn.SessionID] = append(b.history[turn.SessionID],
+			model.Message{Role: model.RoleAssistant, Content: content.FromText(commentary), ToolCalls: []tool.Call{call}},
+			model.Message{Role: model.RoleTool, ToolCallID: call.ID, Content: content.FromText("Verification complete.")})
+		b.mu.Unlock()
+		correlation.ToolCallID = ""
+		emit(observation.RoundFinished{Status: observation.StatusSucceeded})
+		correlation.RoundIndex++
+		emit(observation.RoundStarted{})
+		if err = handler(agent.StreamEvent{Kind: agent.StreamReasoningDelta, TextDelta: "Preparing the final response."}); err != nil {
+			return result, err
+		}
+	}
 	correlation.ToolCallID = ""
 	if strings.Contains(turn.Input, "hold") {
 		if err = handler(agent.StreamEvent{Kind: agent.StreamOutputDelta, TextDelta: "Partial response"}); err != nil {
