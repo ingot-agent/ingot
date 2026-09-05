@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ingot-agent/sdk/session"
@@ -63,7 +64,15 @@ func openStore(ctx context.Context, databasePath string) (*store, error) {
 	parameters := url.Values{}
 	parameters.Add("_pragma", "busy_timeout(5000)")
 	parameters.Add("_pragma", "foreign_keys(1)")
-	dsn := (&url.URL{Scheme: "file", Path: databasePath, RawQuery: parameters.Encode()}).String()
+	// SQLite's URI parser expects slash-separated paths. On Windows, passing
+	// the native drive path through url.URL produces file://C:/..., where C:
+	// is interpreted as the URI host. Prefix the drive path so it becomes the
+	// standard file:///C:/... form.
+	uriPath := filepath.ToSlash(databasePath)
+	if filepath.VolumeName(databasePath) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: parameters.Encode()}).String()
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open session database: %w", err)
