@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,30 +20,46 @@ type fakeFS struct {
 	lastCtx  context.Context
 	written  string
 	mode     fs.FileMode
+	err      error
 }
 
 func (f *fakeFS) ReadFile(ctx context.Context, _ string) ([]byte, error) {
 	f.lastCtx = ctx
+	if f.err != nil {
+		return nil, f.err
+	}
 	return append([]byte(nil), f.readData...), nil
 }
 func (f *fakeFS) WriteFile(ctx context.Context, _ string, data []byte, mode fs.FileMode) error {
 	f.lastCtx, f.written, f.mode = ctx, string(data), mode
-	return nil
+	return f.err
 }
 func (f *fakeFS) ReadDir(ctx context.Context, _ string) ([]fs.DirEntry, error) {
 	f.lastCtx = ctx
+	if f.err != nil {
+		return nil, f.err
+	}
 	return append([]fs.DirEntry(nil), f.entries...), nil
 }
 func (f *fakeFS) Stat(ctx context.Context, _ string) (fs.FileInfo, error) {
 	f.lastCtx = ctx
+	if f.err != nil {
+		return nil, f.err
+	}
 	return f.info, nil
 }
 func (f *fakeFS) MkdirAll(ctx context.Context, _ string, _ fs.FileMode) error {
 	f.lastCtx = ctx
-	return nil
+	return f.err
 }
-func (f *fakeFS) Remove(ctx context.Context, _ string) error    { f.lastCtx = ctx; return nil }
-func (f *fakeFS) Rename(ctx context.Context, _, _ string) error { f.lastCtx = ctx; return nil }
+func (f *fakeFS) Remove(ctx context.Context, _ string) error {
+	f.lastCtx = ctx
+	return f.err
+}
+func (f *fakeFS) Rename(ctx context.Context, _, _ string) error {
+	f.lastCtx = ctx
+	return f.err
+}
 
 type fakeEntry struct {
 	name string
@@ -115,19 +132,54 @@ func resultText(result tool.Result) string {
 	return value
 }
 
-func TestReadRejectsBinaryAndListLimitWithoutPartialResult(t *testing.T) {
+func TestReadReportsBinaryAndListLimitAsResult(t *testing.T) {
 	fake := &fakeFS{readData: []byte{0xff}, entries: []fs.DirEntry{fakeEntry{name: "a"}, fakeEntry{name: "b"}}}
 	exports, _, err := New(context.Background(), Config{MaxReadBytes: 10, MaxListEntries: 1}, Dependencies{Filesystem: fake})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"path\":\"x\"}")})
-	if !errors.Is(err, ErrBinaryContent) {
-		t.Fatalf("binary error = %v", err)
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"path\":\"x\"}")})
+	if err != nil {
+		t.Fatalf("binary content should be reported as a result, got error: %v", err)
 	}
-	_, err = exports.Tools[2].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"path\":\".\"}")})
-	if !errors.Is(err, ErrResultLimit) {
-		t.Fatalf("list limit error = %v", err)
+	if text := resultText(result); !strings.Contains(text, "binary content is not supported") {
+		t.Fatalf("binary content result = %q", text)
+	}
+	result, err = exports.Tools[2].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"path\":\".\"}")})
+	if err != nil {
+		t.Fatalf("list limit should be reported as a result, got error: %v", err)
+	}
+	if text := resultText(result); !strings.Contains(text, "result limit exceeded") {
+		t.Fatalf("list limit result = %q", text)
+	}
+}
+
+func TestFilesystemOperationFailureIsReportedAsResult(t *testing.T) {
+	exports, _, err := New(context.Background(), Config{}, Dependencies{Filesystem: &fakeFS{err: fs.ErrNotExist}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A missing file is a known business outcome: report it as a result so the
+	// model can react, do not interrupt the turn with an error.
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"path\":\"missing.txt\"}")})
+	if err != nil {
+		t.Fatalf("missing file should be a result, got error: %v", err)
+	}
+	if text := resultText(result); !strings.Contains(text, "file does not exist") {
+		t.Fatalf("missing file result = %q", text)
+	}
+}
+
+func TestFilesystemOperationFailureHonorsParentCancellation(t *testing.T) {
+	exports, _, err := New(context.Background(), Config{}, Dependencies{Filesystem: &fakeFS{err: fs.ErrPermission}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = exports.Tools[0].Invoke(ctx, tool.Call{Arguments: []byte("{\"path\":\"x\"}")})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled ctx error = %v, want context.Canceled", err)
 	}
 }
 
