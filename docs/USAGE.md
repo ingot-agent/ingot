@@ -23,6 +23,7 @@ examples, and the details of the build/apply workflow.
   - [`gc`](#gc)
   - [`plugin`](#plugin)
   - [Running the runtime image](#running-the-runtime-image)
+  - [System prompt](#system-prompt)
 - [Exit codes](#exit-codes)
 - [Build & verification pipeline](#build--verification-pipeline)
 - [Examples](#examples)
@@ -172,6 +173,25 @@ Initializes a working ingot home:
 `init` is idempotent: an existing `plugins.toml` blocks re-initialization
 (unless `--force`) and an existing `config.toml` is preserved. It prints the
 next steps: edit `config.toml`, run `ingot apply`, run `ingot chat`.
+
+### System prompt
+
+The default profile writes the official Ingot coding-agent system prompt when
+`ingot init` creates `~/.ingot/config.toml`:
+
+```toml
+[plugins."prompt.default"]
+system_prompt = """
+You are Ingot, a software engineering agent.
+...
+"""
+```
+
+Edit `system_prompt` directly to customize the agent's stable behavior, then
+restart the current runtime image. The normal `init` flow preserves an existing
+`config.toml`; `ingot init --force` regenerates the official default prompt.
+The `minimal` profile keeps the `prompt.default` table for runtime
+configuration compatibility but does not install a coding-agent prompt.
 
 ### `resolve`
 
