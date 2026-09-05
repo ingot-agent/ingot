@@ -160,6 +160,7 @@ ingot apply
 ingot [--home PATH] <command>
 
 init        使用官方插件 Profile 初始化 home
+bundle      检查或更新官方插件 Bundle
 resolve     解析 plugins.toml 并刷新 plugins.lock
 build       构建已锁定的组合，但不激活
 apply       解析 + 构建 + 原子激活

@@ -13,6 +13,7 @@
 - [命令参考](#命令参考)
   - [全局选项](#全局选项)
   - [`init`](#init)
+  - [`bundle`](#bundle)
   - [`resolve`](#resolve)
   - [`build`](#build)
   - [`apply`](#apply)
@@ -152,6 +153,26 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 | `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
 
 `init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot chat`。
+
+### `bundle`
+
+```text
+ingot bundle check [--bundle PATH]
+ingot bundle update [--bundle PATH] [--apply]
+```
+
+`bundle check` 比较当前安装所携带的官方插件集与 home 中的
+`bundled-plugins/`，并报告安装摘要、可用摘要、是否存在更新以及受管插件数。
+它也会检测 `bundled-plugins/` 中偏离已安装摘要的本地修改。
+
+`bundle update` 先在临时目录复制并校验新版插件集，再替换 home 中的受管副本。
+它不会改写 `plugins.toml`、插件顺序或 `config.toml`，因此用户添加、删除、重排的
+插件和运行时配置都会保留。不带 `--apply` 时，随后运行 `ingot apply` 以生成并切换
+到使用新版源码的镜像；带 `--apply` 时一步完成更新、解析、构建和切换，失败会恢复
+旧 Bundle 与 `plugins.lock`。
+
+重新运行官方安装脚本时，脚本会对已有 home 自动执行 `bundle update`，然后按正常
+安装流程执行 `apply`。`--bundle PATH` 主要用于开发构建或非标准安装布局。
 
 ### 系统提示词
 

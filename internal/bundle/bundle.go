@@ -91,6 +91,18 @@ type Entry struct {
 	Name string
 }
 
+// State compares the official plugin distribution available next to the
+// current ingot executable with the managed copy in one ingot home.
+type State struct {
+	SourcePath      string `json:"source_path"`
+	ManagedPath     string `json:"managed_path"`
+	InstalledDigest string `json:"installed_digest,omitempty"`
+	ManagedDigest   string `json:"managed_digest,omitempty"`
+	AvailableDigest string `json:"available_digest"`
+	UpdateAvailable bool   `json:"update_available"`
+	Drifted         bool   `json:"drifted"`
+}
+
 // LookupProfile returns the named official profile.
 func LookupProfile(name string) (*Profile, error) {
 	if name == "" {
@@ -148,6 +160,90 @@ func Locate(explicit string) (string, error) {
 	return "", fmt.Errorf("official plugin bundle not found; run scripts/install.sh, or pass --bundle PATH (e.g. --bundle ./plugins)")
 }
 
+// Inspect compares a validated distribution with the materialized bundle in
+// homeRoot. Drifted reports local changes below bundled-plugins even when its
+// recorded distribution digest still matches the available distribution.
+func Inspect(sourceDir, homeRoot string) (State, error) {
+	absoluteSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return State{}, err
+	}
+	if err := validateDistribution(absoluteSource); err != nil {
+		return State{}, err
+	}
+	available, err := sourceDigest(absoluteSource)
+	if err != nil {
+		return State{}, err
+	}
+	managedPath := filepath.Join(homeRoot, BundledDirectory)
+	state := State{SourcePath: absoluteSource, ManagedPath: managedPath, AvailableDigest: available}
+	marker, markerErr := os.ReadFile(filepath.Join(managedPath, markerName))
+	if markerErr == nil {
+		state.InstalledDigest = strings.TrimSpace(string(marker))
+	} else if !os.IsNotExist(markerErr) {
+		return State{}, markerErr
+	}
+	if info, statErr := os.Stat(managedPath); statErr == nil && info.IsDir() {
+		state.ManagedDigest, err = managedSourceDigest(managedPath)
+		if err != nil {
+			return State{}, err
+		}
+	} else if statErr != nil && !os.IsNotExist(statErr) {
+		return State{}, statErr
+	}
+	state.Drifted = state.InstalledDigest != "" && state.ManagedDigest != state.InstalledDigest
+	state.UpdateAvailable = state.InstalledDigest != state.AvailableDigest || state.ManagedDigest != state.AvailableDigest
+	return state, nil
+}
+
+// Stage copies and validates sourceDir in a temporary directory below
+// homeRoot. The caller owns the returned directory and may atomically move it
+// into place as bundled-plugins after any higher-level transaction is ready.
+func Stage(sourceDir, homeRoot string) (string, string, error) {
+	absoluteSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return "", "", err
+	}
+	if err := validateDistribution(absoluteSource); err != nil {
+		return "", "", err
+	}
+	digest, err := sourceDigest(absoluteSource)
+	if err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(homeRoot, 0o700); err != nil {
+		return "", "", err
+	}
+	temporary, err := os.MkdirTemp(homeRoot, ".bundled-plugins-stage-")
+	if err != nil {
+		return "", "", err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.RemoveAll(temporary)
+		}
+	}()
+	if err := copySources(absoluteSource, temporary); err != nil {
+		return "", "", err
+	}
+	if err := os.WriteFile(filepath.Join(temporary, markerName), []byte(digest+"\n"), 0o644); err != nil {
+		return "", "", err
+	}
+	stagedDigest, err := managedSourceDigest(temporary)
+	if err != nil {
+		return "", "", err
+	}
+	if stagedDigest != digest {
+		return "", "", fmt.Errorf("plugin distribution changed while staging: source digest %s, staged digest %s", digest, stagedDigest)
+	}
+	if err := validateDistribution(temporary); err != nil {
+		return "", "", fmt.Errorf("validate staged plugin bundle: %w", err)
+	}
+	keep = true
+	return temporary, digest, nil
+}
+
 // validDistribution reports whether directory contains every official plugin
 // directory.
 func validDistribution(directory string) bool {
@@ -159,6 +255,25 @@ func validDistribution(directory string) bool {
 		}
 	}
 	return true
+}
+
+func validateDistribution(directory string) error {
+	if !validDistribution(directory) {
+		return fmt.Errorf("plugin bundle %s is not a valid official plugin set (expected one directory per official plugin with go.mod and ingot.plugin.toml)", directory)
+	}
+	seen := make(map[string]bool)
+	for _, profile := range profiles {
+		for _, pluginDirectory := range profile.Plugins {
+			if seen[pluginDirectory] {
+				continue
+			}
+			seen[pluginDirectory] = true
+			if _, err := readEntry(filepath.Join(directory, pluginDirectory)); err != nil {
+				return fmt.Errorf("bundled plugin %s: %w", pluginDirectory, err)
+			}
+		}
+	}
+	return nil
 }
 
 func validPluginDirectory(directory string) bool {
@@ -211,13 +326,22 @@ func staleMarker(destRoot, digest string, profile *Profile) bool {
 			return true
 		}
 	}
-	return false
+	managedDigest, err := managedSourceDigest(destRoot)
+	return err != nil || managedDigest != digest
 }
 
 // sourceDigest hashes the plugin distribution directory content in
 // deterministic (logical path, bytes) order. Metadata directories (.git,
 // .idea, ...) are excluded so they never break reproducibility.
 func sourceDigest(sourceDir string) (string, error) {
+	return treeDigest(sourceDir, "")
+}
+
+func managedSourceDigest(sourceDir string) (string, error) {
+	return treeDigest(sourceDir, markerName)
+}
+
+func treeDigest(sourceDir, ignoredRootFile string) (string, error) {
 	var paths []string
 	err := filepath.WalkDir(sourceDir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -227,6 +351,13 @@ func sourceDigest(sourceDir string) (string, error) {
 			if path != sourceDir && excludedSourceDirectories[entry.Name()] {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		relative, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return err
+		}
+		if ignoredRootFile != "" && filepath.ToSlash(relative) == ignoredRootFile {
 			return nil
 		}
 		paths = append(paths, path)
