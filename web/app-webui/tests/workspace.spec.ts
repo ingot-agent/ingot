@@ -141,7 +141,10 @@ test('operation form, complex JSON, result recovery, and cancellation', async ({
   await page.getByLabel('Select an operation', { exact: true }).selectOption('complex')
   await page.getByRole('textbox', { name: 'Input', exact: true }).fill('{"items":["one","two"]}')
   await page.getByRole('button', { name: 'Run operation', exact: true }).click()
-  await expect(page.locator('.operation-call').filter({ hasText: '"items"' })).toHaveCount(1)
+  // Match this test's own unique input value rather than the broad '"items"'
+  // marker. Earlier tests share the same fixture server (workers: 1), so a
+  // previous complex invocation would otherwise leave a second matching card.
+  await expect(page.locator('.operation-call').filter({ hasText: '"two"' })).toHaveCount(1)
   await page.getByLabel('Select an operation', { exact: true }).selectOption('wait')
   await page.getByLabel('value', { exact: false }).fill('1')
   await page.getByRole('button', { name: 'Run operation', exact: true }).click()
