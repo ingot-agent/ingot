@@ -53,6 +53,7 @@ var profiles = map[string]*Profile{
 			"model-runtime",
 			"tool-runtime",
 			"tool-shell",
+			"tool-edit",
 			"tool-ask",
 			"prompt-default",
 			"session-sqlite",

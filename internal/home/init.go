@@ -10,6 +10,7 @@ import (
 
 	"github.com/ingot-agent/ingot/internal/builder"
 	"github.com/ingot-agent/ingot/internal/bundle"
+	"github.com/ingot-agent/ingot/internal/prompts"
 )
 
 // InitOptions configures ingot init.
@@ -107,7 +108,11 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 	if err != nil {
 		return InitResult{}, err
 	}
-	configData, err := renderConfigTOML(home.Root, entries)
+	systemPrompt := ""
+	if profile.Name == "default" {
+		systemPrompt = prompts.CodingAgent()
+	}
+	configData, err := renderConfigTOML(home.Root, entries, systemPrompt)
 	if err != nil {
 		return InitResult{}, err
 	}
@@ -184,7 +189,7 @@ func renderDesiredTOML(entries []bundle.Entry) ([]byte, error) {
 // renderConfigTOML renders the default runtime config template. Every plugin
 // of the profile gets exactly one table (required by the runtime config
 // decoder); plugins with required values get a commented sample.
-func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
+func renderConfigTOML(homeRoot string, entries []bundle.Entry, systemPrompt string) ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("# ingot runtime configuration.\n")
 	output.WriteString("#\n")
@@ -218,6 +223,13 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 	write("--- immutable media storage used by agents and model providers ---\nValues are byte limits; omitted values use conservative local defaults.", "asset.local", "# max_object_bytes = 67108864\n# max_total_bytes = 10737418240\n# io_concurrency = 8\n")
 	write("--- agent loop defaults (optional) ---\nStreaming is selected by applications through agent.StreamingRuntime; the legacy streaming key is ignored.", "agent.default", "# provider = \"openai\"\n# model = \"gpt-4o-mini\"\n# max_rounds = 8\n")
 	write("--- browser workspace: HTTP/SSE server bind address ---\nKeep 127.0.0.1 for trusted local single-user use; do not expose it to a network.", "app.backend", "backend = { address = \"127.0.0.1:7316\" }\n# backend = { replay_capacity = 1024, subscriber_buffer = 64, heartbeat_interval_seconds = 15, operation_retention = 128, max_asset_bytes = 67108864 }\n")
+	if _, ok := byName["prompt.default"]; ok {
+		if systemPrompt != "" {
+			write("--- system prompt ---\nCustomize this prompt to change the default agent behavior.\nRestart the current image after editing config.toml.", "prompt.default", "system_prompt = "+renderTOMLMultilineString(systemPrompt)+"\n")
+		} else {
+			write("", "prompt.default", "")
+		}
+	}
 	if _, ok := byName["filesystem.local"]; ok {
 		write("--- workspace root for filesystem tools ---\n\".\" means the working directory where you start `ingot chat`.", "filesystem.local", "root = \".\"\n")
 	}
@@ -232,14 +244,54 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 		}
 		write("--- shell tool execution boundary ---\nAbsolute paths required; adjust them for your machine.", "tool.shell", fmt.Sprintf("working_directory = %s\nshell = %s\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n", strconv.Quote(workingDirectory), strconv.Quote(shell)))
 	}
+	if _, ok := byName["tool.edit"]; ok {
+		write("--- exact UTF-8 text editing ---\nThe default limit is 1 MiB; raise it only for trusted workspaces.", "tool.edit", "# max_file_bytes = 1048576\n")
+	}
 	for _, entry := range entries {
 		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "filesystem.local", "tool.shell":
+		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "prompt.default", "filesystem.local", "tool.shell", "tool.edit":
 			continue
 		}
 		write("", entry.Name, "")
 	}
 	return output.Bytes(), nil
+}
+
+// renderTOMLMultilineString encodes value as a TOML multiline basic string.
+// The newline after the opening delimiter is intentionally part of the
+// template rather than value: TOML trims that first newline when decoding.
+func renderTOMLMultilineString(value string) string {
+	var output strings.Builder
+	output.Grow(len(value) + 8)
+	output.WriteString("\"\"\"\n")
+	for _, r := range value {
+		switch r {
+		case '\\':
+			output.WriteString(`\\`)
+		case '"':
+			output.WriteString(`\"`)
+		case '\r':
+			output.WriteString(`\r`)
+		case '\n':
+			output.WriteRune(r)
+		case '\b':
+			output.WriteString(`\b`)
+		case '\t':
+			output.WriteRune(r)
+		case '\f':
+			output.WriteString(`\f`)
+		default:
+			if r < 0x20 || r == 0x7f {
+				fmt.Fprintf(&output, `\u%04X`, r)
+				continue
+			}
+			output.WriteRune(r)
+		}
+	}
+	// Escape the line ending before the closing delimiter so the generated
+	// config stays readable without adding a trailing newline to the value.
+	output.WriteString("\\\n\"\"\"")
+	return output.String()
 }
 
 // defaultShellPath picks an absolute shell executable that exists on this

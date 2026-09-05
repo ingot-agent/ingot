@@ -9,6 +9,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/ingot-agent/ingot/internal/builder"
+	"github.com/ingot-agent/ingot/internal/prompts"
 )
 
 func testBundleSource(t *testing.T) string {
@@ -39,15 +40,17 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if !result.WrotePlugins || !result.WroteBuilderConfig || !result.WroteConfig {
 		t.Fatalf("init must write plugins, builder, and runtime config files: %#v", result)
 	}
-	if len(result.Plugins) != 11 {
-		t.Fatalf("default profile has %d plugins, want 11: %#v", len(result.Plugins), result.Plugins)
+	if len(result.Plugins) != 12 {
+		t.Fatalf("default profile has %d plugins, want 12: %#v", len(result.Plugins), result.Plugins)
+
 	}
 	desired, err := builder.ParseDesired(home.DesiredPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(desired.Plugins) != 11 {
-		t.Fatalf("plugins.toml has %d plugins, want 11", len(desired.Plugins))
+	if len(desired.Plugins) != 12 {
+		t.Fatalf("plugins.toml has %d plugins, want 12", len(desired.Plugins))
+
 	}
 	builderData, err := os.ReadFile(home.BuilderConfigPath())
 	if err != nil {
@@ -88,6 +91,21 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	}
 	if strings.Contains(string(configData), "streaming =") {
 		t.Fatalf("config.toml advertises the ignored agent streaming key:\n%s", configData)
+	}
+	var document struct {
+		Plugins map[string]struct {
+			SystemPrompt string `toml:"system_prompt"`
+		} `toml:"plugins"`
+	}
+	if err := toml.Unmarshal(configData, &document); err != nil {
+		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
+	}
+	promptConfig, ok := document.Plugins["prompt.default"]
+	if !ok {
+		t.Fatal("default config lacks [plugins.\"prompt.default\"]")
+	}
+	if promptConfig.SystemPrompt != prompts.CodingAgent() {
+		t.Fatal("default config system_prompt does not match the official coding-agent prompt")
 	}
 }
 
@@ -162,6 +180,27 @@ func TestInitMinimalProfile(t *testing.T) {
 		if _, ok := document.Plugins[entry.Name]; !ok {
 			t.Fatalf("minimal config lacks table for %s (%s)", entry.Name, entry.Module)
 		}
+	}
+	promptConfig := document.Plugins["prompt.default"]
+	if value, ok := promptConfig["system_prompt"]; ok {
+		prompt, isString := value.(string)
+		if !isString || prompt != "" {
+			t.Fatalf("minimal config must not contain a default system prompt: %#v", value)
+		}
+	}
+}
+
+func TestRenderTOMLMultilineStringRoundTrip(t *testing.T) {
+	original := "You are \"Ingot\".\n\nRun:\ngo test ./...\n\nWindows:\nC:\\workspace\\ingot\r\n中文测试。\ncontrol:\b\f\x01\x7f\t\ntail\\"
+	data := []byte("value = " + renderTOMLMultilineString(original) + "\n")
+	var document struct {
+		Value string `toml:"value"`
+	}
+	if err := toml.Unmarshal(data, &document); err != nil {
+		t.Fatalf("generated TOML does not parse: %v\n%s", err, data)
+	}
+	if document.Value != original {
+		t.Fatalf("TOML round-trip changed the value:\n got %q\nwant %q", document.Value, original)
 	}
 }
 

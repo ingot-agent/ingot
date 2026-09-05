@@ -16,6 +16,7 @@ use (
 	./plugins/prompt-default
 	./plugins/session-sqlite
 	./plugins/tool-ask
+	./plugins/tool-edit
 	./plugins/tool-fs
 	./plugins/tool-runtime
 	./plugins/tool-shell

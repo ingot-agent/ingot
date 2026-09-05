@@ -39,7 +39,7 @@ the graph.
 | Agent loop | `agent.default` | Triage workflow, domain-specific loop, deterministic orchestration |
 | Model access | `http.default`, `model.openai-compatible`, `model.runtime` | Enterprise transport, another provider, custom routing or failover |
 | Binary assets | `asset.local` | Object storage, shared media service, encrypted or remote immutable blobs |
-| Tools | `tool.shell`, `tool.fs`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
+| Tools | `tool.shell`, `tool.fs`, `tool.edit`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
 | Policy | `interceptor.approval`, `interceptor.script` | Audit, authorization, rate limits, organization-specific guardrails |
 | State and context | `session.sqlite`, `context.compact`, `prompt.default` | Alternate session backends, retrieval, custom memory and prompting |
 

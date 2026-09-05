@@ -22,6 +22,7 @@
   - [`gc`](#gc)
   - [`plugin`](#plugin)
   - [运行 Runtime Image](#运行-runtime-image)
+  - [系统提示词](#系统提示词)
 - [退出码](#退出码)
 - [构建与校验流水线](#构建与校验流水线)
 - [示例](#示例)
@@ -145,12 +146,32 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 
 | 选项 | 含义 |
 |---|---|
-| `--profile` | `default`（骨架 + 常用适配器，14 个插件）或 `minimal`（最小可运行集，9 个插件），默认 `default`；两者都包含管理不可变多模态数据的 `asset.local`。 |
+| `--profile` | `default`（骨架 + 常用适配器，15 个插件）或 `minimal`（最小可运行集，9 个插件），默认 `default`；两者都包含管理不可变多模态数据的 `asset.local`。 |
 | `--bundle` | 指向官方插件集目录（默认按可执行文件位置自动定位）。 |
 | `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
 | `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
 
 `init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot chat`。
+
+### 系统提示词
+
+使用默认 profile 执行 `ingot init` 时，官方 Coding Agent 系统提示词会写入：
+
+```text
+~/.ingot/config.toml
+```
+
+对应配置为：
+
+```toml
+[plugins."prompt.default"]
+system_prompt = """
+You are Ingot, a software engineering agent.
+...
+"""
+```
+
+你可以直接编辑 `system_prompt` 来定制 Agent 的稳定行为，修改后重启当前 Runtime Image。普通 `ingot init` 会保留已有的 `config.toml`；`ingot init --force` 会重新生成当前版本的官方默认提示词。`minimal` profile 仍会保留 `prompt.default` 配置表以满足 Runtime 配置要求，但不会写入 Coding Agent 默认提示词。
 
 ### `resolve`
 
