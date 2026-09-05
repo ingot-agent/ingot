@@ -217,7 +217,7 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 	write("--- defaults used when a request leaves provider/model empty ---\nKeep these in sync with the provider name and models above.", "model.runtime", "default_provider = \"openai\"\ndefault_model = \"gpt-4o-mini\"\n")
 	write("--- immutable media storage used by agents and model providers ---\nValues are byte limits; omitted values use conservative local defaults.", "asset.local", "# max_object_bytes = 67108864\n# max_total_bytes = 10737418240\n# io_concurrency = 8\n")
 	write("--- agent loop defaults (optional) ---\nStreaming is selected by applications through agent.StreamingRuntime; the legacy streaming key is ignored.", "agent.default", "# provider = \"openai\"\n# model = \"gpt-4o-mini\"\n# max_rounds = 8\n")
-	write("--- session title model (optional) ---\nEmpty values reuse model.runtime defaults; choose a cheaper model here if desired.", "app.cli", "# app = { title_provider = \"openai\", title_model = \"gpt-4o-mini\" }\n")
+	write("--- browser workspace: HTTP/SSE server bind address ---\nKeep 127.0.0.1 for trusted local single-user use; do not expose it to a network.", "app.backend", "backend = { address = \"127.0.0.1:7316\" }\n# backend = { replay_capacity = 1024, subscriber_buffer = 64, heartbeat_interval_seconds = 15, operation_retention = 128, max_asset_bytes = 67108864 }\n")
 	if _, ok := byName["filesystem.local"]; ok {
 		write("--- workspace root for filesystem tools ---\n\".\" means the working directory where you start `ingot chat`.", "filesystem.local", "root = \".\"\n")
 	}
@@ -234,7 +234,7 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 	}
 	for _, entry := range entries {
 		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.cli", "filesystem.local", "tool.shell":
+		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "filesystem.local", "tool.shell":
 			continue
 		}
 		write("", entry.Name, "")

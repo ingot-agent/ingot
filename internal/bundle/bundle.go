@@ -40,9 +40,12 @@ type Profile struct {
 var profiles = map[string]*Profile{
 	"default": {
 		Name: "default",
-		// Runtime skeleton first, then providers and adapters, agent and CLI
+		// Runtime skeleton first, then providers and adapters, agent and app
 		// last so that MANY aggregation and creation order are stable and
-		// readable.
+		// readable. The default profile composes the official browser
+		// workspace (app.webui) without filesystem tools or approval
+		// interceptors: tool calls execute directly and the Agent can ask the
+		// user through tool.ask instead.
 		Plugins: []string{
 			"asset-local",
 			"http-default",
@@ -50,20 +53,18 @@ var profiles = map[string]*Profile{
 			"model-runtime",
 			"tool-runtime",
 			"tool-shell",
-			"tool-fs",
 			"tool-ask",
-			"interceptor-approval",
-			"filesystem-local",
 			"prompt-default",
 			"session-sqlite",
 			"agent-default",
-			"app-cli",
+			"app-webui",
 		},
 	},
 	"minimal": {
 		Name: "minimal",
 		// Exactly the runtime skeleton plus one model provider and the HTTP
-		// client it requires. No tools, no filesystem, no approvals.
+		// client it requires. No tools, no filesystem, no approvals; the
+		// terminal CLI remains the application boundary.
 		Plugins: []string{
 			"asset-local",
 			"http-default",
