@@ -4,3 +4,8 @@ dist
 # JetBrains IDE project files
 .idea/
 *.iml
+
+# Web UI development artifacts (embedded webdist is tracked)
+node_modules/
+web/app-webui/test-results/
+web/app-webui/playwright-report/

@@ -4,7 +4,7 @@
 
 当前 `ingot` 的 Agent 基础能力已经从“为了让 demo 跑起来”逐步演进到一个相对完整的执行内核：具备 Turn 执行、Model 调用、Tool Loop、Session 持久化、流式输出、多模态输入、Context Compaction、Tool 审批与中断恢复等能力。
 
-接下来的目标不应继续以“CLI 缺什么就临时补什么”为驱动，而应该先明确 Agent Execution Core 的完整边界，把关键执行语义补齐并稳定下来，再基于这些能力重新构建 `app.cli`。
+接下来的目标不应继续以“CLI 缺什么就临时补什么”为驱动，而应该先明确 Agent Execution Core 的完整边界，把关键执行语义补齐并稳定下来，再基于这些能力构建完整的 Application。M6 首版选择 Web UI，CLI 重写不再是本里程碑的交付前提。
 
 这一阶段的核心目标是：
 
@@ -27,7 +27,7 @@ Milestone 4 — Execution Outcome
         ↓
 Milestone 5 — Session Management
         ↓
-Milestone 6 — app.cli v2
+Milestone 6 — Web UI Application
 ```
 
 其中：
@@ -524,15 +524,15 @@ Application 可以依赖额外 management capability。
 
 ---
 
-# Milestone 6 — app.cli v2
+# Milestone 6 — Web UI Application
 
 ## 目标
 
-彻底重写 `app.cli`，并将它作为新 Agent Application Surface 的第一个完整消费者。
+以 `plugins/app-webui`（插件 ID `app.backend`）和 `web/app-webui` 为新 Agent Application Surface 的第一个完整消费者。前端采用 Vue 3 + TypeScript + Tailwind CSS，构建产物随 Go Runtime Image 嵌入分发。
 
-新的 CLI 不应该继续 patch 旧实现。
+首版面向本机单用户，不扩展 SDK，也不在 Builder 中增加 Web 应用特判。保留现有 CLI；其重写可作为后续独立产品工作。
 
-## app.cli v2 应验证的能力
+## Web UI 验证的能力
 
 ```text
 Round semantics
@@ -546,11 +546,25 @@ History Recovery
 Multimodal Input
 ```
 
-它的价值不仅是提供 CLI 产品，还应该承担：
+它的价值不仅是提供浏览器产品，还应该承担：
 
 > 验证 Agent Core 是否真的足够被一个复杂 Application 自然消费。
 
-如果 CLI 仍然需要大量 private workaround，就意味着底层 contract 还没有真正完成。
+如果 Application 仍然需要大量 private workaround，就意味着底层 contract 还没有真正完成。
+
+## 首版实现
+
+- [x] HTTP/SSE 后端及嵌入式 Web UI；无需 Node 运行时。
+- [x] 会话生命周期、Markdown/多模态消息、流式输出、取消和权威历史恢复。
+- [x] 按 SDK Turn/Round 展示 Observation、工具卡片、执行 Outcome 与用量。
+- [x] context correlation 关联的内联审批、自由输入及全局待处理请求。
+- [x] Asset 上传/读取与历史预览、Operation 表单/JSON 输入/结果与取消。
+- [x] 快照与 cursor 重连、revision 去重、中英文、主题和移动端抽屉。
+- [x] 前端单元测试、真实 Go HTTP/SSE 边界的浏览器回归、静态产物一致性 CI。
+
+持久历史仍由 `agent.History` 提供。详细执行事件、推理和终态用量不新增持久存储；页面刷新/重连不提供历史执行回放。此边界不等于 Checkpoint/Resume。
+
+启动、测试和状态边界见 [app.backend 说明](plugins/app-webui/README.md) 与 [前端开发说明](web/app-webui/README.md)。
 
 ---
 
@@ -605,8 +619,8 @@ Human Delegation
    补 Application-facing session lifecycle，
    同时保持 Agent 所依赖 Store contract 的克制。
 
-6. app.cli v2
-   基于以上能力彻底重写 CLI，
+6. Web UI Application
+   基于以上能力交付首版浏览器工作区，
    用真实 Application 验证整个 Agent Surface。
 ```
 
@@ -616,6 +630,5 @@ Human Delegation
 - [ ] Execution Semantics
 - [ ] Execution Outcome
 - [ ] Session Management
-- [ ] app.cli v2
-
+- [x] Web UI Application
 

@@ -89,7 +89,19 @@ as much as the model call.
 
 ## Quick start
 
-Requires Go 1.24 or newer.
+Requires Go 1.24 or newer. One command installs the CLI, initializes the
+home with the default profile (browser workspace: sessions, tools, streaming;
+no filesystem tools, no approval interceptors), collects your model provider
+settings, builds the runtime image, and offers to start the web UI:
+
+```sh
+./scripts/install.sh
+# non-interactive alternative: set the provider first
+INGOT_BASE_URL=https://api.deepseek.com INGOT_API_KEY=sk-... \
+  INGOT_MODEL=deepseek-v4-flash ./scripts/install.sh
+```
+
+Manual steps, equivalent to what the installer does:
 
 ```sh
 # 1. Build the CLI (or install with ./scripts/install.sh)
@@ -101,14 +113,20 @@ go build -o ingot ./cmd/ingot
 # 3. Set your model provider in ~/.ingot/config.toml, then compose an image
 ./ingot apply
 
-# 4. Dispatch the chat command to the active runtime image
-./ingot chat
+# 4. Start the browser workspace
+./ingot web        # then open http://127.0.0.1:7316/
 ```
 
 `ingot init` materializes the official plugins under `bundled-plugins/` and
 writes `builder.toml`, `plugins.toml`, and a `config.toml` template. Pass
-`--profile minimal` for the smallest runnable graph. See the
-[Usage Guide](./docs/USAGE.md) for installation options and the full workflow.
+`--profile minimal` for the smallest runnable graph (terminal CLI, no tools).
+See the [Usage Guide](./docs/USAGE.md) for installation options and the full
+workflow.
+
+For the browser workspace, replace the CLI with [app.backend](./plugins/app-webui/README.md).
+Its Vue + Tailwind frontend is embedded in the native Runtime Image and includes
+conversations, streaming, approvals, attachments, execution details, and operations.
+It is intended for trusted local, single-user use.
 
 ## How build-time composition works
 

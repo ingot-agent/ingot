@@ -42,3 +42,42 @@ jobs:
             )
             echo "::endgroup::"
           done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
+
+  webui:
+    name: Web UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web/app-webui
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: '**/go.sum'
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/app-webui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - name: Check types and embedded build freshness
+        run: npm run check:dist
+      - run: npx playwright install --with-deps chromium
+      - name: Browser regression against the Go HTTP and SSE boundary
+        run: npm run test:e2e
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: webui-browser-results
+          path: |
+            web/app-webui/playwright-report/
+            web/app-webui/test-results/
+          retention-days: 7

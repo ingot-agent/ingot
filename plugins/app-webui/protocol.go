@@ -37,6 +37,12 @@ type AgentState struct {
 	Capabilities AgentCapabilities `json:"capabilities"`
 }
 
+// AssetState describes the optional browser asset transport.
+type AssetState struct {
+	Available bool  `json:"available"`
+	MaxBytes  int64 `json:"maxBytes"`
+}
+
 // Session is the Web projection of session metadata.
 type Session struct {
 	ID         string     `json:"id"`
@@ -60,6 +66,7 @@ type TurnSnapshot struct {
 type StateSnapshot struct {
 	Cursor               uint64                `json:"cursor"`
 	Agent                AgentState            `json:"agent"`
+	Assets               AssetState            `json:"assets"`
 	Sessions             []Session             `json:"sessions"`
 	Operations           []OperationDefinition `json:"operations"`
 	Turns                []TurnSnapshot        `json:"turns"`

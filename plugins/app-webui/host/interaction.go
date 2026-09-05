@@ -13,6 +13,7 @@ import (
 
 	appbackend "github.com/ingot-agent/app-webui"
 	"github.com/ingot-agent/sdk/interaction"
+	"github.com/ingot-agent/sdk/observation"
 )
 
 type pendingResult struct {
@@ -44,7 +45,7 @@ func newInteractionHost(events appbackend.EventSink) *interactionHost {
 }
 
 func (h *interactionHost) Request(ctx context.Context, request interaction.Request) (interaction.Response, error) {
-	return h.request(ctx, request, nil)
+	return h.request(ctx, request, contextScope(ctx))
 }
 
 func (h *interactionHost) request(ctx context.Context, request interaction.Request, scope *appbackend.Scope) (interaction.Response, error) {
@@ -109,7 +110,7 @@ func (h *interactionHost) Respond(id string, submission appbackend.InteractionSu
 }
 
 func (h *interactionHost) Emit(ctx context.Context, event interaction.Event) error {
-	return h.emit(ctx, event, nil)
+	return h.emit(ctx, event, contextScope(ctx))
 }
 
 func (h *interactionHost) emit(ctx context.Context, event interaction.Event, scope *appbackend.Scope) error {
@@ -131,7 +132,7 @@ func (h *interactionHost) emit(ctx context.Context, event interaction.Event, sco
 }
 
 func (h *interactionHost) Set(ctx context.Context, state interaction.State) error {
-	return h.set(ctx, state, nil)
+	return h.set(ctx, state, contextScope(ctx))
 }
 
 func (h *interactionHost) set(ctx context.Context, state interaction.State, scope *appbackend.Scope) error {
@@ -157,7 +158,26 @@ func (h *interactionHost) set(ctx context.Context, state interaction.State, scop
 }
 
 func (h *interactionHost) Clear(ctx context.Context, name string) error {
-	return h.clear(ctx, name, nil)
+	return h.clear(ctx, name, contextScope(ctx))
+}
+
+// contextScope projects only correlation supplied by the execution context.
+// A round index alone has no presence marker in the SDK; include it when a
+// tool scope makes its meaning unambiguous.
+func contextScope(ctx context.Context) *appbackend.Scope {
+	correlation, ok := observation.CorrelationFromContext(ctx)
+	if !ok || (correlation.SessionID == "" && correlation.TurnID == "") {
+		return nil
+	}
+	agent := &appbackend.AgentScope{
+		SessionID: string(correlation.SessionID), TurnID: string(correlation.TurnID),
+		ToolCallID: correlation.ToolCallID,
+	}
+	if correlation.ToolCallID != "" {
+		index := correlation.RoundIndex
+		agent.RoundIndex = &index
+	}
+	return &appbackend.Scope{Agent: agent}
 }
 
 func (h *interactionHost) clear(ctx context.Context, name string, scope *appbackend.Scope) error {
