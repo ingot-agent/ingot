@@ -489,6 +489,7 @@ ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 的历史基线�
 | `model.runtime` | provider selection 与 model chokepoint | Consume providers 与两类 interceptors; export complete/stream runtimes、request/capability resolvers |
 | `tool.shell` | shell tool | Export `[]tool.Tool` |
 | `tool.fs` | file tools | Consume `filesystem.FS`; export `[]tool.Tool` |
+| `tool.edit` | exact UTF-8 text edit | Consume `filesystem.FS`; export `[]tool.Tool` |
 | `tool.ask` | 同步文本/选项询问，选项模式保留自由输入 | Consume `interaction.Channel`; export `[]tool.Tool` |
 | `tool.runtime` | tool lookup、校验与 interceptor chain | Consume tools/interceptors; export `tool.Runtime` |
 | `interceptor.approval` | tool approval | Consume optional interaction; export `[]tool.Interceptor` |
@@ -507,8 +508,10 @@ flowchart LR
     Provider -->|Named model.Provider| ModelRuntime["model.runtime"]
 
     LocalFS["filesystem.local"] -->|filesystem.FS| FSTool["tool.fs"]
+    LocalFS -->|filesystem.FS| EditTool["tool.edit"]
     Shell["tool.shell"] -->|tool.Tool| ToolRuntime["tool.runtime"]
     FSTool -->|tool.Tool| ToolRuntime
+    EditTool -->|tool.Tool| ToolRuntime
     Ask["tool.ask"] -->|tool.Tool| ToolRuntime
     Approval["interceptor.approval"] -->|tool.Interceptor| ToolRuntime
 
@@ -546,7 +549,7 @@ flowchart LR
 
 ### Phase 2：Core Runtime
 
-- `filesystem.local`、`tool.fs`、`tool.ask`；
+- `filesystem.local`、`tool.fs`、`tool.edit`、`tool.ask`；
 - `model.openai-compatible`、`model.runtime`；
 - `session.sqlite`、`prompt.default`、`context.compact`、`agent.default`。
 

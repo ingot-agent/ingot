@@ -22,7 +22,7 @@ ingot 是一个面向 Agent 的构建期组合系统。它不把 Agent 看成只
 | Agent Loop | `agent.default` | 分诊工作流、领域专用 Loop、确定性编排流程 |
 | 模型访问 | `http.default`、`model.openai-compatible`、`model.runtime` | 企业网络传输、其他 Provider、自定义路由或故障转移 |
 | 二进制 Asset | `asset.local` | 对象存储、共享媒体服务、加密或远程不可变 Blob |
-| 工具 | `tool.shell`、`tool.fs`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
+| 工具 | `tool.shell`、`tool.fs`、`tool.edit`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
 | 策略 | `interceptor.approval`、`interceptor.script` | 审计、鉴权、限流、组织专用安全策略 |
 | 状态与上下文 | `session.sqlite`、`context.compact`、`prompt.default` | 可替换 Session 后端、检索、自定义记忆与 Prompt |
 

@@ -22,6 +22,7 @@ Plugin 设计必须遵循：
 | [`session.sqlite`](./session.sqlite_v0.1.md) | Implemented v0.1 (M5) | `session.Store` + `session.Manager` + `session.Query` | transaction ordering、opaque Fork、archive lifecycle、deterministic discovery |
 | [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | 子进程树、环境隔离、输出与时间边界 |
 | [`tool.fs`](./tool.fs_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Filesystem-to-Tool typed adapter |
+| [`tool.edit`](./tool.edit_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Exact UTF-8 replacement、unique-match safety |
 | [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
 | [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
 | [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
@@ -34,13 +35,13 @@ Plugin 设计必须遵循：
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
 | [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel` + `appcli.Frontend`（app Component无导出） | TUI/plain双前端、一次性AI会话标题、turn取消与受控进程退出 |
 
-共17个Plugin、18个Component；`app.cli`包含`interaction`和`app`两个Component。
+共18个Plugin、19个Component；`app.cli`包含`interaction`和`app`两个Component。
 
 ## 依赖与建议实施批次
 
 ```text
 Batch 1  asset.local / http.default / filesystem.local / session.sqlite
-Batch 2  tool.shell / tool.fs / tool.ask / approval / tool.runtime
+Batch 2  tool.shell / tool.fs / tool.edit / tool.ask / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.cli / interceptor.script hardening
@@ -71,4 +72,4 @@ Session capability contracts。
 
 ## 文档状态
 
-17个官方Plugin均已有实现；各 `v0.1` 文档记录首版实现决策。多模态后的公共内容、Asset、streaming 与 capability 语义以迁移方案和当前 SDK Contract 为准。
+18个官方Plugin均已有实现；各 `v0.1` 文档记录首版实现决策。多模态后的公共内容、Asset、streaming 与 capability 语义以迁移方案和当前 SDK Contract 为准。

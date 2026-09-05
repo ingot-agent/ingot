@@ -232,9 +232,12 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry) ([]byte, error) {
 		}
 		write("--- shell tool execution boundary ---\nAbsolute paths required; adjust them for your machine.", "tool.shell", fmt.Sprintf("working_directory = %s\nshell = %s\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n", strconv.Quote(workingDirectory), strconv.Quote(shell)))
 	}
+	if _, ok := byName["tool.edit"]; ok {
+		write("--- exact UTF-8 text editing ---\nThe default limit is 1 MiB; raise it only for trusted workspaces.", "tool.edit", "# max_file_bytes = 1048576\n")
+	}
 	for _, entry := range entries {
 		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.cli", "filesystem.local", "tool.shell":
+		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.cli", "filesystem.local", "tool.shell", "tool.edit":
 			continue
 		}
 		write("", entry.Name, "")

@@ -72,6 +72,7 @@ ingot 的核心是 Plugin/Component 组合系统，但最终产品不应只是�
 - `filesystem.local`
 - `tool.shell`
 - `tool.fs`
+- `tool.edit`
 - `tool.ask`
 - `interceptor.approval`
 
@@ -198,7 +199,7 @@ ingot init --no-build
 
 | Profile | 插件数 | 内容 |
 |---|---|---|
-| `default` | 14 | 骨架（`asset.local`、`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.sqlite`、`agent.default`、`app.cli`） |
+| `default` | 15 | 骨架（`asset.local`、`http.default`、`model.openai-compatible`、`model.runtime`、`tool.runtime`、`tool.shell`、`tool.fs`、`tool.edit`、`tool.ask`、`interceptor.approval`、`filesystem.local`、`prompt.default`、`session.sqlite`、`agent.default`、`app.cli`） |
 | `minimal` | 9 | 最小组合：骨架 + 一个模型 Provider + 其 HTTP 与 Asset 依赖 |
 
 ### 9.5 默认配置模板
