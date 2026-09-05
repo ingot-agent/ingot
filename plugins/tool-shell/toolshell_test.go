@@ -145,7 +145,7 @@ func TestOutputCollectorUsesFixedPerStreamQuotas(t *testing.T) {
 	}
 }
 
-func TestShellTimeoutPreservesContextError(t *testing.T) {
+func TestShellTimeoutReturnsResult(t *testing.T) {
 	shell := testShell(t, Config{TimeoutSeconds: 5})
 	command := "/bin/sleep 2"
 	if runtime.GOOS == "windows" {
@@ -155,9 +155,34 @@ func TestShellTimeoutPreservesContextError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = shell.Invoke(context.Background(), tool.Call{Arguments: arguments})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("timeout error = %v", err)
+	result, err := shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: arguments})
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	text := resultText(result)
+	if !strings.Contains(text, "exit_code: 124") {
+		t.Fatalf("timeout result missing exit_code 124: %q", text)
+	}
+	if !strings.Contains(text, "timed out after 1s") {
+		t.Fatalf("timeout result missing note: %q", text)
+	}
+}
+
+func TestShellTimeoutHonorsParentCancellation(t *testing.T) {
+	shell := testShell(t, Config{TimeoutSeconds: 5})
+	command := "/bin/sleep 2"
+	if runtime.GOOS == "windows" {
+		command = `for /L %i in (1,1,100000000) do @rem`
+	}
+	arguments, err := json.Marshal(map[string]any{"command": command, "timeout_seconds": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = shell.Invoke(ctx, tool.Call{Name: "shell_exec", Arguments: arguments})
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled parent ctx error = %v, want context.Canceled", err)
 	}
 }
 

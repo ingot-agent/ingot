@@ -135,6 +135,17 @@ type fsTool struct {
 	config     normalizedConfig
 }
 
+// businessResult reports a deterministic filesystem failure as a normal tool
+// result so the model can read the reason and continue, mirroring the tool.shell
+// convention that known business outcomes carry a nil error. A canceled or
+// expired parent context is preserved as an error so the surrounding turn stops.
+func (t *fsTool) businessResult(ctx context.Context, err error) (tool.Result, error) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return tool.Result{}, ctxErr
+	}
+	return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("%s error: %v", t.name, err))}, nil
+}
+
 func (t *fsTool) Definition() tool.Definition {
 	description := map[string]string{
 		toolRead:   "Read UTF-8 text from a filesystem path.",
@@ -170,13 +181,13 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		}
 		content, err := t.filesystem.ReadFile(ctx, args.Path)
 		if err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("read %q: %w", args.Path, err))
 		}
 		if len(content) > t.config.maxReadBytes {
-			return tool.Result{}, fmt.Errorf("read %q: %w", args.Path, ErrResultLimit)
+			return t.businessResult(ctx, fmt.Errorf("read %q: %w", args.Path, ErrResultLimit))
 		}
 		if !utf8.Valid(content) {
-			return tool.Result{}, fmt.Errorf("read %q: %w", args.Path, ErrBinaryContent)
+			return t.businessResult(ctx, fmt.Errorf("read %q: %w", args.Path, ErrBinaryContent))
 		}
 		return tool.Result{Content: contentprotocol.FromText(string(content))}, nil
 	case toolWrite:
@@ -191,10 +202,10 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 			return tool.Result{}, err
 		}
 		if !utf8.ValidString(*args.Content) {
-			return tool.Result{}, fmt.Errorf("content: %w", ErrBinaryContent)
+			return t.businessResult(ctx, fmt.Errorf("content: %w", ErrBinaryContent))
 		}
 		if err := t.filesystem.WriteFile(ctx, args.Path, []byte(*args.Content), t.config.fileMode); err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("write %q: %w", args.Path, err))
 		}
 		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("wrote %q", args.Path))}, nil
 	case toolList:
@@ -207,10 +218,10 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		}
 		entries, err := t.filesystem.ReadDir(ctx, args.Path)
 		if err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("list %q: %w", args.Path, err))
 		}
 		if len(entries) > t.config.maxListEntries {
-			return tool.Result{}, fmt.Errorf("list %q: %w", args.Path, ErrResultLimit)
+			return t.businessResult(ctx, fmt.Errorf("list %q: %w", args.Path, ErrResultLimit))
 		}
 		result := make([]listEntry, 0, len(entries))
 		for _, entry := range entries {
@@ -237,7 +248,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 		}
 		info, err := t.filesystem.Stat(ctx, args.Path)
 		if err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("stat %q: %w", args.Path, err))
 		}
 		if info == nil {
 			return tool.Result{}, fmt.Errorf("stat %q returned nil metadata", args.Path)
@@ -257,7 +268,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 			return tool.Result{}, err
 		}
 		if err := t.filesystem.MkdirAll(ctx, args.Path, t.config.directoryMode); err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("mkdir %q: %w", args.Path, err))
 		}
 		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("created directory %q", args.Path))}, nil
 	case toolRemove:
@@ -269,7 +280,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 			return tool.Result{}, err
 		}
 		if err := t.filesystem.Remove(ctx, args.Path); err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("remove %q: %w", args.Path, err))
 		}
 		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("removed %q", args.Path))}, nil
 	case toolRename:
@@ -287,7 +298,7 @@ func (t *fsTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error
 			return tool.Result{}, fmt.Errorf("destination: %w", err)
 		}
 		if err := t.filesystem.Rename(ctx, *args.Source, *args.Destination); err != nil {
-			return tool.Result{}, err
+			return t.businessResult(ctx, fmt.Errorf("rename %q to %q: %w", *args.Source, *args.Destination, err))
 		}
 		return tool.Result{Content: contentprotocol.FromText(fmt.Sprintf("renamed %q to %q", *args.Source, *args.Destination))}, nil
 	default:
