@@ -243,6 +243,7 @@ location.
 ingot [--home PATH] <command>
 
 init        Initialize a home with an official plugin profile
+bundle      Check or update the official plugin bundle
 resolve     Resolve plugins.toml and refresh plugins.lock
 build       Build the locked composition without activating it
 apply       Resolve + build + atomically activate

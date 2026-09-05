@@ -14,6 +14,7 @@ examples, and the details of the build/apply workflow.
 - [Command reference](#command-reference)
   - [Global options](#global-options)
   - [`init`](#init)
+  - [`bundle`](#bundle)
   - [`resolve`](#resolve)
   - [`build`](#build)
   - [`apply`](#apply)
@@ -173,6 +174,28 @@ Initializes a working ingot home:
 `init` is idempotent: an existing `plugins.toml` blocks re-initialization
 (unless `--force`) and an existing `config.toml` is preserved. It prints the
 next steps: edit `config.toml`, run `ingot apply`, run `ingot chat`.
+
+### `bundle`
+
+```text
+ingot bundle check [--bundle PATH]
+ingot bundle update [--bundle PATH] [--apply]
+```
+
+`bundle check` compares the official plugin distribution shipped with the
+current installation against `bundled-plugins/` in the home. It reports the
+installed and available digests, whether an update is available, local drift,
+and how many selected plugins use the managed bundle.
+
+`bundle update` stages and validates the available distribution before
+replacing the managed copy. It preserves `plugins.toml`, plugin order, and
+`config.toml`. Run `ingot apply` afterwards, or pass `--apply` to resolve,
+build, validate, and activate the updated image immediately. A failed
+`--apply` restores the previous bundle and `plugins.lock`.
+
+Re-running an official install script automatically refreshes the bundle for
+an existing home before the normal apply step. `--bundle PATH` is intended for
+development builds and non-standard installation layouts.
 
 ### System prompt
 

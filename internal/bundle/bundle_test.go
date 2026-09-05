@@ -150,6 +150,64 @@ func TestMaterializeRefreshesOnDistributionChange(t *testing.T) {
 	}
 }
 
+func TestInspectDetectsManagedBundleDrift(t *testing.T) {
+	t.Parallel()
+	distribution := testDistribution(t)
+	profile, err := LookupProfile("default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if _, err := Materialize(distribution, home, profile); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Inspect(distribution, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.UpdateAvailable || state.Drifted || state.AvailableDigest == "" || state.ManagedDigest != state.AvailableDigest {
+		t.Fatalf("fresh bundle state = %#v", state)
+	}
+	pluginRoot := filepath.Join(home, BundledDirectory, profile.Plugins[0])
+	if err := os.WriteFile(filepath.Join(pluginRoot, "local-change.txt"), []byte("drift"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state, err = Inspect(distribution, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.UpdateAvailable || !state.Drifted || state.ManagedDigest == state.InstalledDigest {
+		t.Fatalf("drifted bundle state = %#v", state)
+	}
+}
+
+func TestStageProducesValidatedSnapshot(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	staged, digest, err := Stage(testDistribution(t), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(staged)
+	if digest == "" {
+		t.Fatal("staged bundle has no digest")
+	}
+	marker, err := os.ReadFile(filepath.Join(staged, markerName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(marker)) != digest {
+		t.Fatalf("staged marker = %q, want %q", marker, digest)
+	}
+	actual, err := managedSourceDigest(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual != digest {
+		t.Fatalf("staged digest = %q, want %q", actual, digest)
+	}
+}
+
 func TestMaterializeRejectsBrokenDistribution(t *testing.T) {
 	t.Parallel()
 	profile, err := LookupProfile("default")

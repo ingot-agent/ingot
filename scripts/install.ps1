@@ -9,9 +9,10 @@
 #   <Prefix>\bin\ingot.exe
 #   <Prefix>\share\ingot\plugins\<plugin>\...
 #
-# After installation the script runs `ingot init`, collects model provider
-# settings (from the INGOT_* environment variables or interactively), runs
-# `ingot apply` to build the runtime image, and offers to start the web UI.
+# After installation the script initializes a new home or refreshes the
+# official bundle in an existing home, collects model provider settings (from
+# the INGOT_* environment variables or interactively), runs `ingot apply` to
+# build the runtime image, and offers to start the web UI.
 #
 # Usage:
 #   .\scripts\install.ps1                                   # -> $env:LocalAppData\ingot
@@ -165,7 +166,9 @@ try {
 
     # --- init -----------------------------------------------------------------
     if (Test-Path (Join-Path $HomeDir 'plugins.toml')) {
-        Write-Host "==> home $HomeDir is already initialized; skipping init"
+        Write-Host "==> refreshing official plugins in existing home $HomeDir"
+        & $Ingot --home $HomeDir bundle update --bundle $PluginDir
+        if ($LASTEXITCODE -ne 0) { throw 'ingot bundle update failed' }
     } else {
         Write-Host "==> initializing ingot home $HomeDir (profile: $Profile)"
         New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null

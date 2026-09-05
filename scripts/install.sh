@@ -11,9 +11,10 @@
 #   <prefix>/bin/ingot
 #   <prefix>/share/ingot/plugins/<plugin>/...
 #
-# After installation the script runs `ingot init`, collects model provider
-# settings (from the INGOT_* environment variables or interactively), runs
-# `ingot apply` to build the runtime image, and offers to start the web UI.
+# After installation the script initializes a new home or refreshes the
+# official bundle in an existing home, collects model provider settings (from
+# the INGOT_* environment variables or interactively), runs `ingot apply` to
+# build the runtime image, and offers to start the web UI.
 #
 # Usage:
 #   ./scripts/install.sh                          # -> /usr/local, one-command setup
@@ -35,7 +36,7 @@ options:
   --home PATH        ingot home directory (default: ~/.ingot)
   --profile NAME     bundle profile: default (web UI) or minimal (default: default)
   --no-configure     skip model provider configuration
-  --no-apply         init only; do not build the runtime image
+  --no-apply         prepare the home only; do not build the runtime image
   --no-open          do not open the web UI after apply
   -h, --help         show this help
 
@@ -165,7 +166,8 @@ ingot_bin="$bindir/ingot"
 # 1. init
 # ---------------------------------------------------------------------------
 if [ -f "$home/plugins.toml" ]; then
-	echo "==> home $home is already initialized; skipping init"
+	echo "==> refreshing official plugins in existing home $home"
+	"$ingot_bin" --home "$home" bundle update --bundle "$sharedir/plugins"
 else
 	echo "==> initializing ingot home $home (profile: $profile)"
 	mkdir -p "$home"

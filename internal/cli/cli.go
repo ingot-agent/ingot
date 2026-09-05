@@ -170,6 +170,8 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return cli.result(err)
 	case "plugin":
 		return cli.runPlugin(ctx, home, rest)
+	case "bundle":
+		return cli.runBundle(ctx, home, rest)
 	case "chat":
 		if len(rest) > 1 || (len(rest) == 1 && rest[0] != "--plain") {
 			return cli.usageError("usage: ingot chat [--plain]")
@@ -180,6 +182,42 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return 0
 	default:
 		return cli.runCurrent(ctx, home, arguments)
+	}
+}
+
+func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []string) int {
+	if len(arguments) == 0 {
+		return cli.usageError("bundle requires a subcommand: check or update")
+	}
+	command, rest := arguments[0], arguments[1:]
+	flags := flag.NewFlagSet("bundle "+command, flag.ContinueOnError)
+	flags.SetOutput(cli.Stderr)
+	bundlePath := flags.String("bundle", "", "official plugins distribution directory (default: locate relative to the executable)")
+	apply := flags.Bool("apply", false, "resolve, build and switch current after updating")
+	if err := flags.Parse(rest); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		return cli.usageError("bundle " + command + " takes no positional arguments")
+	}
+	switch command {
+	case "check":
+		if *apply {
+			return cli.usageError("bundle check does not accept --apply")
+		}
+		status, err := home.CheckBundle(ctx, *bundlePath)
+		if err == nil {
+			err = writeJSON(cli.Stdout, status)
+		}
+		return cli.result(err)
+	case "update":
+		result, err := home.UpdateBundle(ctx, ingothome.BundleUpdateOptions{BundlePath: *bundlePath, Apply: *apply})
+		if err == nil {
+			err = writeJSON(cli.Stdout, result)
+		}
+		return cli.result(err)
+	default:
+		return cli.usageError("unknown bundle subcommand " + strconv.Quote(command))
 	}
 }
 
@@ -402,5 +440,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|plugin ...|chat [--plain]|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|bundle ...|plugin ...|chat [--plain]|runtime command>")
 }
