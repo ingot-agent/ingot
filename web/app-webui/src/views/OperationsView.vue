@@ -10,6 +10,8 @@ import FieldControl from '../components/FieldControl.vue'
 import InteractionCard from '../components/InteractionCard.vue'
 import JsonBlock from '../components/JsonBlock.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import WorkspaceHeader from '../components/WorkspaceHeader.vue'
+defineEmits<{ navigation: []; pending: [] }>()
 const runtime = useRuntime()
 const route = useRoute()
 const { t } = useI18n()
@@ -68,6 +70,7 @@ async function stop(id: string) {
 }
 </script>
 <template>
+  <WorkspaceHeader @navigation="$emit('navigation')" @pending="$emit('pending')" />
   <div class="operations-view">
     <header class="page-heading"><div class="page-icon"><Layers :size="21" /></div><h1>{{ t('operations') }}</h1><p>{{ t('operationsSub') }}</p></header>
     <div v-if="!runtime.operations.length" class="operations-empty"><Layers :size="36" :stroke-width="1" /><h2>{{ t('noOperations') }}</h2><p>{{ t('noOperationsSub') }}</p></div>

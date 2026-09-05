@@ -52,8 +52,9 @@ export const useRuntime = defineStore('runtime', () => {
       if (generation !== epoch || controller.signal.aborted) return
       histories.value[id] = messages || []
       for (const turn of Object.values(turns.value)) {
-        if (turn.sessionId === id && turn.status !== 'running') {
+        if (turn.sessionId === id && turn.status !== 'running' && !turn.reconciled) {
           turn.reconciled = true
+          turn.historyEnd = messages?.length || 0
           delete optimistic.value[turn.id]
         }
       }
@@ -101,8 +102,8 @@ export const useRuntime = defineStore('runtime', () => {
     cursor.value = id
     const data = event.data || {}
     event.data = data
+    reduceTurn(turns.value, event)
     if (event.type.startsWith('agent.invocation.') || event.type === 'agent.output.delta' || event.type === 'agent.reasoning.delta') {
-      reduceTurn(turns.value, event)
       if (event.type === 'agent.invocation.finished') {
         const sid = event.scope?.agent?.sessionId
         if (sid && (sid === activeSession.value || histories.value[sid])) void loadHistory(sid)

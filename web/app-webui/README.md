@@ -42,8 +42,8 @@ INGOT_WEBUI_FIXTURE_ADDR=127.0.0.1:7316 node scripts/fixture.mjs
 ## 状态边界
 
 - `api.ts` / `sse.ts`：JSON 命令与 fetch SSE，错误不会触发自动重试执行。
-- `state.ts` / `stores/runtime.ts`：快照 + cursor 引导、revision 去重、请求代际保护、权威历史替换，以及有限的当前连接执行记录。
+- `state.ts` / `stores/runtime.ts`：快照 + cursor 引导、revision 去重、请求代际保护、权威历史替换，以及有限的当前连接执行记录。实时 Turn 按收到事件的顺序追加正文、独立推理段、工具调用和 Interaction；连续文本增量合并，工具进度与结果更新原卡片。新模型调用会开始新的文本段。
 - `forms.ts`：Interaction 字段转换与 Operation 简单 Schema 判断；复杂结构或不安全的大整数保留在 JSON 模式提交，完整校验交给后端。
 - `components/` / `views/`：会话、执行详情、审批、附件和 Operation；用户文本不作为原始 HTML 执行。
 
-Web invocation ID 与 SDK Turn ID 不可互换。Observation 是只读事实，不用它推断 Web 请求是否已成功；终态以 Web invocation 事件、规范结果和 History 协调。刷新/重连不恢复过去的推理、用量或详细 trace，也不做 Checkpoint/Resume。
+Web invocation ID 与 SDK Turn ID 不可互换；仅在会话中能明确关联执行时，将 Observation 放进对应的实时 Turn。Observation 是只读事实，不用它推断 Web 请求是否已成功；终态以 Web invocation 事件、规范结果和 History 协调。执行结束后，正文和工具调用由权威历史替换。刷新/重连不恢复过去的推理分段、用量或详细 trace；运行中快照只能展示已有的汇总文本，后续事件继续向下追加，也不做 Checkpoint/Resume。

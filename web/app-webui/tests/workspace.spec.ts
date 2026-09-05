@@ -50,6 +50,30 @@ test('free text answers can differ from suggestions', async ({ page }) => {
   await expect(page.getByText('Your workspace is ready. We can take the next step together.', { exact: true })).toBeVisible()
 })
 
+test('multi-round reasoning, commentary, tools and interactions append in order', async ({ page }) => {
+  await ready(page)
+  await send(page, 'timeline approve')
+  const timeline = page.locator('.turn-content')
+  await expect(page.getByText('Allow workspace inspection?', { exact: true })).toBeVisible()
+  await expect(timeline.locator(':scope > *')).toHaveClass(['reasoning-block', 'markdown', 'tool-card', 'interaction-card', 'thinking-dots'])
+  await timeline.locator('.reasoning-block summary').click()
+  await page.getByRole('radio', { name: 'Yes', exact: true }).check()
+  await page.getByRole('button', { name: 'Submit response', exact: true }).click()
+  await expect(page.getByText('Continue with verification?', { exact: true })).toBeVisible()
+  await expect(timeline.locator(':scope > *')).toHaveClass(['reasoning-block', 'markdown', 'tool-card', 'reasoning-block', 'markdown', 'tool-card', 'interaction-card', 'thinking-dots'])
+  await expect(timeline.locator('.reasoning-block').first()).toHaveAttribute('open', '')
+  await expect(timeline.locator('.reasoning-block .markdown').first()).toHaveText('Checking the request.')
+  await timeline.locator('.reasoning-block summary').nth(1).click()
+  await expect(timeline.locator('.reasoning-block .markdown').nth(1)).toHaveText('Reviewing the inspection. Planning a verification.')
+  await timeline.getByRole('textbox', { name: 'Answer', exact: true }).fill('Continue')
+  await timeline.getByRole('button', { name: 'Submit response', exact: true }).click()
+  await expect(page.getByText('Your workspace is ready. We can take the next step together.', { exact: true })).toHaveCount(1)
+  const history = page.locator('.transcript .message-assistant .message-content > .markdown, .transcript .tool-summary .font-mono')
+  await expect(history).toHaveText(["I'll inspect the workspace first.", 'workspace.inspect', "The first check is complete. I'll verify the result.", 'workspace.verify', 'Your workspace is ready. We can take the next step together.'])
+  await page.reload()
+  await expect(history).toHaveText(["I'll inspect the workspace first.", 'workspace.inspect', "The first check is complete. I'll verify the result.", 'workspace.verify', 'Your workspace is ready. We can take the next step together.'])
+})
+
 test('global request drawer has independent accessible fields and settles inline requests', async ({ page }) => {
   await ready(page)
   await send(page, 'ask from the global drawer')
@@ -89,6 +113,10 @@ test('cancellation retains partial output and becomes terminal', async ({ page }
   await expect(page.getByRole('button', { name: 'Stop execution', exact: true })).toHaveCount(0)
   await expect(page.getByText('Partial response', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /Canceled/ })).toBeVisible()
+  await send(page, 'next after cancellation')
+  await expect(page.getByText('Your workspace is ready. We can take the next step together.', { exact: true })).toHaveCount(1)
+  const text = page.locator('.transcript .markdown').filter({ hasText: /^\s*(Partial response|next after cancellation)\s*$/ })
+  await expect(text).toHaveText(['Partial response', 'next after cancellation'])
 })
 
 test('session rename, archive, restore, fork and delete', async ({ page }) => {
