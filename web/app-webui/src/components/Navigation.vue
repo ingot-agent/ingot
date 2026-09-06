@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { Search, Plus, Archive, Layers, Settings2, MessageSquare, Folder, PanelLeftClose } from 'lucide-vue-next'
 import { useRuntime } from '../stores/runtime'
 import { useRelativeTime, workspaceBasename } from '../time'
 import Brand from './Brand.vue'
 import SessionMenu from './SessionMenu.vue'
 import type { Session } from '../protocol'
-defineEmits<{ navigate: []; settings: []; collapse: [] }>()
+const emit = defineEmits<{ navigate: []; settings: []; collapse: [] }>()
 const { t } = useI18n()
+const router = useRouter()
 const runtime = useRuntime()
 const relativeTime = useRelativeTime()
 const search = ref('')
@@ -18,6 +20,10 @@ const sessions = computed(() => runtime.orderedSessions.filter(session =>
   session.title.toLocaleLowerCase().includes(search.value.toLocaleLowerCase()) ||
   (session.workspace || '').toLocaleLowerCase().includes(search.value.toLocaleLowerCase())))
 const hasPending = (id: string) => Object.values(runtime.interactions).some(item => item.scope?.agent?.sessionId === id)
+function startInWorkspace(group: Group) {
+  void router.push({ path: "/new", query: { workspace: group.key } })
+  emit("navigate")
+}
 
 // Group sessions by workspace root, preserving most-recent session order.
 // Sessions without a binding collapse under a single "no workspace" group.
@@ -51,6 +57,7 @@ const groups = computed<Group[]>(() => {
       <template v-for="group in groups" :key="group.key">
         <div class="workspace-group-heading" :title="group.key || t('unnamedWorkspace')">
           <Folder :size="15" /><span class="truncate">{{ group.label }}</span>
+          <button v-if="group.key" class="icon-button workspace-new-button" :aria-label="t('newInWorkspace')" :title="t('newInWorkspace')" @click.stop="startInWorkspace(group)"><Plus :size="14" /></button>
         </div>
         <div v-for="session in group.sessions" :key="session.id" class="session-row">
           <RouterLink :to="'/sessions/' + encodeURIComponent(session.id)" class="session-link" @click="$emit('navigate')">
