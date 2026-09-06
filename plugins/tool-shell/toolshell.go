@@ -74,10 +74,11 @@ type Dependencies struct {
 type Exports struct{ Tools []tool.Tool }
 
 type normalizedConfig struct {
-	shell          string
-	timeout        time.Duration
-	maxOutputBytes int
-	environment    []string
+	shell              string
+	timeout            time.Duration
+	maxOutputBytes     int
+	environment        []string
+	inheritEnvironment bool
 }
 
 type shellTool struct {
@@ -143,26 +144,26 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	if maxOutput < 1 {
 		return normalizedConfig{}, fmt.Errorf("max_output_bytes must be positive: %w", ErrInvalidConfig)
 	}
-	environment, err := normalizeEnvironment(cfg.Environment, cfg.InheritEnv)
+	environment, inheritEnvironment, err := normalizeEnvironment(cfg.Environment, cfg.InheritEnv)
 	if err != nil {
 		return normalizedConfig{}, err
 	}
-	return normalizedConfig{shell: shell, timeout: time.Duration(timeoutSeconds) * time.Second, maxOutputBytes: maxOutput, environment: environment}, nil
+	return normalizedConfig{shell: shell, timeout: time.Duration(timeoutSeconds) * time.Second, maxOutputBytes: maxOutput, environment: environment, inheritEnvironment: inheritEnvironment}, nil
 }
 
-func normalizeEnvironment(explicit map[string]string, inherited []string) ([]string, error) {
+func normalizeEnvironment(explicit map[string]string, inherited []string) ([]string, bool, error) {
 	seen := make(map[string]struct{}, len(explicit)+len(inherited))
 	keys := make([]string, 0, len(explicit))
 	for key, value := range explicit {
 		if err := validateEnvironmentKey(key); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		identity := environmentKeyIdentity(key)
 		if _, duplicate := seen[identity]; duplicate {
-			return nil, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
+			return nil, false, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
 		}
 		if strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
-			return nil, fmt.Errorf("environment value %q is invalid: %w", key, ErrInvalidConfig)
+			return nil, false, fmt.Errorf("environment value %q is invalid: %w", key, ErrInvalidConfig)
 		}
 		seen[identity] = struct{}{}
 		keys = append(keys, key)
@@ -172,25 +173,47 @@ func normalizeEnvironment(explicit map[string]string, inherited []string) ([]str
 	for _, key := range keys {
 		result = append(result, key+"="+explicit[key])
 	}
+
+	// inherited == nil means the inherit_env key was not configured at all, so
+	// the default is to inherit the complete parent process environment (the
+	// user's real environment). An explicitly configured empty list
+	// (inherit_env = []) takes the isolated allowlist path below instead, so a
+	// caller can still opt into a fully quarantined child environment.
+	if inherited == nil {
+		for _, entry := range os.Environ() {
+			key, _, ok := strings.Cut(entry, "=")
+			if !ok {
+				continue
+			}
+			identity := environmentKeyIdentity(key)
+			if _, overridden := seen[identity]; overridden {
+				continue
+			}
+			seen[identity] = struct{}{}
+			result = append(result, entry)
+		}
+		return result, true, nil
+	}
+
 	for _, key := range inherited {
 		if err := validateEnvironmentKey(key); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		identity := environmentKeyIdentity(key)
 		if _, duplicate := seen[identity]; duplicate {
-			return nil, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
+			return nil, false, fmt.Errorf("duplicate environment key %q: %w", key, ErrInvalidConfig)
 		}
 		value, ok := os.LookupEnv(key)
 		if !ok {
-			return nil, fmt.Errorf("inherited environment key %q is unavailable: %w", key, ErrInvalidConfig)
+			return nil, false, fmt.Errorf("inherited environment key %q is unavailable: %w", key, ErrInvalidConfig)
 		}
 		if strings.ContainsRune(value, 0) || !utf8.ValidString(value) {
-			return nil, fmt.Errorf("inherited environment value %q is invalid: %w", key, ErrInvalidConfig)
+			return nil, false, fmt.Errorf("inherited environment value %q is invalid: %w", key, ErrInvalidConfig)
 		}
 		seen[identity] = struct{}{}
 		result = append(result, key+"="+value)
 	}
-	return result, nil
+	return result, false, nil
 }
 
 func validateEnvironmentKey(key string) error {
@@ -205,6 +228,48 @@ func environmentKeyIdentity(key string) string {
 		return strings.ToUpper(key)
 	}
 	return key
+}
+
+// commandEnvironment builds the child process environment slice.
+//
+// When the config inherits the parent environment (inheritEnvironment is true)
+// the config block already contains the complete parent environment plus any
+// overrides from the explicit environment table. Because the child's working
+// directory is set to the session Workspace Root, the inherited PWD from the
+// parent no longer describes the child's initial directory, so on POSIX we keep
+// PWD consistent with binding.Root (mirroring os/exec behaviour when Env is
+// nil). On Windows and Plan 9 the PWD variable is not meaningful and is left
+// untouched.
+func commandEnvironment(configuration []string, inheritEnvironment bool, root string) []string {
+	environment := make([]string, len(configuration))
+	copy(environment, configuration)
+	if inheritEnvironment && runtime.GOOS != "windows" && runtime.GOOS != "plan9" && root != "" {
+		environment = replaceEnvironmentValue(environment, "PWD", root)
+	}
+	return environment
+}
+
+// replaceEnvironmentValue returns env with the value for key replaced, adding
+// the entry when key is absent. The value is absolute (root is already
+// normalized by the Workspace binding).
+func replaceEnvironmentValue(env []string, key, value string) []string {
+	identity := environmentKeyIdentity(key)
+	found := false
+	for i, entry := range env {
+		entryKey, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if environmentKeyIdentity(entryKey) != identity {
+			continue
+		}
+		env[i] = key + "=" + value
+		found = true
+	}
+	if !found {
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 func (t *shellTool) Definition() tool.Definition {
@@ -264,8 +329,7 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 	defer cancel()
 	command := exec.Command(t.config.shell, shellCommandArgs(*args.Command)...)
 	command.Dir = binding.Root
-	command.Env = make([]string, len(t.config.environment))
-	copy(command.Env, t.config.environment)
+	command.Env = commandEnvironment(t.config.environment, t.config.inheritEnvironment, binding.Root)
 	collector := newOutputCollector(t.config.maxOutputBytes)
 	command.Stdout = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stdout"}
 	command.Stderr = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stderr", stderr: true}

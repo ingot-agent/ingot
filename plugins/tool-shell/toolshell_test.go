@@ -224,27 +224,81 @@ func TestShellTimeoutHonorsParentCancellation(t *testing.T) {
 	}
 }
 
-func TestShellUsesConfiguredWorkingDirectoryAndIsolatedEnvironment(t *testing.T) {
-	const secretKey = "INGOT_TOOL_SHELL_PARENT_SECRET"
-	t.Setenv(secretKey, "must-not-leak")
+func TestShellUsesConfiguredWorkingDirectory(t *testing.T) {
 	workingDirectory := t.TempDir()
-	command := `pwd; if [ -n "${` + secretKey + `+x}" ]; then printf inherited; else printf isolated; fi`
+	command := `pwd`
 	if runtime.GOOS == "windows" {
-		command = `cd & if defined ` + secretKey + ` (echo inherited) else (echo isolated)`
+		command = `cd`
 	}
 	shell := testShellRoot(t, Config{}, workingDirectory)
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(strings.ToLower(resultText(result)), strings.ToLower(workingDirectory)) {
+		t.Fatalf("working directory missing from output: %q", resultText(result))
+	}
+}
+
+// TestShellInheritsParentEnvironmentByDefault verifies that when inherit_env is
+// not configured (the default) the child receives the full parent process
+// environment, so user-configured tools and directories (for example the
+// user's PATH) are available to commands.
+func TestShellInheritsParentEnvironmentByDefault(t *testing.T) {
+	const inheritedKey = "INGOT_TOOL_SHELL_DEFAULT_INHERIT"
+	t.Setenv(inheritedKey, "inherited-value")
+	command := `printf %s "$` + inheritedKey + `"`
+	if runtime.GOOS == "windows" {
+		command = `echo %` + inheritedKey + `%`
+	}
+	shell := testShell(t, Config{})
+	result, err := invokeShell(t, shell, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resultText(result), "inherited-value") {
+		t.Fatalf("default inheritance missing parent environment: %q", resultText(result))
+	}
+}
+
+// TestShellExplicitEmptyInheritEnvIsolates verifies that an explicitly empty
+// inherit_env list opts into a fully quarantined child environment: parent
+// variables must not leak.
+func TestShellExplicitEmptyInheritEnvIsolates(t *testing.T) {
+	const secretKey = "INGOT_TOOL_SHELL_ISOLATE_SECRET"
+	t.Setenv(secretKey, "must-not-leak")
+	command := `if [ -n "${` + secretKey + `+x}" ]; then printf inherited; else printf isolated; fi`
+	if runtime.GOOS == "windows" {
+		command = `if defined ` + secretKey + ` (echo inherited) else (echo isolated)`
+	}
+	shell := testShell(t, Config{InheritEnv: []string{}})
+	result, err := invokeShell(t, shell, command)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(resultText(result), "must-not-leak") || strings.Contains(resultText(result), "inherited") {
-		t.Fatalf("parent environment leaked: %q", resultText(result))
+		t.Fatalf("explicit empty inherit_env leaked parent environment: %q", resultText(result))
 	}
 	if !strings.Contains(resultText(result), "isolated") {
 		t.Fatalf("isolation marker missing: %q", resultText(result))
 	}
-	if !strings.Contains(strings.ToLower(resultText(result)), strings.ToLower(workingDirectory)) {
-		t.Fatalf("working directory missing from output: %q", resultText(result))
+}
+
+// TestShellInheritedPWDMatchesWorkspaceRoot verifies that when the child
+// inherits the parent environment its PWD is kept consistent with the session
+// Workspace Root rather than carrying the parent's stale working directory.
+func TestShellInheritedPWDMatchesWorkspaceRoot(t *testing.T) {
+	if runtime.GOOS == "windows" || runtime.GOOS == "plan9" {
+		t.Skipf("PWD is not meaningful on %s", runtime.GOOS)
+	}
+	workingDirectory := t.TempDir()
+	shell := testShellRoot(t, Config{}, workingDirectory)
+	result, err := invokeShell(t, shell, `printf %s "$PWD"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resultText(result), workingDirectory) {
+		t.Fatalf("inherited PWD does not match workspace root: %q", resultText(result))
 	}
 }
 
