@@ -54,9 +54,9 @@ func (r *toolRuntimeFunc) Definitions() []tool.Definition {
 	}
 }
 
-func (r *toolRuntimeFunc) Call(ctx context.Context, call tool.Call) (tool.Result, error) {
-	r.calls = append(r.calls, cloneCall(call))
-	return r.call(ctx, call)
+func (r *toolRuntimeFunc) Call(ctx context.Context, invocation tool.Invocation) (tool.Result, error) {
+	r.calls = append(r.calls, cloneCall(invocation.Call))
+	return r.call(ctx, invocation.Call)
 }
 
 func TestStreamFallbackRequiresZeroDeliveredAgentEvents(t *testing.T) {

@@ -18,11 +18,11 @@ ingot 是一个面向 Agent 的构建期组合系统。它不把 Agent 看成只
 
 | 层次 | 官方插件示例 | 可以替换为 |
 |---|---|---|
-| 应用 / UI | `app.cli` | HTTP 或 WebSocket 网关、客服系统连接器、聊天平台适配器 |
+| 应用 / UI | `app.backend`（浏览器工作区） | HTTP 或 WebSocket 网关、客服系统连接器、聊天平台适配器 |
 | Agent Loop | `agent.default` | 分诊工作流、领域专用 Loop、确定性编排流程 |
 | 模型访问 | `http.default`、`model.openai-compatible`、`model.runtime` | 企业网络传输、其他 Provider、自定义路由或故障转移 |
 | 二进制 Asset | `asset.local` | 对象存储、共享媒体服务、加密或远程不可变 Blob |
-| 工具 | `tool.shell`、`tool.fs`、`tool.edit`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
+| 工具 | `tool.shell`、`tool.ask`、`tool.runtime` | CRM、订单系统、搜索、数据库或内部 API |
 | 策略 | `interceptor.approval`、`interceptor.script` | 审计、鉴权、限流、组织专用安全策略 |
 | 状态与上下文 | `session.sqlite`、`context.compact`、`prompt.default` | 可替换 Session 后端、检索、自定义记忆与 Prompt |
 
@@ -45,7 +45,7 @@ ingot 把变化放在构建期，把生产运行时固定下来：
 
 内置的默认 Profile 会生成一个功能完整的终端 Coding Agent，但它只是 ingot 的一种组合方式，并不是架构边界。
 
-例如，要构建一个客服 Agent，可以把 `app.cli` 替换为网络插件：从客服系统接收会话，再把流式响应发送回去；把 Shell 和文件系统工具替换为工单、CRM、订单和知识库插件；默认模型运行时和 Agent Loop 可以保留，也可以一并替换。Builder 会验证新的依赖图，并产出同样自包含的 Runtime Image，分发时不需要再附带一套插件框架。
+例如，要构建一个客服 Agent，可以把 `app.backend` 替换为网络插件：从客服系统接收会话，再把流式响应发送回去；把 Shell 和提问工具替换为工单、CRM、订单和知识库插件；默认模型运行时和 Agent Loop 可以保留，也可以一并替换。Builder 会验证新的依赖图，并产出同样自包含的 Runtime Image，分发时不需要再附带一套插件框架。
 
 同一种模式还可以用于企业内部助手、数据 Agent、工作流 Agent、嵌入式 Agent，以及任何“模型调用之外的周边能力同样重要”的领域。
 
@@ -63,8 +63,8 @@ go build -o ingot ./cmd/ingot
 # 3. 在 ~/.ingot/config.toml 中设置模型 Provider，然后组合镜像
 ./ingot apply
 
-# 4. 将 chat 命令派发给当前激活的 Runtime Image
-./ingot chat
+# 4. 启动浏览器工作区（默认 profile 为 app.backend）
+./ingot web
 ```
 
 `ingot init` 会把官方插件物化到 `bundled-plugins/`，并写入 `builder.toml`、`plugins.toml` 和 `config.toml` 模板。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
@@ -125,7 +125,7 @@ Builder 读取这些 Contract，解析 `ONE`、`OPTIONAL` 和 `MANY` 依赖，�
 ```sh
 ingot plugin add github.com/example/my-plugin@v1.2.3
 ingot plugin add --path ../my-local-plugin
-ingot plugin remove app.cli
+ingot plugin remove tool.ask
 ingot apply
 ```
 
@@ -169,7 +169,7 @@ inspect     以 JSON 查看环境或单个插件
 rollback    激活上一个镜像
 gc          在保留回滚安全性的前提下清理旧镜像
 plugin      add | remove | update | reorder | list | inspect
-<other>     派发到当前镜像，例如 ingot chat
+<other>     派发到当前镜像，例如 ingot web
 ```
 
 完整命令参考见 [Usage Guide](./USAGE.md) 或[使用说明](./USAGE.zh.md)。
@@ -208,17 +208,13 @@ plugin      add | remove | update | reorder | list | inspect
 ```sh
 go test -race ./...
 for plugin_dir in plugins/*; do
-  if [ "$plugin_dir" = plugins/app-cli ]; then
-    (cd "$plugin_dir" && GOWORK=off go test -race ./...)
-  else
-    (cd "$plugin_dir" && go test -race ./...)
-  fi
+  (cd "$plugin_dir" && go test -race ./...)
 done
 (cd ../sdk && go test -race ./...)
 ```
 
-`app-cli` 在后续完整重写前保持 SDK v0.1.3，因此它的 legacy suite 与 v0.2
-workspace 显式隔离运行。
+本仓库 `go.work` 使用本地 SDK 与 ingot ABI checkout 编译官方插件，
+便于跨仓库重构开发与验证；正式发布的 Plugin module 使用已发布的 SDK 版本。
 
 ## 路线图
 

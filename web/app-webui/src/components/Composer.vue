@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import type { Attachment, LiveTurn } from '../protocol'
 import { request, errorMessage } from '../api'
 import { useRuntime } from '../stores/runtime'
-const props = defineProps<{ sessionKey: string; running: LiveTurn[]; archived?: boolean; sending?: boolean }>()
+const props = defineProps<{ sessionKey: string; running: LiveTurn[]; archived?: boolean; disabled?: boolean; sending?: boolean }>()
 const emit = defineEmits<{ send: [input: string, attachments: Attachment[], done: () => void] }>()
 const runtime = useRuntime()
 const { t } = useI18n()
@@ -18,7 +18,7 @@ interface Upload { id: number; file: File; status: 'uploading' | 'ready' | 'fail
 const uploads = ref<Upload[]>([])
 const drafts = new Map<string, { text: string; uploads: Upload[] }>()
 let nextId = 0
-const canSend = computed(() => runtime.connection === 'online' && !props.sending && !props.archived &&
+const canSend = computed(() => runtime.connection === 'online' && !props.sending && !props.archived && !props.disabled &&
   !props.running.length && (!!text.value.trim() || uploads.value.length > 0) && uploads.value.every(item => item.status === 'ready'))
 function fit() { if (input.value) { input.value.style.height = 'auto'; input.value.style.height = Math.min(input.value.scrollHeight, 200) + 'px' } }
 watch(() => props.sessionKey, (key, previous) => {
@@ -58,7 +58,7 @@ async function upload(item: Upload) {
   }
 }
 function add(files: FileList | File[]) {
-  if (!runtime.assets.available || props.archived || props.sending) return
+  if (!runtime.assets.available || props.archived || props.disabled || props.sending) return
   for (const file of Array.from(files)) {
     if (file.size > runtime.assets.maxBytes) {
       runtime.notify(file.name + ': ' + t('uploadLimit', { size: size(runtime.assets.maxBytes) }))
@@ -114,10 +114,10 @@ onBeforeUnmount(() => {
           <button type="button" class="icon-button" :aria-label="t('remove') + ': ' + item.file.name" :disabled="sending" @click="remove(item.id)"><X :size="13" /></button>
         </div>
       </div>
-      <textarea ref="input" v-model="text" class="composer-input" :placeholder="t('composer')" :aria-label="t('composer')" rows="2" :disabled="archived || sending" @keydown="keydown" @paste="paste" />
+      <textarea ref="input" v-model="text" class="composer-input" :placeholder="t('composer')" :aria-label="t('composer')" rows="2" :disabled="archived || disabled || sending" @keydown="keydown" @paste="paste" />
       <div class="composer-toolbar">
         <input ref="picker" type="file" multiple class="sr-only" tabindex="-1" @change="add(($event.target as HTMLInputElement).files || []); ($event.target as HTMLInputElement).value = ''" />
-        <button type="button" class="icon-button" :disabled="!runtime.assets.available || archived || sending" :aria-label="t('attach')" :title="runtime.assets.available ? t('uploadLimit', { size: size(runtime.assets.maxBytes) }) : t('assetUnavailable')" @click="picker?.click()"><Paperclip :size="19" /></button>
+        <button type="button" class="icon-button" :disabled="!runtime.assets.available || archived || disabled || sending" :aria-label="t('attach')" :title="runtime.assets.available ? t('uploadLimit', { size: size(runtime.assets.maxBytes) }) : t('assetUnavailable')" @click="picker?.click()"><Paperclip :size="19" /></button>
         <span class="composer-agent"><span class="tiny-square" />Ingot</span>
         <button v-if="running.length" type="button" class="send-button stopping-button ml-auto" :disabled="running.every(turn => turn.stopping) || runtime.connection !== 'online'" :aria-label="t(running.some(turn => turn.stopping) ? 'stopping' : 'stop')" @click="stop"><LoaderCircle v-if="running.some(turn => turn.stopping)" class="spin" :size="18" /><Square v-else :size="14" fill="currentColor" /></button>
         <button v-else class="send-button ml-auto" type="submit" :disabled="!canSend" :aria-label="t('send')"><LoaderCircle v-if="sending" class="spin" :size="18" /><ArrowUp v-else :size="20" /></button>

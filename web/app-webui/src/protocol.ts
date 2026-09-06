@@ -2,6 +2,7 @@ export type Status = 'running' | 'succeeded' | 'failed' | 'canceled'
 export interface Session {
   id: string
   title: string
+  workspace?: string
   createdAt: string
   updatedAt: string
   archivedAt?: string

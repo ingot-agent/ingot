@@ -52,9 +52,10 @@ type Config struct {
 	Rules           []Rule `toml:"rules"`
 }
 
-// Dependencies contains an optional host interaction channel.
+// Dependencies contains an optional host capability that binds interaction
+// channels to explicit dynamic execution scopes.
 type Dependencies struct {
-	Interaction ingotabi.Optional[interaction.Channel]
+	Interaction ingotabi.Optional[interaction.ExecutionBinder]
 }
 
 // Exports contains the approval interceptor.
@@ -65,7 +66,7 @@ type approvalInterceptor struct {
 	display       string
 	maxDisplay    int
 	rules         map[string]string
-	interaction   ingotabi.Optional[interaction.Channel]
+	interaction   ingotabi.Optional[interaction.ExecutionBinder]
 }
 
 // New validates immutable configuration. A missing interaction channel is
@@ -118,13 +119,14 @@ func validAction(action string) bool {
 	return action == actionAllow || action == actionAsk || action == actionDeny
 }
 
-func (a *approvalInterceptor) Invoke(ctx context.Context, call tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+func (a *approvalInterceptor) Invoke(ctx context.Context, invocation tool.Invocation, next pipeline.Next[tool.Invocation, tool.Result]) (tool.Result, error) {
 	if ctx == nil {
 		return tool.Result{}, fmt.Errorf("approval: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
+	call := invocation.Call
 	action := a.defaultAction
 	if override, ok := a.rules[call.Name]; ok {
 		action = override
@@ -134,26 +136,33 @@ func (a *approvalInterceptor) Invoke(ctx context.Context, call tool.Call, next p
 		if next == nil {
 			return tool.Result{}, errors.New("approval: nil next")
 		}
-		return next(ctx, call)
+		return next(ctx, invocation)
 	case actionDeny:
 		return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, ErrApprovalDenied)
 	case actionAsk:
-		return a.ask(ctx, call, next)
+		return a.ask(ctx, invocation, next)
 	default:
 		return tool.Result{}, fmt.Errorf("unknown approval action %q: %w", action, ErrInvalidConfig)
 	}
 }
 
-func (a *approvalInterceptor) ask(ctx context.Context, call tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+func (a *approvalInterceptor) ask(ctx context.Context, invocation tool.Invocation, next pipeline.Next[tool.Invocation, tool.Result]) (tool.Result, error) {
 	if next == nil {
 		return tool.Result{}, errors.New("approval: nil next")
 	}
 	if !a.interaction.Valid || isNil(a.interaction.Value) {
-		return tool.Result{}, fmt.Errorf("tool %q: %w: %w", call.Name, ErrApprovalUnavailable, interaction.ErrUnavailable)
+		return tool.Result{}, fmt.Errorf("tool %q: %w: %w", invocation.Call.Name, ErrApprovalUnavailable, interaction.ErrUnavailable)
 	}
-	prompt := a.prompt(call)
+	channel, err := a.interaction.Value.Bind(invocation.Scope)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("tool %q: bind approval interaction: %w", invocation.Call.Name, err)
+	}
+	if isNil(channel) {
+		return tool.Result{}, fmt.Errorf("tool %q: bind approval interaction: %w: %w", invocation.Call.Name, ErrApprovalUnavailable, interaction.ErrUnavailable)
+	}
+	prompt := a.prompt(invocation.Call)
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		response, err := a.interaction.Value.Request(ctx, interaction.Request{
+		response, err := channel.Request(ctx, interaction.Request{
 			Name:        requestName,
 			Level:       interaction.LevelWarning,
 			Description: prompt,
@@ -178,12 +187,12 @@ func (a *approvalInterceptor) ask(ctx context.Context, call tool.Call, next pipe
 		}
 		switch decision {
 		case actionAllow:
-			return next(ctx, call)
+			return next(ctx, invocation)
 		case actionDeny:
-			return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, ErrApprovalDenied)
+			return tool.Result{}, fmt.Errorf("tool %q: %w", invocation.Call.Name, ErrApprovalDenied)
 		}
 	}
-	return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, ErrApprovalDenied)
+	return tool.Result{}, fmt.Errorf("tool %q: %w", invocation.Call.Name, ErrApprovalDenied)
 }
 
 func responseString(response interaction.Response, name string) (string, bool) {

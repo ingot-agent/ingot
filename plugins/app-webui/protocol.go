@@ -20,6 +20,24 @@ type ErrorResponse struct {
 	Error ErrorDetail `json:"error"`
 }
 
+// WorkspaceBrowseEntry is one selectable subdirectory inside a Workspace
+// directory picker. Path is the full absolute host path, so the browser never
+// has to join OS-specific path separators itself.
+type WorkspaceBrowseEntry struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+// WorkspaceBrowse is the response of the host directory picker. Path is the
+// absolute directory being listed; Parent is its parent directory (empty at a
+// filesystem root); Directories holds the selectable subdirectories in sorted
+// order.
+type WorkspaceBrowse struct {
+	Path        string                 `json:"path"`
+	Parent      string                 `json:"parent,omitempty"`
+	Directories []WorkspaceBrowseEntry `json:"directories"`
+}
+
 // ErrorDetail describes one HTTP API error.
 type ErrorDetail struct {
 	Code    string `json:"code"`
@@ -43,10 +61,14 @@ type AssetState struct {
 	MaxBytes  int64 `json:"maxBytes"`
 }
 
-// Session is the Web projection of session metadata.
+// Session is the Web projection of session metadata combined with its
+// assigned Workspace. Workspace is the root of the session-scoped local
+// workspace binding and is empty when the session is not (yet) bound. This is
+// an Application-level DTO, not part of the SDK session.Metadata contract.
 type Session struct {
 	ID         string     `json:"id"`
 	Title      string     `json:"title"`
+	Workspace  string     `json:"workspace,omitempty"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
 	ArchivedAt *time.Time `json:"archivedAt,omitempty"`

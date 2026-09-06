@@ -459,3 +459,8 @@ func cloneCall(call tool.Call) tool.Call {
 	call.Arguments = append(json.RawMessage(nil), call.Arguments...)
 	return call
 }
+
+func cloneInvocation(invocation tool.Invocation) tool.Invocation {
+	invocation.Call = cloneCall(invocation.Call)
+	return invocation
+}

@@ -1,18 +1,23 @@
 # `session.sqlite` Plugin v0.1 设计方案
 
-> 状态：Implemented v0.1（M5）
-> Exports：`session.Store`、`session.Manager`、`session.Query`
-> State：Plugin-scoped SQLite database，schema version 1
+> 状态：Implemented（M5 + Execution Scope / Session Workspace）
+> Exports：`session.Store`、`session.Manager`、`session.Query`、
+> `workspace.Resolver`、`workspace.Manager`
+> State：Plugin-scoped SQLite database，schema version 2
 
 ## 1. 边界
 
-`session.sqlite` 是正式的本地 Session persistence implementation。它把三类
-能力作为独立 capability 导出，但由同一个事务型 store 实现：
+`session.sqlite` 是正式的本地 Session + Workspace persistence implementation。
+Session 与 Workspace 是相互独立的 capability domain，但由同一个事务型 store
+实现：`Capability boundary != Plugin boundary`，一个 implementation 可以同时
+导出多个 capability interface。
 
 ```text
-session.sqlite --session.Store----> agent.default / context.compact / app.cli
-session.sqlite --session.Manager--> app.cli
-session.sqlite --session.Query----> app.cli
+session.sqlite --session.Store----> agent.default / context.compact / app.backend
+session.sqlite --session.Manager--> app.backend
+session.sqlite --session.Query----> app.backend
+session.sqlite --workspace.Resolver--> tool.shell（经 tool.runtime / agent.default）
+session.sqlite --workspace.Manager--> app.backend
 ```
 
 Store 只持久化 opaque `session.Entry`，不解释 Agent message、tool call、asset
@@ -31,12 +36,29 @@ type Exports struct {
     Store   session.Store
     Manager session.Manager
     Query   session.Query
+
+    WorkspaceResolver workspace.Resolver
+    WorkspaceManager  workspace.Manager
 }
 ```
 
-M5 没有可配置 policy。`New` 要求绝对、非空的 plugin State directory，创建或
+没有可配置 policy。`New` 要求绝对、非空的 plugin State directory，创建或
 打开 `sessions.sqlite3`，启用 foreign key enforcement，并返回负责关闭数据库的
 Cleanup。
+
+Workspace 语义：
+
+- 一个 Session 对应一个 immutable Workspace Binding；重复 Assign 返回
+  `workspace.ErrAlreadyAssigned`；
+- `Manager.Assign` 对不存在的 Session 返回 wrapped `session.ErrNotFound`，
+  对非空、绝对、已存在且为目录之外的 Binding 返回
+  `workspace.ErrInvalidBinding`；check + insert 在同一 SQLite transaction 内
+  原子完成；
+- `Resolver.Resolve` 从 `execution.Scope.SessionID` 读取 Binding；Session
+  存在但未绑定返回 `workspace.ErrNotAssigned`；
+- Session Delete 通过 foreign key cascade 一并删除 Workspace Binding；
+- Session Fork 在 source 有 Binding 时将其继承给 fork target；unbound source
+  产生 unbound target。
 
 ## 3. Schema
 
@@ -58,9 +80,18 @@ CREATE TABLE entries (
     PRIMARY KEY (session_id, sequence),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE session_workspaces (
+    session_id TEXT PRIMARY KEY,
+    root       TEXT NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
 ```
 
-`PRAGMA user_version=1` 标识数据库 application schema。时间以 UTC Unix
+`schema version` 为 2；v1 数据库打开时在同一个初始化事务中补建
+`session_workspaces` 表并升级版本。
+
+`PRAGMA user_version=2` 标识数据库 application schema。时间以 UTC Unix
 nanoseconds 存储；这是 implementation detail，SDK 对外仍返回 `time.Time`。
 
 ## 4. Operation semantics
@@ -104,7 +135,7 @@ name = "default"
 package = "."
 
 [state]
-schema_version = 1
+schema_version = 2
 min_reader_version = 1
 ```
 

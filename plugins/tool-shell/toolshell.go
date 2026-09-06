@@ -25,6 +25,7 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/tool"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 const (
@@ -50,19 +51,22 @@ var (
 	environmentKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 )
 
-// Config fixes the execution boundary for shell commands.
+// Config fixes the execution boundary for shell commands. The working
+// directory is not configurable: its authoritative source is the session
+// Workspace Binding resolved from each Invocation's execution scope.
 type Config struct {
-	WorkingDirectory string            `toml:"working_directory"`
-	Shell            string            `toml:"shell"`
-	TimeoutSeconds   int               `toml:"timeout_seconds"`
-	MaxOutputBytes   int               `toml:"max_output_bytes"`
-	Environment      map[string]string `toml:"environment"`
-	InheritEnv       []string          `toml:"inherit_env"`
+	Shell          string            `toml:"shell"`
+	TimeoutSeconds int               `toml:"timeout_seconds"`
+	MaxOutputBytes int               `toml:"max_output_bytes"`
+	Environment    map[string]string `toml:"environment"`
+	InheritEnv     []string          `toml:"inherit_env"`
 }
 
-// Dependencies contains optional passive execution observation. Approval is
-// supplied independently by a runtime interceptor.
+// Dependencies contains the workspace capability that authoritatively resolves
+// the command working directory, plus optional passive execution observation.
+// Approval is supplied independently by a runtime interceptor.
 type Dependencies struct {
+	Workspace   workspace.Resolver
 	Observation ingotabi.Optional[observation.Consumer]
 }
 
@@ -70,15 +74,15 @@ type Dependencies struct {
 type Exports struct{ Tools []tool.Tool }
 
 type normalizedConfig struct {
-	workingDirectory string
-	shell            string
-	timeout          time.Duration
-	maxOutputBytes   int
-	environment      []string
+	shell          string
+	timeout        time.Duration
+	maxOutputBytes int
+	environment    []string
 }
 
 type shellTool struct {
 	config      normalizedConfig
+	workspace   workspace.Resolver
 	observation observation.Consumer
 }
 
@@ -89,6 +93,9 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.Workspace) {
+		return Exports{}, nil, fmt.Errorf("workspace dependency is required: %w", ErrInvalidConfig)
 	}
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
@@ -101,24 +108,10 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if deps.Observation.Valid {
 		consumer = deps.Observation.Value
 	}
-	return Exports{Tools: []tool.Tool{&shellTool{config: normalized, observation: consumer}}}, nil, nil
+	return Exports{Tools: []tool.Tool{&shellTool{config: normalized, workspace: deps.Workspace, observation: consumer}}}, nil, nil
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
-	if cfg.WorkingDirectory == "" || !filepath.IsAbs(cfg.WorkingDirectory) {
-		return normalizedConfig{}, fmt.Errorf("working_directory must be an absolute path: %w", ErrInvalidConfig)
-	}
-	workingDirectory, err := filepath.Abs(cfg.WorkingDirectory)
-	if err != nil {
-		return normalizedConfig{}, fmt.Errorf("resolve working_directory: %w: %w", ErrInvalidConfig, err)
-	}
-	info, err := os.Stat(workingDirectory)
-	if err != nil {
-		return normalizedConfig{}, fmt.Errorf("stat working_directory: %w: %w", ErrInvalidConfig, err)
-	}
-	if !info.IsDir() {
-		return normalizedConfig{}, fmt.Errorf("working_directory is not a directory: %w", ErrInvalidConfig)
-	}
 	if cfg.Shell == "" || !filepath.IsAbs(cfg.Shell) {
 		return normalizedConfig{}, fmt.Errorf("shell must be an absolute executable path: %w", ErrInvalidConfig)
 	}
@@ -154,7 +147,7 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	if err != nil {
 		return normalizedConfig{}, err
 	}
-	return normalizedConfig{workingDirectory: workingDirectory, shell: shell, timeout: time.Duration(timeoutSeconds) * time.Second, maxOutputBytes: maxOutput, environment: environment}, nil
+	return normalizedConfig{shell: shell, timeout: time.Duration(timeoutSeconds) * time.Second, maxOutputBytes: maxOutput, environment: environment}, nil
 }
 
 func normalizeEnvironment(explicit map[string]string, inherited []string) ([]string, error) {
@@ -222,15 +215,26 @@ func (t *shellTool) Definition() tool.Definition {
 	}
 }
 
-func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error) {
+func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (tool.Result, error) {
 	if ctx == nil {
 		return tool.Result{}, fmt.Errorf("shell_exec: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
+	call := invocation.Call
 	if call.Name != "" && call.Name != "shell_exec" {
 		return tool.Result{}, fmt.Errorf("call name %q: %w", call.Name, ErrInvalidArguments)
+	}
+	// The working directory authority comes only from the session Workspace
+	// Binding resolved through this invocation's execution scope. There is no
+	// fallback to process cwd, config, HOME, or any other ambient source.
+	binding, err := t.workspace.Resolve(ctx, invocation.Scope)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("shell_exec resolve workspace for session %q: %w", invocation.Scope.SessionID, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return tool.Result{}, err
 	}
 	var args struct {
 		Command        *string `json:"command"`
@@ -259,7 +263,7 @@ func (t *shellTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, er
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := exec.Command(t.config.shell, shellCommandArgs(*args.Command)...)
-	command.Dir = t.config.workingDirectory
+	command.Dir = binding.Root
 	command.Env = make([]string, len(t.config.environment))
 	copy(command.Env, t.config.environment)
 	collector := newOutputCollector(t.config.maxOutputBytes)

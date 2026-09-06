@@ -127,7 +127,7 @@ install ingot
   -> ingot init           official plugin set + plugins.toml + config template
   -> edit config.toml     set your model provider
   -> ingot apply          resolve + build + switch
-  -> ingot chat           run the agent
+  -> ingot web            open the browser workspace (app.backend)
 ```
 
 `apply` is a shortcut for `resolve` + `build` + switching `current`.
@@ -166,14 +166,14 @@ Initializes a working ingot home:
 
 | Option | Meaning |
 |---|---|
-| `--profile` | `default` (skeleton + common adapters, 15 plugins) or `minimal` (minimum runnable set, 9 plugins); default `default`. Both include `asset.local` for immutable multimodal data. |
+| `--profile` | `default` (skeleton + common adapters, 11 plugins) or `minimal` (minimum runnable browser set, 9 plugins); default `default`. Both include `asset.local` for immutable multimodal data. |
 | `--bundle` | Directory of the official plugin set (default: auto-detected relative to the executable). |
 | `--force` | Overwrite an already initialized home (refuses to touch an existing `plugins.toml` otherwise). |
 | `--apply` | Run `apply` (resolve + build + switch current) right after init. |
 
 `init` is idempotent: an existing `plugins.toml` blocks re-initialization
 (unless `--force`) and an existing `config.toml` is preserved. It prints the
-next steps: edit `config.toml`, run `ingot apply`, run `ingot chat`.
+next steps: edit `config.toml`, run `ingot apply`, run `ingot web`.
 
 ### `bundle`
 
@@ -401,32 +401,27 @@ Any command that is not a built-in ingot command is dispatched to the current
 runtime image:
 
 ```sh
-# full-screen TUI (default, requires a terminal)
-ingot chat
-
-# line-oriented plain output, for pipes and redirection
-ingot chat --plain
+# start the local browser workspace (default profile: app.backend)
+ingot web
 ```
 
-The runtime binary is executed with your stdin/stdout/stderr attached and
-`INGOT_HOME` set to the ingot home, so the image can find `config.toml` and
-its persistent state. The runtime's exit code is propagated.
+The runtime binary is executed with `INGOT_HOME` set to the ingot home, so the
+image can find `config.toml` and its persistent state. The runtime's exit code
+is propagated.
 
-`chat` is the `app.cli` runtime command: without `--plain` it starts the
-full-screen TUI (markdown transcript, tool call blocks, session sidebar via
-`Ctrl+O`, Ask option panels; `Ctrl+Q` exits, `Ctrl+C` cancels the running
-turn, `F1` shows help). `chat --plain` degrades to prompt-based line input
-and plain text, so it works when stdin/stdout are not a terminal (pipes,
-redirection, non-interactive scripts). Model provider and API keys are
-configured in `config.toml`, not on the command line.
+`web` is the `app.backend` runtime command: it serves the embedded Vue browser
+workspace on a local HTTP/SSE address (default `http://127.0.0.1:7316/`) and
+prints that link. Model provider and API keys are configured in
+`config.toml`, not on the command line.
 
-On the first ordinary message, the app immediately creates a session using a
-normalized, shortened form of that message. After the first successful turn it
-makes one best-effort model call to replace that temporary title with a stable
-title; later turns never update it automatically. `/new Project name` creates a
-manually titled session, `/new` waits for the next message, and `/rename New
-title` changes the current title. Manual titles are never overwritten, and a
-title-generation failure does not affect the conversation.
+Every conversation belongs to a Session that is bound to one immutable local
+Workspace directory. When you start a new conversation from the browser
+workspace you choose that Workspace path; the app creates the Session, binds
+the Workspace, and the session-scoped binding is what shell tools resolve their
+working directory from. Deleting the Session removes the binding, and forking
+a Session inherits its Workspace binding. Sessions migrated from the previous
+schema may initially be unbound; the browser prompts for an existing local
+directory and prevents execution until the one-time binding succeeds.
 
 If there is no current image (or it is missing), the command fails with an
 error explaining the problem.
@@ -491,7 +486,7 @@ Full flow from scratch:
 ingot init
 # edit ~/.ingot/config.toml: model provider base_url / api_key
 ingot apply
-ingot chat
+ingot web
 ```
 
 Check that your home is consistent:

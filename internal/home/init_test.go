@@ -40,16 +40,16 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if !result.WrotePlugins || !result.WroteBuilderConfig || !result.WroteConfig {
 		t.Fatalf("init must write plugins, builder, and runtime config files: %#v", result)
 	}
-	if len(result.Plugins) != 12 {
-		t.Fatalf("default profile has %d plugins, want 12: %#v", len(result.Plugins), result.Plugins)
+	if len(result.Plugins) != 11 {
+		t.Fatalf("default profile has %d plugins, want 11: %#v", len(result.Plugins), result.Plugins)
 
 	}
 	desired, err := builder.ParseDesired(home.DesiredPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(desired.Plugins) != 12 {
-		t.Fatalf("plugins.toml has %d plugins, want 12", len(desired.Plugins))
+	if len(desired.Plugins) != 11 {
+		t.Fatalf("plugins.toml has %d plugins, want 11", len(desired.Plugins))
 
 	}
 	builderData, err := os.ReadFile(home.BuilderConfigPath())

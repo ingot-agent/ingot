@@ -240,7 +240,7 @@ func TestToolHookProjectsBeforeAfterAndIsolatesEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"x":1}`)}, func(_ context.Context, call tool.Call) (tool.Result, error) {
+	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{"x":1}`)}}, func(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
 		called = true
 		return tool.Result{Content: content.FromText("ok")}, nil
 	})
@@ -368,7 +368,7 @@ func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		called = true
 		return tool.Result{}, nil
 	})
@@ -380,7 +380,7 @@ func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		return tool.Result{Content: content.FromText("committed")}, nil
 	})
 	if textValue(result.Content) != "committed" || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) {
@@ -395,7 +395,7 @@ func TestHookTimeoutAndOutputLimitFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		return tool.Result{}, nil
 	})
 	if !errors.Is(err, ErrHookFailed) || !errors.Is(err, context.DeadlineExceeded) {
@@ -408,7 +408,7 @@ func TestHookTimeoutAndOutputLimitFailClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		return tool.Result{}, nil
 	})
 	if !errors.Is(err, ErrHookFailed) {
@@ -423,7 +423,7 @@ func TestCancellationAfterDownstreamIsNotSwallowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	result, err := exports.ToolInterceptors[0].Invoke(ctx, tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	result, err := exports.ToolInterceptors[0].Invoke(ctx, tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		cancel()
 		return tool.Result{Content: content.FromText("committed")}, nil
 	})
@@ -473,7 +473,7 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	result, err := exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		return tool.Result{Content: content.FromText("committed")}, nil
 	})
 	if textValue(result.Content) != "committed" || !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) || !errors.Is(err, ErrHookFailed) {
@@ -485,7 +485,7 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+	_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 		return tool.Result{}, downstreamErr
 	})
 	if !errors.Is(err, downstreamErr) || !errors.Is(err, ErrAfterHookFailed) || !errors.Is(err, ErrCompletionUnknown) || !errors.Is(err, ErrHookFailed) {
@@ -500,7 +500,7 @@ func TestSuccessfulStderrAndNonzeroExitFailClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Call{Arguments: json.RawMessage(`{}`)}, func(context.Context, tool.Call) (tool.Result, error) {
+			_, err = exports.ToolInterceptors[0].Invoke(context.Background(), tool.Invocation{Call: tool.Call{Arguments: json.RawMessage(`{}`)}}, func(context.Context, tool.Invocation) (tool.Result, error) {
 				return tool.Result{}, nil
 			})
 			if !errors.Is(err, ErrHookFailed) {

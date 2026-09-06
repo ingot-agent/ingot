@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 const maxJSONBody = 1 << 20
@@ -34,11 +36,13 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("POST /api/sessions", a.handleCreateSession)
 	mux.HandleFunc("GET /api/sessions/{id}", a.handleGetSession)
 	mux.HandleFunc("PATCH /api/sessions/{id}", a.handleRenameSession)
+	mux.HandleFunc("POST /api/sessions/{id}/workspace", a.handleAssignWorkspace)
 	mux.HandleFunc("GET /api/sessions/{id}/history", a.handleHistory)
 	mux.HandleFunc("POST /api/interactions/{id}/response", a.handleInteractionResponse)
 
 	mux.HandleFunc("POST /api/assets", a.handleUploadAsset)
 	mux.HandleFunc("GET /api/assets/{id}", a.handleReadAsset)
+	mux.HandleFunc("GET /api/workspace/browse", a.handleBrowseWorkspace)
 	mux.HandleFunc("GET /api/operations", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, a.operations.List()) })
 	mux.HandleFunc("POST /api/operations/{name}", a.handleInvokeOperation)
 	mux.HandleFunc("DELETE /api/operation-invocations/{id}", a.handleCancelOperation)
@@ -161,6 +165,15 @@ func (a *application) handleCreateTurn(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	item, err := a.sessions.Get(r.Context(), session.ID(request.SessionID))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if item.Workspace == "" {
+		writeError(w, fmt.Errorf("session %q: %w", request.SessionID, workspace.ErrNotAssigned))
+		return
+	}
 	id, err := a.turns.Start(agent.Turn{SessionID: session.ID(request.SessionID), Input: request.Input, Attachments: attachments})
 	if err != nil {
 		writeError(w, err)
@@ -197,13 +210,18 @@ func (a *application) handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 func (a *application) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Title string `json:"title"`
+		Title     string `json:"title"`
+		Workspace string `json:"workspace"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		return
 	}
+	binding, ok := workspaceBinding(w, request.Workspace)
+	if !ok {
+		return
+	}
 	a.sessionMu.Lock()
-	item, err := a.sessions.Create(r.Context(), request.Title)
+	item, err := a.sessions.Create(r.Context(), request.Title, binding)
 	if err == nil {
 		_ = a.backend.Events().Publish(appbackend.Event{Type: "session.created", Data: item})
 	}
@@ -213,6 +231,40 @@ func (a *application) handleCreateSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
+}
+
+func workspaceBinding(w http.ResponseWriter, root string) (workspace.Binding, bool) {
+	root = strings.TrimSpace(root)
+	if root == "" || !filepath.IsAbs(root) {
+		writeAPIError(w, http.StatusBadRequest, "workspace_required", "workspace must be an absolute directory path")
+		return workspace.Binding{}, false
+	}
+	return workspace.Binding{Root: filepath.Clean(root)}, true
+}
+
+func (a *application) handleAssignWorkspace(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Workspace string `json:"workspace"`
+	}
+	if err := decodeJSON(w, r, &request); err != nil {
+		return
+	}
+	binding, ok := workspaceBinding(w, request.Workspace)
+	if !ok {
+		return
+	}
+	id := session.ID(r.PathValue("id"))
+	a.sessionMu.Lock()
+	item, err := a.sessions.AssignWorkspace(r.Context(), id, binding)
+	if err == nil {
+		_ = a.backend.Events().Publish(appbackend.Event{Type: "session.workspace_assigned", Data: item})
+	}
+	a.sessionMu.Unlock()
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (a *application) handleRenameSession(w http.ResponseWriter, r *http.Request) {
@@ -474,6 +526,12 @@ func apiError(err error) (int, appbackend.ErrorDetail) {
 		status, code = http.StatusUnprocessableEntity, "unsupported_content"
 	case errors.Is(err, session.ErrArchived):
 		status, code = http.StatusConflict, "session_archived"
+	case errors.Is(err, workspace.ErrAlreadyAssigned):
+		status, code = http.StatusConflict, "workspace_already_assigned"
+	case errors.Is(err, workspace.ErrNotAssigned):
+		status, code = http.StatusConflict, "workspace_not_assigned"
+	case errors.Is(err, workspace.ErrInvalidBinding):
+		status, code = http.StatusBadRequest, "workspace_invalid"
 	case errors.Is(err, context.Canceled):
 		status, code = http.StatusRequestTimeout, "canceled"
 	case errors.Is(err, context.DeadlineExceeded):

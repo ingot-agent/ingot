@@ -27,7 +27,7 @@ func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) 
 	if err := os.CopyFS(updatedDistribution, os.DirFS(distribution)); err != nil {
 		t.Fatal(err)
 	}
-	changedSource := filepath.Join(updatedDistribution, "tool-edit", "go.mod")
+	changedSource := filepath.Join(updatedDistribution, "tool-shell", "go.mod")
 	file, err := os.OpenFile(changedSource, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.UpdateAvailable || status.ManagedPlugins != 12 {
+	if !status.UpdateAvailable || status.ManagedPlugins != 11 {
 		t.Fatalf("pre-update status = %#v", status)
 	}
 	result, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: updatedDistribution})
@@ -69,7 +69,7 @@ func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) 
 	if string(configAfter) != string(configBefore) {
 		t.Fatal("bundle update rewrote config.toml")
 	}
-	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-edit", "go.mod")
+	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod")
 	updatedData, err := os.ReadFile(changedSource)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestBundleUpdateApplyFailureRestoresPreviousBundle(t *testing.T) {
 	if err := os.CopyFS(updatedDistribution, os.DirFS(distribution)); err != nil {
 		t.Fatal(err)
 	}
-	changedSource := filepath.Join(updatedDistribution, "tool-edit", "go.mod")
+	changedSource := filepath.Join(updatedDistribution, "tool-shell", "go.mod")
 	file, err := os.OpenFile(changedSource, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +122,7 @@ func TestBundleUpdateApplyFailureRestoresPreviousBundle(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-edit", "go.mod")
+	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod")
 	before, err := os.ReadFile(managedSource)
 	if err != nil {
 		t.Fatal(err)

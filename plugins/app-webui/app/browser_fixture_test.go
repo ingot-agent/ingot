@@ -27,6 +27,7 @@ import (
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/observation"
@@ -36,12 +37,12 @@ import (
 )
 
 type browserAgent struct {
-	mu       sync.Mutex
-	history  map[session.ID][]model.Message
-	active   map[session.ID]chan struct{}
-	host     appbackend.Runtime
-	observer observation.Observer
-	sequence atomic.Uint64
+	mu          sync.Mutex
+	history     map[session.ID][]model.Message
+	active      map[session.ID]chan struct{}
+	interaction interaction.ExecutionBinder
+	observer    observation.Observer
+	sequence    atomic.Uint64
 }
 
 func (b *browserAgent) Load(ctx context.Context, id session.ID) ([]model.Message, error) {
@@ -66,6 +67,10 @@ func (b *browserAgent) Stream(ctx context.Context, turn agent.Turn, handler agen
 	start := time.Now()
 	correlation := observation.Correlation{SessionID: turn.SessionID, TurnID: observation.ID(fmt.Sprintf("sdk-%d", b.sequence.Add(1)))}
 	ctx = observation.WithCorrelation(ctx, correlation)
+	interactionChannel, err := b.interaction.Bind(execution.Scope{SessionID: turn.SessionID})
+	if err != nil {
+		return result, err
+	}
 	seq := uint64(0)
 	emit := func(detail observation.Detail) {
 		seq++
@@ -126,7 +131,7 @@ func (b *browserAgent) Stream(ctx context.Context, turn agent.Turn, handler agen
 			field.Kind = interaction.FieldChoice
 			description = "Allow workspace inspection?"
 		}
-		if _, err = b.host.Interactions().Request(ctx, interaction.Request{Name: "confirmation", Description: description, Fields: []interaction.Field{field}}); err != nil {
+		if _, err = interactionChannel.Request(ctx, interaction.Request{Name: "confirmation", Description: description, Fields: []interaction.Field{field}}); err != nil {
 			return result, err
 		}
 	}
@@ -154,7 +159,7 @@ func (b *browserAgent) Stream(ctx context.Context, turn agent.Turn, handler agen
 		call = tool.Call{ID: correlation.ToolCallID, Name: "workspace.verify", Arguments: json.RawMessage(`{}`)}
 		emit(observation.ToolStarted{Call: call})
 		ctx = observation.WithCorrelation(ctx, correlation)
-		if _, err = b.host.Interactions().Request(ctx, interaction.Request{
+		if _, err = interactionChannel.Request(ctx, interaction.Request{
 			Name: "verification", Description: "Continue with verification?",
 			Fields: []interaction.Field{{Name: "answer", Label: "Answer", Kind: interaction.FieldString, Required: true}},
 		}); err != nil {
@@ -254,7 +259,7 @@ func TestBrowserFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.backend = host.Runtime
-	b := &browserAgent{history: make(map[session.ID][]model.Message), active: make(map[session.ID]chan struct{}), host: host.Runtime, observer: host.Observer}
+	b := &browserAgent{history: make(map[session.ID][]model.Message), active: make(map[session.ID]chan struct{}), interaction: host.ExecutionInteractions, observer: host.Observer}
 	streaming := ingotabi.Some[agent.StreamingRuntime](b)
 	if os.Getenv("INGOT_WEBUI_FIXTURE_RUN_ONLY") == "1" {
 		streaming = ingotabi.None[agent.StreamingRuntime]()

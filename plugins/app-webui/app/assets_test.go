@@ -15,6 +15,7 @@ import (
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 type uploadStore struct {
@@ -87,6 +88,10 @@ func TestAssetUploadStreamingSizeAndValidation(t *testing.T) {
 
 func TestAttachmentOnlyTurnUsesAssetReferences(t *testing.T) {
 	a := testApplication(t)
+	created, err := a.sessions.Create(context.Background(), "attachments", workspace.Binding{Root: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	received := make(chan agent.Turn, 1)
 	runtime := &testAgent{run: func(_ context.Context, turn agent.Turn) (agent.Execution, error) {
 		received <- turn
@@ -98,7 +103,7 @@ func TestAttachmentOnlyTurnUsesAssetReferences(t *testing.T) {
 	}
 	a.turns.agent = controller
 	w := httptest.NewRecorder()
-	a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/turns", strings.NewReader(`{"sessionId":"session","attachments":[{"kind":"image","assetId":"asset-one","mimeType":"image/png","name":"photo.png"}]}`)))
+	a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/turns", strings.NewReader(`{"sessionId":"`+created.ID+`","attachments":[{"kind":"image","assetId":"asset-one","mimeType":"image/png","name":"photo.png"}]}`)))
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("attachment-only turn = %d %s", w.Code, w.Body.String())
 	}
@@ -121,7 +126,7 @@ func TestAttachmentOnlyTurnUsesAssetReferences(t *testing.T) {
 
 func TestSessionLifecycleHTTPDelegatesMetadata(t *testing.T) {
 	a := testApplication(t)
-	item, err := a.sessions.Create(context.Background(), "original")
+	item, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: "/tmp/ws"})
 	if err != nil {
 		t.Fatal(err)
 	}

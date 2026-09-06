@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 
 	appbackend "github.com/ingot-agent/app-webui"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/observation"
 )
@@ -45,7 +46,7 @@ func newInteractionHost(events appbackend.EventSink) *interactionHost {
 }
 
 func (h *interactionHost) Request(ctx context.Context, request interaction.Request) (interaction.Response, error) {
-	return h.request(ctx, request, contextScope(ctx))
+	return h.request(ctx, request, nil)
 }
 
 func (h *interactionHost) request(ctx context.Context, request interaction.Request, scope *appbackend.Scope) (interaction.Response, error) {
@@ -110,7 +111,7 @@ func (h *interactionHost) Respond(id string, submission appbackend.InteractionSu
 }
 
 func (h *interactionHost) Emit(ctx context.Context, event interaction.Event) error {
-	return h.emit(ctx, event, contextScope(ctx))
+	return h.emit(ctx, event, nil)
 }
 
 func (h *interactionHost) emit(ctx context.Context, event interaction.Event, scope *appbackend.Scope) error {
@@ -132,7 +133,7 @@ func (h *interactionHost) emit(ctx context.Context, event interaction.Event, sco
 }
 
 func (h *interactionHost) Set(ctx context.Context, state interaction.State) error {
-	return h.set(ctx, state, contextScope(ctx))
+	return h.set(ctx, state, nil)
 }
 
 func (h *interactionHost) set(ctx context.Context, state interaction.State, scope *appbackend.Scope) error {
@@ -158,21 +159,23 @@ func (h *interactionHost) set(ctx context.Context, state interaction.State, scop
 }
 
 func (h *interactionHost) Clear(ctx context.Context, name string) error {
-	return h.clear(ctx, name, contextScope(ctx))
+	return h.clear(ctx, name, nil)
 }
 
-// contextScope projects only correlation supplied by the execution context.
-// A round index alone has no presence marker in the SDK; include it when a
-// tool scope makes its meaning unambiguous.
-func contextScope(ctx context.Context) *appbackend.Scope {
+// projectExecutionScope keeps the explicitly bound Session identity
+// authoritative. Matching Observation correlation may enrich the Web
+// projection, but absent or conflicting context metadata cannot remove or
+// redirect the interaction's business scope. A round index alone has no
+// presence marker in the SDK; include it when a tool scope makes its meaning
+// unambiguous.
+func projectExecutionScope(ctx context.Context, scope execution.Scope) *appbackend.Scope {
+	agent := &appbackend.AgentScope{SessionID: string(scope.SessionID)}
 	correlation, ok := observation.CorrelationFromContext(ctx)
-	if !ok || (correlation.SessionID == "" && correlation.TurnID == "") {
-		return nil
+	if !ok || correlation.SessionID != scope.SessionID {
+		return &appbackend.Scope{Agent: agent}
 	}
-	agent := &appbackend.AgentScope{
-		SessionID: string(correlation.SessionID), TurnID: string(correlation.TurnID),
-		ToolCallID: correlation.ToolCallID,
-	}
+	agent.TurnID = string(correlation.TurnID)
+	agent.ToolCallID = correlation.ToolCallID
 	if correlation.ToolCallID != "" {
 		index := correlation.RoundIndex
 		agent.RoundIndex = &index
@@ -544,6 +547,32 @@ func cloneState(state appbackend.InteractionState) appbackend.InteractionState {
 }
 
 var _ appbackend.InteractionHost = (*interactionHost)(nil)
+var _ interaction.ExecutionBinder = (*interactionHost)(nil)
+
+func (h *interactionHost) Bind(scope execution.Scope) (interaction.Channel, error) {
+	if scope.SessionID == "" {
+		return nil, fmt.Errorf("bind interaction channel: missing session ID: %w", interaction.ErrInvalidExecutionScope)
+	}
+	return &executionChannel{host: h, scope: scope}, nil
+}
+
+type executionChannel struct {
+	host  *interactionHost
+	scope execution.Scope
+}
+
+func (c *executionChannel) Request(ctx context.Context, request interaction.Request) (interaction.Response, error) {
+	return c.host.request(ctx, request, projectExecutionScope(ctx, c.scope))
+}
+func (c *executionChannel) Emit(ctx context.Context, event interaction.Event) error {
+	return c.host.emit(ctx, event, projectExecutionScope(ctx, c.scope))
+}
+func (c *executionChannel) Set(ctx context.Context, state interaction.State) error {
+	return c.host.set(ctx, state, projectExecutionScope(ctx, c.scope))
+}
+func (c *executionChannel) Clear(ctx context.Context, name string) error {
+	return c.host.clear(ctx, name, projectExecutionScope(ctx, c.scope))
+}
 
 func (h *interactionHost) Scoped(scope appbackend.Scope) interaction.Channel {
 	return &scopedChannel{host: h, scope: appbackend.CloneScope(&scope)}

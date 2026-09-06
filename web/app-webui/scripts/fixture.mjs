@@ -4,7 +4,11 @@ import process from 'node:process'
 
 const child = spawn('go', ['test', '-run', '^TestBrowserFixture$', '-count=1', '-timeout', '0', '-v', './app'], {
   cwd: new URL('../../../plugins/app-webui/', import.meta.url),
-  env: { ...process.env, GOWORK: 'off', INGOT_WEBUI_FIXTURE_ADDR: process.env.INGOT_WEBUI_FIXTURE_ADDR || '127.0.0.1:17316' },
+  env: {
+    ...process.env,
+    GOWORK: process.env.INGOT_WEBUI_FIXTURE_GOWORK || 'off',
+    INGOT_WEBUI_FIXTURE_ADDR: process.env.INGOT_WEBUI_FIXTURE_ADDR || '127.0.0.1:17316',
+  },
   stdio: 'inherit',
 })
 process.on('SIGINT', () => child.kill('SIGINT'))

@@ -8,6 +8,7 @@ import (
 
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/observation"
 	"github.com/ingot-agent/sdk/pipeline"
@@ -160,7 +161,13 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 			executionRecorderFrom(ctx).recordFailure(err, agent.FailureRoundControl, roundIndexFrom(ctx), "")
 			return nil, err
 		}
-		result, callErr := r.executeTool(ctx, call)
+		// Every tool invocation produced by this turn inherits the turn's
+		// Session identity as its explicit dynamic execution scope.
+		invocation := tool.Invocation{
+			Scope: execution.Scope{SessionID: sessionID},
+			Call:  cloneCall(call),
+		}
+		result, callErr := r.executeTool(ctx, invocation)
 		if callErr != nil {
 			if !errors.Is(callErr, tool.ErrNotFound) && !errors.Is(callErr, tool.ErrInvalidArguments) {
 				return nil, fmt.Errorf("tool %q call %q: %w", call.Name, call.ID, callErr)
@@ -186,7 +193,8 @@ func (r *runtime) executeToolCalls(ctx context.Context, sessionID session.ID, ca
 	return messages, nil
 }
 
-func (r *runtime) executeTool(ctx context.Context, call tool.Call) (result tool.Result, resultErr error) {
+func (r *runtime) executeTool(ctx context.Context, invocation tool.Invocation) (result tool.Result, resultErr error) {
+	call := invocation.Call
 	correlation, _ := observation.CorrelationFromContext(ctx)
 	correlation.ToolCallID = call.ID
 	ctx = observation.WithCorrelation(ctx, correlation)
@@ -206,7 +214,7 @@ func (r *runtime) executeTool(ctx context.Context, call tool.Call) (result tool.
 		}
 		recorder.emit(ctx, finished)
 	}()
-	result, resultErr = r.tools.Call(ctx, cloneCall(call))
+	result, resultErr = r.tools.Call(ctx, cloneInvocation(invocation))
 	if resultErr != nil {
 		if !errors.Is(resultErr, tool.ErrNotFound) && !errors.Is(resultErr, tool.ErrInvalidArguments) {
 			recorder.recordFailure(resultErr, agent.FailureTool, &correlation.RoundIndex, call.ID)

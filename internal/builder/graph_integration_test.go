@@ -83,7 +83,7 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if len(providers) != 2 || providers[0].Component.PluginID != "example.com/provider-b" || providers[1].Component.PluginID != "example.com/provider-a" || !providers[0].Flatten || !providers[1].Flatten {
 		t.Fatalf("MANY providers = %#v", providers)
 	}
-	hostDependencies := consumerComponent.DependencyList[2:]
+	hostDependencies := consumerComponent.DependencyList[1:]
 	if len(hostDependencies) != 3 || !hostDependencies[0].Host || hostDependencies[0].HostType != "invocation" || !hostDependencies[1].Host || hostDependencies[1].HostType != "lifecycle" || !hostDependencies[2].Host || hostDependencies[2].HostType != "state" {
 		t.Fatalf("host dependencies = %#v", hostDependencies)
 	}
@@ -280,7 +280,7 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
 		pluginModules[plugin.module] = struct{}{}
 	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.6\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.8\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
 	indirectRequirements := make(map[string]string)
 	for _, plugin := range plugins {
 		path := filepath.Join(repositoryRoot, "plugins", plugin.directory, "go.mod")
@@ -508,7 +508,6 @@ import (
 	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/ingot-abi/lifecycle"
 	"github.com/ingot-agent/ingot-abi/state"
-	"github.com/ingot-agent/sdk/filesystem"
 	"github.com/ingot-agent/sdk/httpx"
 )
 
@@ -519,7 +518,6 @@ type Config struct {
 }
 type Dependencies struct {
 	Clients []httpx.Client
-	OptionalFS ingotabi.Optional[filesystem.FS]
 	Invocation invocation.Invocation
 	Lifecycle lifecycle.Controller
 	State state.Scope

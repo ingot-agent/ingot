@@ -2,7 +2,7 @@
 
 `app.backend` 是 ingot 的浏览器应用，包含 Vue 3 + Tailwind CSS 前端及轻量 HTTP/SSE 应用边界。插件目录名为 `app-webui`，manifest ID 保持 `app.backend`。它是一个包含两个组件的复合插件：
 
-- `host` 持有进程内的 `EventHub`、支持作用域的 `interaction.Channel` 和 `observation.Observer`。该组件没有依赖，因此 Agent 可以使用这些能力而不会在组件图中形成环。
+- `host` 持有进程内的 `EventHub`、全局 `interaction.Channel`、显式作用域的 `interaction.ExecutionBinder` 和 `observation.Observer`。该组件没有依赖，因此 Agent 可以使用这些能力而不会在组件图中形成环。
 - `app` 持有 HTTP 服务器、Controller、运行中的 Turn，以及保留的 Operation 结果。它依赖 `agent.History`、`session.Store`、`session.Manager` 和 `session.Query`。相互独立且可选的 `agent.Runtime` 与 `agent.StreamingRuntime` 至少需要提供一个。`asset.Store` 是可选依赖，Operation 通过 `[]operation.Operation` 收集。
 
 当前实现使用 `ingot-abi v0.1.0` 和正式发布的 `sdk v0.2.7`。插件不修改 SDK，也不额外覆盖工作区中的 SDK 选择。
@@ -13,9 +13,8 @@
 
 ```sh
 go build -o ingot ./cmd/ingot
-./ingot plugin remove github.com/ingot-agent/app-cli
-./ingot plugin add --path ./plugins/app-webui
-# 在该 home 的 config.toml 中添加下方 app.backend 配置
+./ingot init                # 默认 profile 已包含 app.backend
+# 在该 home 的 config.toml 中设置模型供应商与下方 app.backend 配置
 ./ingot apply
 ./ingot web
 ```
@@ -28,6 +27,9 @@ go build -o ingot ./cmd/ingot
 
 ## 工作区能力
 
+- 新建会话时通过目录选择器绑定一个已存在的本地目录；Binding 在 Session 生命周期
+  内不可修改。由旧 schema 升级而来的未绑定 Session 会在发送消息前引导用户完成
+  一次性绑定。
 - 会话搜索、新建、重命名、归档/恢复、分叉与确认删除；正在执行时禁用生命周期变更。
 - Markdown、代码高亮/复制、折叠推理、工具调用卡片和独立执行详情；Turn、Round、Model、Tool 与用量信息来自公开 SDK 能力。
 - 流式输出及 Run-only 降级、停止执行、内联审批/自由输入、跨会话待处理请求抽屉。
@@ -57,7 +59,7 @@ M6 后端提供以下接口：
 | --- | --- |
 | 状态引导与事件 | `GET /api/state`、`GET /api/events` |
 | Turn | `POST /api/turns`、`DELETE /api/turns/{id}` |
-| Session | `GET/POST /api/sessions`、`GET/PATCH/DELETE /api/sessions/{id}` |
+| Session | `GET/POST /api/sessions`、`GET/PATCH/DELETE /api/sessions/{id}`、`POST /api/sessions/{id}/workspace` |
 | Session 生命周期 | `POST /api/sessions/{id}/archive`、`/restore`、`/fork` |
 | 历史消息 | `GET /api/sessions/{id}/history` |
 | Asset | `POST /api/assets`、`GET /api/assets/{id}` |
@@ -74,7 +76,7 @@ Turn 完成后会从运行中注册表移除，完整历史仍以 `agent.History
 
 十种 `agent.turn/round/model/tool.*` 事件仅来自 Observation，并保留 SDK correlation、sequence 和物化时间。需要将 `host` 导出的 Observer 接入 Observation Consumer 才会收到这些事件；后端本身不会创建 Consumer，也不会合成执行事实。Web invocation ID 与 SDK turn ID 始终是两个独立标识。
 
-历史消息和规范结果使用有序内容数组、字符串形式的 `kind`，以及显式的媒体来源。内联输出字节在 JSON 中编码为 base64；URI 和 Asset 输出来源会原样保留，不会被后端读取。Turn 输入仅接受基于 Asset 的附件。空文本和仅含附件的 Turn 会交由 Agent 的领域校验处理。
+历史消息和规范结果使用有序内容数组、字符串形式的 `kind`，以及显式的媒体来源。内联输出字节在 JSON 中编码为 base64；URI 和 Asset 输出来源会原样保留，不会被后端读取。Turn 输入仅接受基于 Asset 的附件。空文本和仅含附件的 Turn 会交由 Agent 的领域校验处理。未绑定 Workspace 的历史 Session 创建 Turn 时返回 `409 workspace_not_assigned`。
 
 ## Asset 上传与读取
 
@@ -140,7 +142,7 @@ Interaction Request 会在注册前完成校验。提交的 JSON `null`、错误
 
 敏感默认值仅保留在服务端，settlement 事件不包含用户提交值。当前状态变更与对应事件保持一致顺序。Operation 使用的 Channel 会在 pending/state 快照和所有 Interaction 事件中携带 invocation scope。
 
-普通 Channel 的 Request/Emit/Set/Clear 会从 context 中的 SDK Observation correlation 提取 Agent scope，让 `tool.ask` 与审批请求能够定位到会话/工具卡片。显式 `Scoped` Channel 的作用域优先，不会被 context 覆盖。SDK correlation 未表达 Round 是否存在，只有工具关联明确时才投影其 RoundIndex。
+普通 Channel 的 Request/Emit/Set/Clear 始终是全局作用域，不从 context 推导业务 routing。`tool.ask` 与审批通过 `interaction.ExecutionBinder.Bind(tool.Invocation.Scope)` 获得 execution-scoped Channel；显式 SessionID 是唯一 routing authority。SDK Observation correlation 只在 SessionID 与显式 Scope 一致时补充 Turn、Tool 和 Round 展示信息，缺失或冲突的 correlation 都不能移除或改写 Session routing。Operation 使用的私有 `Scoped` Channel 继续以显式 invocation scope 为准。
 
 State ID 仍然等于 `State.Name`；scope 不会生成新的全局 State identity。
 

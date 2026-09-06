@@ -53,7 +53,6 @@ var profiles = map[string]*Profile{
 			"model-runtime",
 			"tool-runtime",
 			"tool-shell",
-			"tool-edit",
 			"tool-ask",
 			"prompt-default",
 			"session-sqlite",
@@ -64,8 +63,9 @@ var profiles = map[string]*Profile{
 	"minimal": {
 		Name: "minimal",
 		// Exactly the runtime skeleton plus one model provider and the HTTP
-		// client it requires. No tools, no filesystem, no approvals; the
-		// terminal CLI remains the application boundary.
+		// client it requires, running the browser workspace with no shell or
+		// question tools. No approvals; the agent loop stays runnable with an
+		// empty tool runtime.
 		Plugins: []string{
 			"asset-local",
 			"http-default",
@@ -75,7 +75,7 @@ var profiles = map[string]*Profile{
 			"prompt-default",
 			"session-sqlite",
 			"agent-default",
-			"app-cli",
+			"app-webui",
 		},
 	},
 }

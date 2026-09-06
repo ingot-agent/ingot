@@ -41,7 +41,7 @@ func (*tracedTools) Definitions() []tool.Definition {
 	return []tool.Definition{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 }
 
-func (t *tracedTools) Call(context.Context, tool.Call) (tool.Result, error) {
+func (t *tracedTools) Call(context.Context, tool.Invocation) (tool.Result, error) {
 	*t.trace = append(*t.trace, "tool")
 	return tool.Result{Content: content.FromText("ok")}, nil
 }

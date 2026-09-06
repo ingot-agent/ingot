@@ -7,15 +7,26 @@ import (
 	"testing"
 
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/interaction"
 	"github.com/ingot-agent/sdk/tool"
 )
 
 type fakeChannel struct {
 	request        interaction.Request
+	scope          execution.Scope
 	response       string
 	customResponse *interaction.Response
+	bindErr        error
 	err            error
+}
+
+func (c *fakeChannel) Bind(scope execution.Scope) (interaction.Channel, error) {
+	c.scope = scope
+	if c.bindErr != nil {
+		return nil, c.bindErr
+	}
+	return c, nil
 }
 
 func (c *fakeChannel) Request(_ context.Context, request interaction.Request) (interaction.Response, error) {
@@ -40,12 +51,15 @@ func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Name: "ask_user", Arguments: []byte("{\"prompt\":\"Continue?\"}")})
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Name: "ask_user", Arguments: []byte("{\"prompt\":\"Continue?\"}")}})
 	if text, ok := content.TextOnly(result.Content); err != nil || !ok || text != "approved" || channel.request.Name != requestName || channel.request.Description != "Continue?" {
 		t.Fatalf("result=%#v err=%v request=%#v", result, err, channel.request)
 	}
 	if len(channel.request.Fields) != 1 || channel.request.Fields[0].Name != answerFieldName || channel.request.Fields[0].Kind != interaction.FieldString || channel.request.Fields[0].Options != nil {
 		t.Fatalf("plain text request=%#v", channel.request)
+	}
+	if channel.scope.SessionID != "session-a" {
+		t.Fatalf("bound scope = %#v", channel.scope)
 	}
 }
 
@@ -56,7 +70,7 @@ func TestAskUserPassesOptionsAndEnablesFreeText(t *testing.T) {
 		t.Fatal(err)
 	}
 	arguments := []byte(`{"prompt":"Choose a deployment","options":[{"label":"Staging","description":"Deploy for verification"},{"label":"Production"}]}`)
-	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Name: "ask_user", Arguments: arguments})
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Name: "ask_user", Arguments: arguments}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +98,7 @@ func TestAskUserLimitsAndUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"prompt\":\"long\"}")})
+	result, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte("{\"prompt\":\"long\"}")}})
 	if err != nil {
 		t.Fatalf("prompt limit should be a result, got error: %v", err)
 	}
@@ -96,9 +110,25 @@ func TestAskUserLimitsAndUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte("{\"prompt\":\"ok\"}")})
+	_, err = exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte("{\"prompt\":\"ok\"}")}})
 	if !errors.Is(err, interaction.ErrUnavailable) {
 		t.Fatalf("unavailable = %v", err)
+	}
+}
+
+func TestAskUserPreservesExecutionBindingError(t *testing.T) {
+	bindErr := errors.New("scope routing unavailable")
+	channel := &fakeChannel{bindErr: bindErr}
+	exports, _, err := New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = exports.Tools[0].Invoke(context.Background(), tool.Invocation{
+		Scope: execution.Scope{SessionID: "session-a"},
+		Call:  tool.Call{Name: "ask_user", Arguments: []byte(`{"prompt":"Continue?"}`)},
+	})
+	if !errors.Is(err, bindErr) || channel.request.Name != "" {
+		t.Fatalf("binding error = %v request=%#v", err, channel.request)
 	}
 }
 
@@ -117,7 +147,7 @@ func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 	}
 	for _, test := range invalidArgs {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(test.arguments)})
+			_, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte(test.arguments)}})
 			if !errors.Is(err, ErrInvalidArguments) {
 				t.Fatalf("error=%v want chain %v", err, ErrInvalidArguments)
 			}
@@ -132,7 +162,7 @@ func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 	}
 	for _, test := range limits {
 		t.Run(test.name, func(t *testing.T) {
-			result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(test.arguments)})
+			result, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte(test.arguments)}})
 			if err != nil {
 				t.Fatalf("options limit should be a result, got error: %v", err)
 			}
@@ -146,7 +176,7 @@ func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(`{"prompt":"p","options":[{"label":"same"},{"label":"same"}]}`)})
+	_, err = exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte(`{"prompt":"p","options":[{"label":"same"},{"label":"same"}]}`)}})
 	if !errors.Is(err, ErrInvalidArguments) {
 		t.Fatalf("duplicate error=%v", err)
 	}
@@ -172,7 +202,7 @@ func TestAskUserRejectsMalformedInteractionResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result, err := exports.Tools[0].Invoke(context.Background(), tool.Call{Arguments: []byte(`{"prompt":"question"}`)})
+			result, err := exports.Tools[0].Invoke(context.Background(), tool.Invocation{Scope: execution.Scope{SessionID: "session-a"}, Call: tool.Call{Arguments: []byte(`{"prompt":"question"}`)}})
 			if err != nil {
 				t.Fatalf("invalid response should be a result, got error: %v", err)
 			}

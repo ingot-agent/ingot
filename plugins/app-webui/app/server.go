@@ -21,21 +21,24 @@ import (
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 // Dependencies contains capabilities consumed by the Web application.
 type Dependencies struct {
-	Backend      appbackend.Runtime
-	Agent        ingotabi.Optional[agent.Runtime]
-	Streaming    ingotabi.Optional[agent.StreamingRuntime]
-	History      agent.History
-	Store        session.Store
-	Sessions     session.Manager
-	SessionQuery session.Query
-	Assets       ingotabi.Optional[asset.Store]
-	Operations   []operation.Operation
-	Invocation   invocation.Invocation
-	Lifecycle    lifecycle.Controller
+	Backend           appbackend.Runtime
+	Agent             ingotabi.Optional[agent.Runtime]
+	Streaming         ingotabi.Optional[agent.StreamingRuntime]
+	History           agent.History
+	Store             session.Store
+	Sessions          session.Manager
+	SessionQuery      session.Query
+	Workspaces        workspace.Manager
+	WorkspaceResolver workspace.Resolver
+	Assets            ingotabi.Optional[asset.Store]
+	Operations        []operation.Operation
+	Invocation        invocation.Invocation
+	Lifecycle         lifecycle.Controller
 }
 
 // Exports is empty because the HTTP application is a graph leaf.
@@ -76,7 +79,7 @@ func New(ctx context.Context, cfg appbackend.Config, deps Dependencies) (Exports
 	if err != nil {
 		return Exports{}, nil, fmt.Errorf("construct app.backend app: %v: %w", err, appbackend.ErrInvalidConfig)
 	}
-	sessionController, err := newSessionController(deps.Store, deps.Sessions, deps.SessionQuery)
+	sessionController, err := newSessionController(deps.Store, deps.Sessions, deps.SessionQuery, deps.Workspaces, deps.WorkspaceResolver)
 	if err != nil {
 		return Exports{}, nil, fmt.Errorf("construct app.backend app: %v: %w", err, appbackend.ErrInvalidConfig)
 	}

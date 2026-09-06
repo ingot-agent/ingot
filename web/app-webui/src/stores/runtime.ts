@@ -177,8 +177,14 @@ export const useRuntime = defineStore('runtime', () => {
     lifecycle = undefined
     for (const controller of historyRequests.values()) controller.abort()
   }
-  async function createSession(title: string) {
-    const session = await command<Session>('/sessions', 'POST', { title })
+  async function createSession(title: string, workspace: string) {
+    const session = await command<Session>('/sessions', 'POST', { title, workspace })
+    sessionRevision++
+    sessions.value = [...sessions.value.filter(item => item.id !== session.id), session]
+    return session
+  }
+  async function assignWorkspace(id: string, workspace: string) {
+    const session = await command<Session>('/sessions/' + segment(id) + '/workspace', 'POST', { workspace })
     sessionRevision++
     sessions.value = [...sessions.value.filter(item => item.id !== session.id), session]
     return session
@@ -239,6 +245,6 @@ export const useRuntime = defineStore('runtime', () => {
     operations, operationInvocations, histories, historyLoading, historyErrors, optimistic,
     traces, notices, connection, connectionError, activeSession, cursor, pendingCount,
     notify, running, loadHistory, refreshSessions, bootstrap, receive, connect, disconnect,
-    createSession, mutateSession, send, stop, respond, invoke, cancelOperation,
+    createSession, assignWorkspace, mutateSession, send, stop, respond, invoke, cancelOperation,
   }
 })

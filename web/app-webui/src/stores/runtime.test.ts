@@ -74,6 +74,16 @@ describe('runtime request and event ordering', () => {
     expect(runtime.turns).toEqual({})
   })
 
+  it('assigns a workspace once and replaces the unbound session projection', async () => {
+    const runtime = useRuntime()
+    runtime.bootstrap(snapshot())
+    const bound = { ...session('Initial'), workspace: '/repo/project' }
+    vi.mocked(command).mockResolvedValueOnce(bound)
+    await runtime.assignWorkspace('s', '/repo/project')
+    expect(command).toHaveBeenCalledWith('/sessions/s/workspace', 'POST', { workspace: '/repo/project' })
+    expect(runtime.sessions).toEqual([bound])
+  })
+
   it('retains ordered tool cards after detailed trace retention rolls over', () => {
     const runtime = useRuntime()
     runtime.bootstrap(snapshot())

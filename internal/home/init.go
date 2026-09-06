@@ -230,26 +230,16 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry, systemPrompt stri
 			write("", "prompt.default", "")
 		}
 	}
-	if _, ok := byName["filesystem.local"]; ok {
-		write("--- workspace root for filesystem tools ---\n\".\" means the working directory where you start `ingot chat`.", "filesystem.local", "root = \".\"\n")
-	}
 	if _, ok := byName["tool.shell"]; ok {
 		shell, shellErr := defaultShellPath()
 		if shellErr != nil {
 			return nil, shellErr
 		}
-		workingDirectory, _ := os.UserHomeDir()
-		if workingDirectory == "" {
-			workingDirectory = homeRoot
-		}
-		write("--- shell tool execution boundary ---\nAbsolute paths required; adjust them for your machine.", "tool.shell", fmt.Sprintf("working_directory = %s\nshell = %s\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n", strconv.Quote(workingDirectory), strconv.Quote(shell)))
-	}
-	if _, ok := byName["tool.edit"]; ok {
-		write("--- exact UTF-8 text editing ---\nThe default limit is 1 MiB; raise it only for trusted workspaces.", "tool.edit", "# max_file_bytes = 1048576\n")
+		write("--- shell tool execution boundary ---\nThe command working directory comes from the session Workspace binding, not config.", "tool.shell", fmt.Sprintf("shell = %s\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n", strconv.Quote(shell)))
 	}
 	for _, entry := range entries {
 		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "prompt.default", "filesystem.local", "tool.shell", "tool.edit":
+		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "prompt.default", "tool.shell":
 			continue
 		}
 		write("", entry.Name, "")

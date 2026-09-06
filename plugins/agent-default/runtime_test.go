@@ -20,6 +20,7 @@ import (
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/prompt"
@@ -102,7 +103,7 @@ func (t *imageTools) Definitions() []tool.Definition {
 	return []tool.Definition{{Name: "image", Description: "image", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 }
 
-func (t *imageTools) Call(context.Context, tool.Call) (tool.Result, error) {
+func (t *imageTools) Call(context.Context, tool.Invocation) (tool.Result, error) {
 	return tool.Result{Content: content.Content{content.Inline(content.KindImage, "image/png", "tool.png", t.value)}}, nil
 }
 
@@ -148,8 +149,8 @@ type fakeTools struct{ calls []tool.Call }
 func (t *fakeTools) Definitions() []tool.Definition {
 	return []tool.Definition{{Name: "echo", Description: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 }
-func (t *fakeTools) Call(_ context.Context, call tool.Call) (tool.Result, error) {
-	t.calls = append(t.calls, cloneCall(call))
+func (t *fakeTools) Call(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
+	t.calls = append(t.calls, cloneCall(invocation.Call))
 	return tool.Result{Content: content.FromText("tool-ok")}, nil
 }
 
@@ -718,4 +719,53 @@ func executionOutput(execution agent.Execution) content.Content {
 		return nil
 	}
 	return execution.Result.Output
+}
+
+// scopeRecordingTools records the execution scope of every tool invocation.
+type scopeRecordingTools struct {
+	scopes []execution.Scope
+}
+
+func (*scopeRecordingTools) Definitions() []tool.Definition {
+	return []tool.Definition{{Name: "echo", Description: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}
+}
+
+func (t *scopeRecordingTools) Call(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
+	t.scopes = append(t.scopes, invocation.Scope)
+	return tool.Result{Content: content.FromText("tool-ok")}, nil
+}
+
+// TestToolInvocationsInheritTurnSessionScope verifies every Tool Invocation
+// produced by one Turn inherits that Turn's Session identity as its execution
+// scope, even across multiple model rounds.
+func TestToolInvocationsInheritTurnSessionScope(t *testing.T) {
+	store := &memoryStore{entries: map[session.ID][]session.Entry{"session-a": {}}}
+	models := &sequenceModel{responses: []model.Response{
+		{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{
+			{ID: "c1", Name: "echo", Arguments: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "echo", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{
+			{ID: "c3", Name: "echo", Arguments: json.RawMessage(`{}`)},
+		}}},
+		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
+	}}
+	tools := &scopeRecordingTools{}
+	exports, _, err := New(context.Background(), Config{}, Dependencies{
+		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exports.Runtime.Run(context.Background(), agent.Turn{SessionID: "session-a", Input: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tools.scopes) != 3 {
+		t.Fatalf("tool invocations = %d, want 3", len(tools.scopes))
+	}
+	for i, scope := range tools.scopes {
+		if scope.SessionID != session.ID("session-a") {
+			t.Fatalf("tool invocation %d scope = %#v, want session-a", i, scope)
+		}
+	}
 }
