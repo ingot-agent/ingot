@@ -18,11 +18,8 @@ Plugin 设计必须遵循：
 |---|---|---|---|
 | [`asset.local`](./asset.local_v0.1.md) | Implemented v0.1 | `asset.Store`（同时满足 `asset.Resolver`） | immutable blob、原子发布、容量与并发边界、重启恢复 |
 | [`http.default`](./http.default_v0.1.md) | Implemented v0.1 | `httpx.Client` | Context authority、请求不可变、共享连接池 |
-| [`filesystem.local`](./filesystem.local_v0.1.md) | Implemented v0.1 | `filesystem.FS` | workspace boundary、安全路径、原子文件操作 |
 | [`session.sqlite`](./session.sqlite_v0.1.md) | Implemented v0.1 (M5) | `session.Store` + `session.Manager` + `session.Query` | transaction ordering、opaque Fork、archive lifecycle、deterministic discovery |
-| [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | 子进程树、环境隔离、输出与时间边界 |
-| [`tool.fs`](./tool.fs_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Filesystem-to-Tool typed adapter |
-| [`tool.edit`](./tool.edit_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Exact UTF-8 replacement、unique-match safety |
+| [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace-scoped working directory、子进程树、环境隔离、输出与时间边界 |
 | [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
 | [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
 | [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
@@ -33,35 +30,31 @@ Plugin 设计必须遵循：
 | [`prompt.default`](./prompt.default_v0.1.md) | Implemented v0.1 | `prompt.Renderer` | Contributor稳定顺序与确定性消息组合 |
 | [`context.compact`](./context.compact_v0.1.md) | Implemented v0.1 | `contextwindow.Compactor` | 非破坏式增量摘要、事实Delta与checkpoint复用 |
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
-| [`app.cli`](./app.cli_v0.1.md) | Implemented v0.1 | `interaction.Channel` + `appcli.Frontend`（app Component无导出） | TUI/plain双前端、一次性AI会话标题、turn取消与受控进程退出 |
 
-共18个Plugin、19个Component；`app.cli`包含`interaction`和`app`两个Component。
+共15个Plugin；`app.backend`包含`host`和`app`两个Component，其余 Plugin 各一个 Component。
 
 ## 依赖与建议实施批次
 
 ```text
-Batch 1  asset.local / http.default / filesystem.local / session.sqlite
-Batch 2  tool.shell / tool.fs / tool.edit / tool.ask / approval / tool.runtime
+Batch 1  asset.local / http.default / session.sqlite（Session + Workspace）
+Batch 2  tool.shell / tool.ask / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
-Batch 5  app.cli / interceptor.script hardening
+Batch 5  app.backend / interceptor.script hardening
 ```
 
-`app.cli/app` 遵循顶层普通 Component 生命周期：`New` 启动
+Component 遵循顶层普通 Component 生命周期：`New` 启动
 instance-owned 后台 loop 并及时返回，Cleanup 取消并 join。frontend 通过 ingot
 ABI 的 `lifecycle.Controller.RequestShutdown` 向 generated main 报告结束意图，
 调用元数据通过 `invocation.Invocation` 读取；二者均为显式 host Dependencies。
 Component 不新增 Builder root 特例，不调用 `os.Exit`，也不使用隐藏全局
-channel。多模态迁移覆盖的官方 Plugin 依赖 SDK v0.2.0，Component ABI 与 host
-Contract 依赖 ingot ABI v0.1.0。`app.cli` 使用当前 SDK interaction 与 M5
-Session capability contracts。
-
-`app.cli/interaction`按进程参数提供两种前端：`chat`为全屏TUI（bubletea v2，markdown transcript、tool block、会话侧栏、Ask选项面板、turn取消），`chat --plain`为可取消行输入+纯文本输出（pipes/重定向）。
+channel。官方 Plugin 依赖当前 SDK（execution/workspace capability 与
+`tool.Invocation`）与 ingot ABI v0.1.0。
 
 ## 共同实现约定
 
 - 一个 Plugin 对应一个独立 Go Module；canonical Plugin ID 来自其 `go.mod` module path。
-- Manifest 显式声明 `[[components]]`；除`app.cli`包含两个Component外，其余16个Plugin均只有`default` Component。
+- Manifest 显式声明 `[[components]]`；除`app.backend`包含`host`与`app`两个Component外，其余 Plugin 均只有`default` Component。
 - Component package 提供当前 package 的 `Dependencies`、`Exports` 和精确签名的 `New`。
 - `New` 可重复、可并发调用，每次创建独立实例，不使用 package-level mutable singleton。
 - Config 只读；需要保留 slice、map、pointer 或 bytes 时先复制。

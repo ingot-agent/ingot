@@ -81,13 +81,13 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 				return 1
 			}
 			_, _ = fmt.Fprintf(cli.Stdout, "  applied image: %s\n", applied.ImageID)
-			_, _ = fmt.Fprintln(cli.Stdout, "\nYou can now run: ingot <command>  (e.g. ingot chat)")
+			_, _ = fmt.Fprintln(cli.Stdout, "\nYou can now run: ingot <command>  (e.g. ingot web)")
 			return 0
 		}
 		_, _ = fmt.Fprintln(cli.Stdout, "\nNext steps:")
 		_, _ = fmt.Fprintf(cli.Stdout, "  1. Edit %s — set your model provider base_url and api_key.\n", result.ConfigPath)
 		_, _ = fmt.Fprintln(cli.Stdout, "  2. Run: ingot apply")
-		_, _ = fmt.Fprintln(cli.Stdout, "  3. Run: ingot chat")
+		_, _ = fmt.Fprintln(cli.Stdout, "  3. Run: ingot web   (open the browser workspace)")
 		return 0
 	case "resolve":
 		if len(rest) != 0 {
@@ -172,11 +172,6 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return cli.runPlugin(ctx, home, rest)
 	case "bundle":
 		return cli.runBundle(ctx, home, rest)
-	case "chat":
-		if len(rest) > 1 || (len(rest) == 1 && rest[0] != "--plain") {
-			return cli.usageError("usage: ingot chat [--plain]")
-		}
-		return cli.runCurrent(ctx, home, arguments)
 	case "help", "--help", "-h":
 		cli.usage()
 		return 0
@@ -440,5 +435,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|bundle ...|plugin ...|chat [--plain]|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|bundle ...|plugin ...|web|runtime command>")
 }

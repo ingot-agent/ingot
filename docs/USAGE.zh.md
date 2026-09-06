@@ -116,7 +116,7 @@ sum = "h1:..."
   -> ingot init          写官方插件集 + plugins.toml + 配置模板
   -> 编辑 config.toml    设置模型提供商
   -> ingot apply         解析 + 构建 + 切换
-  -> ingot chat          运行智能体
+  -> ingot web           打开浏览器工作区
 ```
 
 `apply` 是 `resolve` + `build` + 切换 `current` 的快捷方式。如果希望分步执行，也可以单独运行 `resolve` 和 `build`，检查结果后再切换。
@@ -152,7 +152,7 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 | `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
 | `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
 
-`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot chat`。
+`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot web`。
 
 ### `bundle`
 
@@ -363,18 +363,22 @@ ingot plugin inspect <id-or-name>
 任何非内置的 ingot 命令都会派发到当前 Runtime Image：
 
 ```sh
-# 全屏 TUI（默认，需要终端）
-ingot chat
-
-# 行式纯文本输出，适用于管道与重定向
-ingot chat --plain
+# 启动本地浏览器工作区（默认 profile：app.backend）
+ingot web
 ```
 
-运行时会以你的 stdin/stdout/stderr 执行，并设置 `INGOT_HOME` 指向 ingot home，因此镜像可以找到 `config.toml` 与持久化状态。运行时的退出码会被透传。
+运行时会以 `INGOT_HOME` 指向 ingot home 执行，使镜像能找到 `config.toml` 与持久化状态。运行时的退出码会被透传。
 
-`chat` 是 `app.cli` 的 runtime 命令：不带 `--plain` 时启动全屏 TUI（markdown transcript、tool 调用块、`Ctrl+O` 会话侧栏、Ask 选项面板；`Ctrl+Q` 退出，`Ctrl+C` 取消进行中的 turn，`F1` 帮助）。`chat --plain` 降级为 prompt 行输入与纯文本输出，stdin/stdout 非终端时（管道、重定向、非交互脚本）也能工作。模型 provider 与 API key 在 `config.toml` 中配置，不通过命令行传入。
+`web` 是 `app.backend` 的 runtime 命令：它在本地 HTTP/SSE 地址（默认
+`http://127.0.0.1:7316/`）上提供内嵌 Vue 浏览器工作区并打印该链接。模型
+provider 与 API key 在 `config.toml` 中配置，不通过命令行传入。
 
-首次发送普通消息时，app先用该消息的规范化短文本立即创建Session；首轮成功后再调用一次模型生成稳定标题并替换，后续不自动更新。`/new 项目名`创建人工命名Session，`/new`等待下一条消息自动创建，`/rename 新标题`修改当前标题；人工标题不会被AI覆盖。标题生成失败只保留首条消息标题，不影响对话。
+每个对话都属于一个 Session，Session 绑定到一个不可变的本地 Workspace 目录。
+在浏览器工作区新建对话时选择该 Workspace 路径；应用随即创建 Session、绑定
+Workspace。shell tool 的工作目录只从这份 session-scoped binding 解析；删除
+Session 会一并删除 binding，Fork Session 会继承其 Workspace binding。旧 schema
+迁移出的 Session 可能暂时未绑定；浏览器会引导选择一个已存在的本地目录，并在
+一次性绑定成功前阻止执行。
 
 如果当前没有镜像（或镜像缺失），命令会失败并给出说明。
 
@@ -433,7 +437,7 @@ ArtifactDigest = SHA256(最终二进制内容)
 ingot init
 # 编辑 ~/.ingot/config.toml：填写模型提供商 base_url / api_key
 ingot apply
-ingot chat
+ingot web
 ```
 
 验证 home 是否一致：

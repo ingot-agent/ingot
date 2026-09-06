@@ -14,8 +14,11 @@ import (
 
 	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/observation"
+	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 type recordingObservation struct {
@@ -29,11 +32,36 @@ func (r *recordingObservation) Emit(_ context.Context, detail observation.Detail
 	r.details = append(r.details, detail)
 }
 
+// staticResolver resolves every execution scope to one fixed Binding.
+type staticResolver struct {
+	binding workspace.Binding
+	err     error
+}
+
+func (r staticResolver) Resolve(context.Context, execution.Scope) (workspace.Binding, error) {
+	return r.binding, r.err
+}
+
+// scopeResolver resolves each SessionID to its own workspace root.
+type scopeResolver struct {
+	roots map[session.ID]string
+}
+
+func (r scopeResolver) Resolve(_ context.Context, scope execution.Scope) (workspace.Binding, error) {
+	root, ok := r.roots[scope.SessionID]
+	if !ok {
+		return workspace.Binding{}, workspace.ErrNotAssigned
+	}
+	return workspace.Binding{Root: root}, nil
+}
+
 func testShell(t *testing.T, cfg Config) tool.Tool {
 	t.Helper()
-	if cfg.WorkingDirectory == "" {
-		cfg.WorkingDirectory, _ = os.Getwd()
-	}
+	return testShellRoot(t, cfg, t.TempDir())
+}
+
+func testShellRoot(t *testing.T, cfg Config, root string) tool.Tool {
+	t.Helper()
 	if cfg.Shell == "" {
 		if runtime.GOOS == "windows" {
 			cfg.Shell = os.Getenv("ComSpec")
@@ -44,11 +72,19 @@ func testShell(t *testing.T, cfg Config) tool.Tool {
 			cfg.Shell = "/bin/sh"
 		}
 	}
-	exports, _, err := New(context.Background(), cfg, Dependencies{})
+	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return exports.Tools[0]
+}
+
+// testInvocation builds the runtime envelope for shell_exec under one session.
+func testInvocation(name string, arguments []byte) tool.Invocation {
+	return tool.Invocation{
+		Scope: execution.Scope{SessionID: session.ID("test-session")},
+		Call:  tool.Call{Name: name, Arguments: arguments},
+	}
 }
 
 func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
@@ -61,7 +97,7 @@ func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 	if string(definition.InputSchema) != wantSchema {
 		t.Fatalf("schema = %s, want %s", definition.InputSchema, wantSchema)
 	}
-	result, err := shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: []byte("{\"command\":\"echo hello\"}")})
+	result, err := shell.Invoke(context.Background(), testInvocation("shell_exec", []byte("{\"command\":\"echo hello\"}")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +110,11 @@ func TestShellEmitsStdoutAndStderrProgressOnly(t *testing.T) {
 	workingDirectory, _ := os.Getwd()
 	consumer := &recordingObservation{}
 	exports, _, err := New(context.Background(), Config{
-		WorkingDirectory: workingDirectory,
-		Shell:            testShellPath(),
-	}, Dependencies{Observation: ingotabi.Some[observation.Consumer](consumer)})
+		Shell: testShellPath(),
+	}, Dependencies{
+		Workspace:   staticResolver{binding: workspace.Binding{Root: workingDirectory}},
+		Observation: ingotabi.Some[observation.Consumer](consumer),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,14 +142,14 @@ func TestShellEmitsStdoutAndStderrProgressOnly(t *testing.T) {
 
 func TestShellOutputLimitAndArgumentValidation(t *testing.T) {
 	shell := testShell(t, Config{MaxOutputBytes: 3})
-	result, err := shell.Invoke(context.Background(), tool.Call{Arguments: []byte("{\"command\":\"echo hello\"}")})
+	result, err := shell.Invoke(context.Background(), testInvocation("", []byte("{\"command\":\"echo hello\"}")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(resultText(result), outputTruncationMarker) {
 		t.Fatalf("missing truncation marker: %q", resultText(result))
 	}
-	_, err = shell.Invoke(context.Background(), tool.Call{Arguments: []byte("{\"command\":\"\"}")})
+	_, err = shell.Invoke(context.Background(), testInvocation("", []byte("{\"command\":\"\"}")))
 	if !errors.Is(err, ErrInvalidArguments) {
 		t.Fatalf("empty command error = %v", err)
 	}
@@ -155,7 +193,7 @@ func TestShellTimeoutReturnsResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: arguments})
+	result, err := shell.Invoke(context.Background(), testInvocation("shell_exec", arguments))
 	if err != nil {
 		t.Fatalf("Invoke returned error: %v", err)
 	}
@@ -180,7 +218,7 @@ func TestShellTimeoutHonorsParentCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = shell.Invoke(ctx, tool.Call{Name: "shell_exec", Arguments: arguments})
+	_, err = shell.Invoke(ctx, testInvocation("shell_exec", arguments))
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled parent ctx error = %v, want context.Canceled", err)
 	}
@@ -194,7 +232,7 @@ func TestShellUsesConfiguredWorkingDirectoryAndIsolatedEnvironment(t *testing.T)
 	if runtime.GOOS == "windows" {
 		command = `cd & if defined ` + secretKey + ` (echo inherited) else (echo isolated)`
 	}
-	shell := testShell(t, Config{WorkingDirectory: workingDirectory})
+	shell := testShellRoot(t, Config{}, workingDirectory)
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
 		t.Fatal(err)
@@ -247,10 +285,9 @@ func TestEnvironmentKeysAreCaseInsensitiveOnWindows(t *testing.T) {
 		t.Skip("Windows environment names are case-insensitive")
 	}
 	_, _, err := New(context.Background(), Config{
-		WorkingDirectory: t.TempDir(),
-		Shell:            testShellPath(),
-		Environment:      map[string]string{"PATH": "one", "Path": "two"},
-	}, Dependencies{})
+		Shell:       testShellPath(),
+		Environment: map[string]string{"PATH": "one", "Path": "two"},
+	}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}})
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("case-insensitive duplicate error = %v", err)
 	}
@@ -262,7 +299,7 @@ func invokeShell(t *testing.T, shell tool.Tool, command string) (tool.Result, er
 	if err != nil {
 		t.Fatal(err)
 	}
-	return shell.Invoke(context.Background(), tool.Call{Name: "shell_exec", Arguments: arguments})
+	return shell.Invoke(context.Background(), testInvocation("shell_exec", arguments))
 }
 
 func resultText(result tool.Result) string {
@@ -278,4 +315,114 @@ func testShellPath() string {
 		return filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
 	}
 	return "/bin/sh"
+}
+
+func TestShellResolvesWorkspaceFromInvocationScope(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	resolver := scopeResolver{roots: map[session.ID]string{
+		"session-a": rootA,
+		"session-b": rootB,
+	}}
+	cfg := Config{Shell: testShellPath()}
+	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := exports.Tools[0]
+	run := func(scope session.ID) string {
+		result, err := shell.Invoke(context.Background(), tool.Invocation{
+			Scope: execution.Scope{SessionID: scope},
+			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"pwd"}`)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resultText(result)
+	}
+	if a, b := run("session-a"), run("session-b"); !strings.Contains(a, rootA) || !strings.Contains(b, rootB) {
+		t.Fatalf("session-a pwd=%q session-b pwd=%q", a, b)
+	}
+}
+
+func TestShellRejectsUnboundAndUnknownSessionScope(t *testing.T) {
+	exports, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{
+		Workspace: scopeResolver{roots: map[session.ID]string{"session-a": t.TempDir()}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := exports.Tools[0]
+	_, err = shell.Invoke(context.Background(), tool.Invocation{
+		Scope: execution.Scope{SessionID: "unbound"},
+		Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"echo hi"}`)},
+	})
+	if !errors.Is(err, workspace.ErrNotAssigned) {
+		t.Fatalf("unbound scope error = %v", err)
+	}
+	_, err = shell.Invoke(context.Background(), tool.Invocation{
+		Scope: execution.Scope{SessionID: "missing-session"},
+		Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"echo hi"}`)},
+	})
+	if err == nil {
+		t.Fatal("unknown session scope should error")
+	}
+}
+
+func TestShellNewRejectsMissingWorkspaceResolver(t *testing.T) {
+	if _, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing resolver error = %v", err)
+	}
+}
+
+// TestConcurrentSessionsResolveIndependentWorkspaces runs concurrent shell
+// invocations for two Sessions bound to two different Workspaces and asserts
+// every command executes in its own session's root. This is the tool-level
+// acceptance for the multi-session execution-scope model: no process-cwd,
+// global-mutable-workspace, or context.Value source is involved.
+func TestConcurrentSessionsResolveIndependentWorkspaces(t *testing.T) {
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	exports, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{
+		Workspace: scopeResolver{roots: map[session.ID]string{"session-a": rootA, "session-b": rootB}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := exports.Tools[0]
+	invoke := func(scope session.ID) (string, error) {
+		result, err := shell.Invoke(context.Background(), tool.Invocation{
+			Scope: execution.Scope{SessionID: scope},
+			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"pwd"}`)},
+		})
+		if err != nil {
+			return "", err
+		}
+		return resultText(result), nil
+	}
+	const rounds = 20
+	var wg sync.WaitGroup
+	results := make([]string, rounds*2)
+	errs := make([]error, rounds*2)
+	for i := 0; i < rounds; i++ {
+		wg.Add(2)
+		go func(i int) { defer wg.Done(); results[2*i], errs[2*i] = invoke("session-a") }(i)
+		go func(i int) { defer wg.Done(); results[2*i+1], errs[2*i+1] = invoke("session-b") }(i)
+	}
+	wg.Wait()
+	for i := 0; i < rounds*2; i++ {
+		if errs[i] != nil {
+			t.Fatalf("round %d: %v", i, errs[i])
+		}
+		want := rootA
+		if i%2 == 1 {
+			want = rootB
+		}
+		if !strings.Contains(results[i], want) {
+			t.Fatalf("round %d pwd=%q does not contain root %q", i, results[i], want)
+		}
+		if results[i] != "" && strings.Contains(results[i], rootA) && strings.Contains(results[i], rootB) {
+			t.Fatalf("round %d pwd=%q cross-contaminated", i, results[i])
+		}
+	}
 }

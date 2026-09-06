@@ -6,7 +6,9 @@
 
 ## 1. 定位
 
-`tool.shell` 向 Agent 提供受配置约束的 shell command tool。它负责进程启动、工作目录、环境、输出限制、Context cancellation 和进程树回收；是否允许执行由 `tool.Runtime` 中的 approval/policy Interceptor 决定。
+`tool.shell` 向 Agent 提供受配置约束的 shell command tool。它负责进程启动、工作目录解析、环境、输出限制、Context cancellation 和进程树回收；是否允许执行由 `tool.Runtime` 中的 approval/policy Interceptor 决定。
+
+工作目录 authority 只来自 Session Workspace：每次 `Invocation` 携带显式 `execution.Scope`，`tool.shell` 通过 `workspace.Resolver` 解析该 Session 的 Binding，并以其 `Root` 作为 child process 的初始 cwd。没有 process cwd、config `working_directory`、HOME 或其他 ambient fallback。
 
 Plugin 本身不绕过 `tool.Runtime` 调用，不内置交互审批，也不提供 arbitrary executable registry。
 
@@ -14,6 +16,7 @@ Plugin 本身不绕过 `tool.Runtime` 调用，不内置交互审批，也不提
 
 ```go
 type Dependencies struct {
+    Workspace   workspace.Resolver
     Observation ingotabi.Optional[observation.Consumer]
 }
 
@@ -34,7 +37,6 @@ v0.1 导出一个 tool，稳定名称为 `shell_exec`。
 
 ```go
 type Config struct {
-    WorkingDirectory string            `toml:"working_directory"`
     Shell            string            `toml:"shell"`
     TimeoutSeconds   int               `toml:"timeout_seconds"`
     MaxOutputBytes   int               `toml:"max_output_bytes"`
@@ -45,7 +47,8 @@ type Config struct {
 
 v0.1 决策：
 
-- `working_directory` required，`New` 将其解析为存在的 absolute directory；
+- `working_directory` 不再是 Config：命令工作目录由每个 `Invocation` 的 `execution.Scope` 经 `workspace.Resolver` 决定，配置阶段无法预先固定；
+- `workspace.Resolver` 为 required dependency，缺少时 `New` 返回 Config Error；
 - `shell` required，使用 absolute executable path；不通过 PATH 搜索；
 - `timeout_seconds` absent/0 默认 120，必须 `> 0`；
 - `max_output_bytes` absent/0 默认 1 MiB，必须 `> 0`；
@@ -53,7 +56,7 @@ v0.1 决策：
 - environment key 重复、非法或 `inherit_env` 中变量不存在时返回 Config Error；Windows 按环境变量名大小写不敏感的语义判断重复；
 - Config 不提供 approval bypass、root shell 或 unrestricted environment 开关。
 
-`working_directory` 与 `filesystem.local.root` 在 v0.1 是两个独立 Runtime Config。它们通常配置为同一目录，但不通过隐藏 API互相读取。
+Workspace Binding 是 Session-scoped 的本地工作目录；`tool.shell` 只在执行侧读取它。`workspace.Resolver` 是 execution-side 的唯一权威来源。
 
 ## 4. Tool Definition
 
@@ -83,7 +86,8 @@ stderr:
 ...
 ```
 
-`working_directory` 只设置 child process 的初始 cwd，不是 filesystem、network、process 或 OS 权限 sandbox。
+解析得到的 Workspace Root 只设置 child process 的初始 cwd，不是 filesystem、network、process 或 OS 权限 sandbox；Sandbox 是独立的 security capability，不在本 Plugin 内实现。
+
 
 stdout/stderr 分别捕获，最终按固定顺序呈现。`max_output_bytes` 在构造采集器时固定分配为 stdout 配额 `ceil(limit/2)` 和 stderr 配额 `floor(limit/2)`；任一流超过自己的配额时截断，并在实际被截断的流中显式添加 truncation marker。若截断点落在 UTF-8 多字节字符中间，丢弃该流末尾不完整的编码字节后再添加 marker，不能由截断制造非法 UTF-8。采集器继续 drain 两条 pipe，不得静默丢弃。stdout 与 stderr reader 的完成和错误必须分别归因，不能按 goroutine 完成顺序推断来源。无 exit code 的启动或 Context 错误直接返回 error。
 
@@ -106,10 +110,10 @@ stdout/stderr 分别捕获，最终按固定顺序呈现。`max_output_bytes` �
 
 Plugin 仍需执行自身安全边界：
 
-- 固定 working directory（仅是初始 cwd，不是 sandbox）；
+- 命令工作目录只来自 `workspace.Resolver`，不依赖 process cwd 或隐藏 context 约定；
 - environment allowlist；
 - output 和 execution time limit；
-- 不允许模型覆盖 shell path、working directory 或 environment；
+- 不允许模型覆盖 shell path 或 environment；
 - Context error 保留 `context.Canceled`/`DeadlineExceeded`；
 - 定义 `ErrOutputLimit` 仅用于内部采集失败；正常截断作为 Result metadata；
 - 定义 `ErrProcessCleanup` 表示取消后无法确认 containment primitive 内的进程退出。

@@ -16,6 +16,8 @@ import (
 	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/operation"
+	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 type testProcess struct {
@@ -135,7 +137,15 @@ func TestCleanupCancelsSSEAndWaitsForBackgroundTurn(t *testing.T) {
 		<-release
 		return agent.Execution{}, ctx.Err()
 	}}
-	deps := testDependencies(t, runtime, &testStore{})
+	store := &testStore{}
+	created, err := store.Create(context.Background(), session.CreateRequest{Title: "running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Assign(context.Background(), created.ID, workspace.Binding{Root: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	deps := testDependencies(t, runtime, store)
 	op := operationFixture("wait")
 	op.invoke = func(ctx context.Context, _ operation.Request) (operation.Result, error) {
 		close(operationStarted)

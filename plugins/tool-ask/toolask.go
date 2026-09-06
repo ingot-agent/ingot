@@ -49,25 +49,25 @@ type Config struct {
 	MaxOptionsBytes  int `toml:"max_options_bytes"`
 }
 
-// Dependencies contains the host interaction channel.
+// Dependencies contains the host capability that binds interaction channels to
+// explicit dynamic execution scopes.
 type Dependencies struct {
-	Interaction interaction.Channel
+	Interaction interaction.ExecutionBinder
 }
 
 // Exports contains the ask_user tool.
 type Exports struct{ Tools []tool.Tool }
 
 type askTool struct {
-	channel                          interaction.Channel
+	interactions                     interaction.ExecutionBinder
 	maxPromptBytes, maxResponseBytes int
 	maxOptions, maxOptionsBytes      int
 }
 
 // businessResult reports a deterministic ask_user failure as a normal tool
 // result so the model can read the reason and continue, mirroring the tool.shell
-// and tool.fs convention that known business outcomes carry a nil error. A
-// canceled or expired parent context is preserved as an error so the surrounding
-// turn stops.
+// convention that known business outcomes carry a nil error. A canceled or
+// expired parent context is preserved as an error so the surrounding turn stops.
 func (t *askTool) businessResult(ctx context.Context, err error) (tool.Result, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return tool.Result{}, ctxErr
@@ -152,7 +152,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		return Exports{}, nil, fmt.Errorf("max_options_bytes must be positive: %w", ErrInvalidConfig)
 	}
 	return Exports{Tools: []tool.Tool{&askTool{
-		channel: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse,
+		interactions: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse,
 		maxOptions: maxOptions, maxOptionsBytes: maxOptionsBytes,
 	}}}, nil, nil
 }
@@ -165,13 +165,14 @@ func (t *askTool) Definition() tool.Definition {
 	}
 }
 
-func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, error) {
+func (t *askTool) Invoke(ctx context.Context, invocation tool.Invocation) (tool.Result, error) {
 	if ctx == nil {
 		return tool.Result{}, fmt.Errorf("ask_user: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
+	call := invocation.Call
 	if call.Name != "" && call.Name != "ask_user" {
 		return tool.Result{}, fmt.Errorf("call name %q: %w", call.Name, ErrInvalidArguments)
 	}
@@ -192,7 +193,14 @@ func (t *askTool) Invoke(ctx context.Context, call tool.Call) (tool.Result, erro
 		}
 		return tool.Result{}, err
 	}
-	response, err := t.channel.Request(ctx, interaction.Request{
+	channel, err := t.interactions.Bind(invocation.Scope)
+	if err != nil {
+		return tool.Result{}, fmt.Errorf("bind ask_user interaction: %w", err)
+	}
+	if isNil(channel) {
+		return tool.Result{}, fmt.Errorf("bind ask_user interaction: nil channel: %w", interaction.ErrUnavailable)
+	}
+	response, err := channel.Request(ctx, interaction.Request{
 		Name:        requestName,
 		Description: *args.Prompt,
 		Fields: []interaction.Field{{

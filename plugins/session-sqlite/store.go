@@ -13,11 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 	_ "modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -36,6 +38,15 @@ CREATE TABLE IF NOT EXISTS entries (
     payload    BLOB NOT NULL,
 
     PRIMARY KEY (session_id, sequence),
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS session_workspaces (
+    session_id TEXT PRIMARY KEY,
+    root       TEXT NOT NULL,
+
     FOREIGN KEY (session_id)
         REFERENCES sessions(id)
         ON DELETE CASCADE
@@ -108,7 +119,7 @@ func (s *store) initialize(ctx context.Context) error {
 	if err := s.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("inspect session schema version: %w", err)
 	}
-	if version != 0 && version != schemaVersion {
+	if version < 0 || version > schemaVersion {
 		return fmt.Errorf("schema version %d: %w", version, ErrUnsupportedSchema)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -231,6 +242,83 @@ func (s *store) Load(ctx context.Context, id session.ID) ([]session.Entry, error
 		return nil, fmt.Errorf("finish loading session %q: %w", id, err)
 	}
 	return entries, nil
+}
+
+// Resolve returns the Workspace Binding durably assigned to the Session in the
+// execution scope. An unknown Session or an unassigned Session is an error.
+func (s *store) Resolve(ctx context.Context, scope execution.Scope) (workspace.Binding, error) {
+	if ctx == nil {
+		return workspace.Binding{}, context.Canceled
+	}
+	if scope.SessionID == "" {
+		return workspace.Binding{}, fmt.Errorf("resolve workspace: missing session id: %w", session.ErrNotFound)
+	}
+	if err := ctx.Err(); err != nil {
+		return workspace.Binding{}, err
+	}
+	var root string
+	err := s.db.QueryRowContext(ctx, "SELECT root FROM session_workspaces WHERE session_id = ?", string(scope.SessionID)).Scan(&root)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, metadataErr := metadataByID(ctx, s.db, scope.SessionID); metadataErr != nil {
+			if errors.Is(metadataErr, session.ErrNotFound) {
+				return workspace.Binding{}, fmt.Errorf("resolve workspace for session %q: %w", scope.SessionID, session.ErrNotFound)
+			}
+			return workspace.Binding{}, metadataErr
+		}
+		return workspace.Binding{}, fmt.Errorf("resolve workspace for session %q: %w", scope.SessionID, workspace.ErrNotAssigned)
+	}
+	if err != nil {
+		return workspace.Binding{}, fmt.Errorf("resolve workspace for session %q: %w", scope.SessionID, err)
+	}
+	return workspace.Binding{Root: root}, nil
+}
+
+// Assign durably binds one Session to one immutable workspace root. The
+// check-and-insert decision is atomic with respect to lifecycle operations.
+func (s *store) Assign(ctx context.Context, id session.ID, binding workspace.Binding) error {
+	if ctx == nil {
+		return context.Canceled
+	}
+	if err := s.validateBinding(binding); err != nil {
+		return fmt.Errorf("assign workspace to session %q: %w", id, err)
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := metadataByID(ctx, tx, id); err != nil {
+		return fmt.Errorf("assign workspace to session %q: %w", id, err)
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, "SELECT root FROM session_workspaces WHERE session_id = ?", string(id)).Scan(&existing)
+	if err == nil {
+		return fmt.Errorf("assign workspace to session %q: %w", id, workspace.ErrAlreadyAssigned)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("assign workspace to session %q: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO session_workspaces (session_id, root) VALUES (?, ?)", string(id), binding.Root); err != nil {
+		return fmt.Errorf("assign workspace to session %q: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit workspace assignment to session %q: %w", id, err)
+	}
+	return nil
+}
+
+func (s *store) validateBinding(binding workspace.Binding) error {
+	if binding.Root == "" || !filepath.IsAbs(binding.Root) {
+		return workspace.ErrInvalidBinding
+	}
+	info, err := os.Stat(binding.Root)
+	if err != nil {
+		return fmt.Errorf("stat workspace root %q: %v: %w", binding.Root, err, workspace.ErrInvalidBinding)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("workspace root %q is not a directory: %w", binding.Root, workspace.ErrInvalidBinding)
+	}
+	return nil
 }
 
 func (s *store) Get(ctx context.Context, id session.ID) (session.Metadata, error) {
@@ -368,6 +456,15 @@ WHERE session_id = ?
 ORDER BY sequence`, string(targetID), string(source)); err != nil {
 		return session.Metadata{}, fmt.Errorf("copy entries from session %q: %w", source, err)
 	}
+	// The fork target inherits the source's immutable Workspace Binding when one
+	// exists. An unbound source produces an unbound target.
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO session_workspaces (session_id, root)
+SELECT ?, root
+FROM session_workspaces
+WHERE session_id = ?`, string(targetID), string(source)); err != nil {
+		return session.Metadata{}, fmt.Errorf("copy workspace binding from session %q: %w", source, err)
+	}
 	if err := tx.Commit(); err != nil {
 		return session.Metadata{}, fmt.Errorf("commit fork of session %q: %w", source, err)
 	}
@@ -479,7 +576,9 @@ func notFound(id session.ID) error {
 }
 
 var (
-	_ session.Store   = (*store)(nil)
-	_ session.Manager = (*store)(nil)
-	_ session.Query   = (*store)(nil)
+	_ session.Store      = (*store)(nil)
+	_ session.Manager    = (*store)(nil)
+	_ session.Query      = (*store)(nil)
+	_ workspace.Resolver = (*store)(nil)
+	_ workspace.Manager  = (*store)(nil)
 )

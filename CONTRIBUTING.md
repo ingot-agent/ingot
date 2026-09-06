@@ -95,7 +95,7 @@ the repository:
 
 ```text
 feat(builder): support a general component rule
-fix(app-cli): preserve cancellation errors
+fix(app-webui): scope event publication
 docs: clarify plugin composition
 ```
 

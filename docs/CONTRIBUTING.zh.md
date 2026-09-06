@@ -74,7 +74,7 @@ Commit Subject 应简洁、使用祈使语气，并遵循仓库已有风格：
 
 ```text
 feat(builder): support a general component rule
-fix(app-cli): preserve cancellation errors
+fix(app-webui): scope event publication
 docs: clarify plugin composition
 ```
 

@@ -35,11 +35,11 @@ the graph.
 
 | Layer | Official plugin examples | Possible replacement |
 |---|---|---|
-| Application / UI | `app.cli` | HTTP or WebSocket gateway, customer-service connector, chat platform adapter |
+| Application / UI | `app.backend` (browser workspace) | HTTP or WebSocket gateway, customer-service connector, chat platform adapter |
 | Agent loop | `agent.default` | Triage workflow, domain-specific loop, deterministic orchestration |
 | Model access | `http.default`, `model.openai-compatible`, `model.runtime` | Enterprise transport, another provider, custom routing or failover |
 | Binary assets | `asset.local` | Object storage, shared media service, encrypted or remote immutable blobs |
-| Tools | `tool.shell`, `tool.fs`, `tool.edit`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
+| Tools | `tool.shell`, `tool.ask`, `tool.runtime` | CRM, order system, search, database, or internal APIs |
 | Policy | `interceptor.approval`, `interceptor.script` | Audit, authorization, rate limits, organization-specific guardrails |
 | State and context | `session.sqlite`, `context.compact`, `prompt.default` | Alternate session backends, retrieval, custom memory and prompting |
 
@@ -75,9 +75,9 @@ the build system and plugin packages.
 The bundled profile produces a capable terminal-based coding agent, but that is
 one composition of ingot, not its architectural limit.
 
-For a customer-service agent, for example, replace `app.cli` with a network
+For a customer-service agent, for example, replace `app.backend` with a network
 plugin that receives conversations from the support system and streams replies
-back. Replace shell and filesystem tools with plugins for tickets, CRM, orders,
+back. Replace shell and question tools with plugins for tickets, CRM, orders,
 and the knowledge base. Keep the default model runtime and agent loop, or swap
 those too. The Builder verifies the new graph and emits the same kind of
 self-contained Runtime Image, ready to distribute without shipping a plugin
@@ -154,6 +154,38 @@ Changing a runtime value only changes `config.toml`. Changing an implementation
 means changing the plugin set and building a new image; the old image remains
 available for rollback.
 
+## Two dependency dimensions
+
+ingot composes capabilities along two independent dimensions:
+
+```text
+Static Component Graph
+    describes what a Component depends on
+    → typed capability dependencies resolved at build time
+
+Dynamic Execution Scope
+    describes which execution domain one invocation belongs to
+    → explicit execution.Scope carried by runtime invocation envelopes
+```
+
+The static graph answers "what capability does this component need"; the
+dynamic execution scope answers "whose request is this call". Correctness-
+critical execution identity is expressed by public SDK request and invocation
+contracts (for example `tool.Invocation`), never by hidden `context.Value`
+conventions or ambient process state.
+
+Execution-scoped host effects follow the same rule: a plugin combines its
+statically wired `interaction.ExecutionBinder` with the explicit invocation
+scope to derive a bound Channel. Observation correlation may enrich tracing or
+presentation, but it never supplies or overrides Session routing.
+
+The bundled coding agent is the reference consumer of this model: a Workspace
+Binding maps each Session to one immutable local working root, `tool.shell`
+obtains its working directory only from the session-scoped `workspace.Resolver`,
+and `session.sqlite` persists both Session and Workspace capabilities. The
+Builder continues to understand only the static Component Graph; it has no
+special knowledge of Session or Workspace semantics.
+
 ## The plugin model
 
 | Concept | Meaning |
@@ -197,7 +229,7 @@ To add or replace a plugin:
 ```sh
 ingot plugin add github.com/example/my-plugin@v1.2.3
 ingot plugin add --path ../my-local-plugin
-ingot plugin remove app.cli
+ingot plugin remove tool.ask
 ingot apply
 ```
 
@@ -252,7 +284,7 @@ inspect     Inspect the environment or one plugin as JSON
 rollback    Activate the previous image
 gc          Remove old images while preserving rollback safety
 plugin      add | remove | update | reorder | list | inspect
-<other>     Dispatch to the active image, for example ingot chat
+<other>     Dispatch to the active image, for example ingot web
 ```
 
 See the [Usage Guide](./docs/USAGE.md) or
@@ -295,17 +327,14 @@ Run the Builder, integration, SDK, and plugin tests from this directory:
 ```sh
 go test -race ./...
 for plugin_dir in plugins/*; do
-  if [ "$plugin_dir" = plugins/app-cli ]; then
-    (cd "$plugin_dir" && GOWORK=off go test -race ./...)
-  else
-    (cd "$plugin_dir" && go test -race ./...)
-  fi
+  (cd "$plugin_dir" && go test -race ./...)
 done
 (cd ../sdk && go test -race ./...)
 ```
 
-`app-cli` remains on SDK v0.1.3 until its planned rewrite, so its legacy suite
-is intentionally isolated from the v0.2 workspace.
+The repository `go.work` compiles the official plugins against the local SDK
+and ingot ABI checkouts so a coordinated cross-repository refactor can be
+developed and tested before either module is released.
 
 ## Roadmap
 

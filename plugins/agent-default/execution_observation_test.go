@@ -71,7 +71,7 @@ func (t *progressTools) Definitions() []tool.Definition {
 	return []tool.Definition{{Name: "echo", Description: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 }
 
-func (t *progressTools) Call(ctx context.Context, _ tool.Call) (tool.Result, error) {
+func (t *progressTools) Call(ctx context.Context, _ tool.Invocation) (tool.Result, error) {
 	t.observation.Emit(ctx, observation.ToolProgress{Progress: tool.Progress{Channel: "stdout", Content: content.FromText("working")}})
 	if t.err != nil {
 		return tool.Result{}, t.err

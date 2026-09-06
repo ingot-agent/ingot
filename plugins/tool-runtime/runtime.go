@@ -32,7 +32,8 @@ var (
 	ErrInvalidDefinition = errors.New("invalid tool definition")
 	// ErrInvalidResult indicates invalid content or an oversized result.
 	ErrInvalidResult = errors.New("invalid tool result")
-	// ErrCallMutation indicates that an interceptor changed a validated Call.
+	// ErrCallMutation indicates that an interceptor changed a validated Invocation
+	// (its execution Scope or its Call payload).
 	ErrCallMutation = errors.New("tool call mutation is not allowed")
 	// ErrPostDispatchRejection indicates that a tool or interceptor returned a
 	// pre-dispatch sentinel after the Tool.Invoke dispatch boundary.
@@ -204,13 +205,14 @@ func (r *runtime) Definitions() []tool.Definition {
 	return result
 }
 
-func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error) {
+func (r *runtime) Call(ctx context.Context, invocation tool.Invocation) (tool.Result, error) {
 	if ctx == nil {
 		return tool.Result{}, fmt.Errorf("tool runtime: nil context")
 	}
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
+	call := invocation.Call
 	if len(call.Arguments) > r.maxArguments {
 		return tool.Result{}, fmt.Errorf("tool %q arguments exceed limit: %w", call.Name, tool.ErrInvalidArguments)
 	}
@@ -221,13 +223,16 @@ func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error)
 	if !ok {
 		return tool.Result{}, fmt.Errorf("tool %q: %w", call.Name, tool.ErrNotFound)
 	}
-	request := tool.Call{
-		ID:        call.ID,
-		Name:      call.Name,
-		Arguments: append(json.RawMessage(nil), call.Arguments...),
+	request := tool.Invocation{
+		Scope: invocation.Scope,
+		Call: tool.Call{
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: append(json.RawMessage(nil), call.Arguments...),
+		},
 	}
 	var value any
-	decoder := json.NewDecoder(bytes.NewReader(request.Arguments))
+	decoder := json.NewDecoder(bytes.NewReader(request.Call.Arguments))
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
 		return tool.Result{}, fmt.Errorf("tool %q arguments: %w: %w", call.Name, tool.ErrInvalidArguments, err)
@@ -235,41 +240,41 @@ func (r *runtime) Call(ctx context.Context, call tool.Call) (tool.Result, error)
 	if err := entry.schema.Validate(value); err != nil {
 		return tool.Result{}, fmt.Errorf("tool %q arguments do not satisfy schema: %w: %w", call.Name, tool.ErrInvalidArguments, err)
 	}
-	original := cloneCall(request)
+	original := cloneInvocation(request)
 	if err := ctx.Err(); err != nil {
 		return tool.Result{}, err
 	}
 	dispatched := false
-	terminal := func(invokeCtx context.Context, selected tool.Call) (tool.Result, error) {
+	terminal := func(invokeCtx context.Context, selected tool.Invocation) (tool.Result, error) {
 		if invokeCtx == nil {
 			return tool.Result{}, errors.New("tool interceptor supplied nil context")
 		}
-		if !sameCall(selected, original) {
-			return tool.Result{}, fmt.Errorf("tool %q: %w", original.Name, ErrCallMutation)
+		if !sameInvocation(selected, original) {
+			return tool.Result{}, fmt.Errorf("tool %q: %w", original.Call.Name, ErrCallMutation)
 		}
-		if err := validateCallArguments(selected.Name, entry.schema, selected.Arguments); err != nil {
+		if err := validateCallArguments(selected.Call.Name, entry.schema, selected.Call.Arguments); err != nil {
 			return tool.Result{}, err
 		}
 		if err := invokeCtx.Err(); err != nil {
 			return tool.Result{}, err
 		}
 		dispatched = true
-		result, err := entry.tool.Invoke(invokeCtx, cloneCall(selected))
+		result, err := entry.tool.Invoke(invokeCtx, cloneInvocation(selected))
 		if err != nil && isPreDispatchRejection(err) {
-			return tool.Result{}, postDispatchRejection(original.Name, err)
+			return tool.Result{}, postDispatchRejection(original.Call.Name, err)
 		}
 		return result, err
 	}
-	next := pipeline.Compose[tool.Call, tool.Result](terminal, r.interceptors...)
+	next := pipeline.Compose[tool.Invocation, tool.Result](terminal, r.interceptors...)
 	result, err := next(ctx, request)
 	if err != nil {
 		if dispatched && isPreDispatchRejection(err) {
-			return tool.Result{}, postDispatchRejection(original.Name, err)
+			return tool.Result{}, postDispatchRejection(original.Call.Name, err)
 		}
 		return tool.Result{}, err
 	}
-	if !sameCall(request, original) {
-		return tool.Result{}, fmt.Errorf("tool %q: %w", original.Name, ErrCallMutation)
+	if !sameInvocation(request, original) {
+		return tool.Result{}, fmt.Errorf("tool %q: %w", original.Call.Name, ErrCallMutation)
 	}
 	if err := r.validateResult(call.Name, result); err != nil {
 		return tool.Result{}, err
@@ -336,8 +341,17 @@ func cloneCall(call tool.Call) tool.Call {
 	return call
 }
 
+func cloneInvocation(invocation tool.Invocation) tool.Invocation {
+	invocation.Call = cloneCall(invocation.Call)
+	return invocation
+}
+
 func sameCall(left, right tool.Call) bool {
 	return left.ID == right.ID && left.Name == right.Name && bytes.Equal(left.Arguments, right.Arguments)
+}
+
+func sameInvocation(left, right tool.Invocation) bool {
+	return left.Scope == right.Scope && sameCall(left.Call, right.Call)
 }
 func isNil(value any) bool {
 	if value == nil {

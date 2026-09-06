@@ -184,11 +184,11 @@ type modelHook struct{ hook normalizedHook }
 type streamHook struct{ hook normalizedHook }
 type agentHook struct{ hook normalizedHook }
 
-func (h *toolHook) Invoke(ctx context.Context, request tool.Call, next pipeline.Next[tool.Call, tool.Result]) (tool.Result, error) {
+func (h *toolHook) Invoke(ctx context.Context, request tool.Invocation, next pipeline.Next[tool.Invocation, tool.Result]) (tool.Result, error) {
 	if next == nil {
 		return tool.Result{}, errors.New("script tool interceptor: nil next")
 	}
-	projection, err := projectToolRequest(request)
+	projection, err := projectToolRequest(request.Call)
 	if err != nil {
 		return tool.Result{}, err
 	}

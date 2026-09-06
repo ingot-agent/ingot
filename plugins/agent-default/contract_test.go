@@ -27,7 +27,7 @@ func (modelRuntime) Complete(context.Context, model.Request) (model.Response, er
 type toolRuntime struct{}
 
 func (toolRuntime) Definitions() []tool.Definition { return nil }
-func (toolRuntime) Call(context.Context, tool.Call) (tool.Result, error) {
+func (toolRuntime) Call(context.Context, tool.Invocation) (tool.Result, error) {
 	return tool.Result{}, nil
 }
 

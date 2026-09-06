@@ -4,7 +4,15 @@ async function ready(page: Page, base = '') {
   await page.goto(base + '/#/new')
   await expect(page.getByText('Connected', { exact: true })).toBeVisible()
 }
+async function chooseWorkspace(page: Page) {
+  const browse = page.getByRole('button', { name: 'Choose workspace folder', exact: true })
+  if (await browse.count()) {
+    await browse.click()
+    await page.getByRole('button', { name: 'Select this folder', exact: true }).click()
+  }
+}
 async function send(page: Page, input: string) {
+  await chooseWorkspace(page)
   await page.getByRole('textbox', { name: 'Message your agent…', exact: true }).fill(input)
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
   await expect(page).toHaveURL(/#\/sessions\//)
@@ -148,6 +156,7 @@ test('attachment-only upload can be previewed after refreshing', async ({ page }
   await ready(page)
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aO2sAAAAASUVORK5CYII=', 'base64')
   await page.locator('input[type=file]').setInputFiles({ name: 'pixel.png', mimeType: 'image/png', buffer: png })
+  await chooseWorkspace(page)
   await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
   await expect(page.getByText('Attachment received.', { exact: true })).toBeVisible()

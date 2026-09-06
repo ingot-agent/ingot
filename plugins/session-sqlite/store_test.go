@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 func TestPersistenceLifecycleForkAndDelete(t *testing.T) {
@@ -295,5 +299,215 @@ func assertNotFoundAfterDelete(t *testing.T, created *store, id session.ID) {
 		if err := check.run(); !errors.Is(err, session.ErrNotFound) {
 			t.Fatalf("%s after Delete error=%v", check.name, err)
 		}
+	}
+}
+
+func TestWorkspaceAssignResolveAndDuplicate(t *testing.T) {
+	ctx := context.Background()
+	rootA := t.TempDir()
+	rootB := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "sessions.sqlite3")
+	created, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = created.close() })
+	created.generateID = func() (session.ID, error) { return "s", nil }
+
+	metadata, err := created.Create(ctx, session.CreateRequest{Title: "Session A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ID != "s" {
+		t.Fatalf("session id = %q", metadata.ID)
+	}
+	if err := created.Assign(ctx, "s", workspace.Binding{Root: rootA}); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := created.Resolve(ctx, execution.Scope{SessionID: "s"})
+	if err != nil || binding.Root != rootA {
+		t.Fatalf("binding=%#v err=%v", binding, err)
+	}
+	if err := created.Assign(ctx, "s", workspace.Binding{Root: rootB}); !errors.Is(err, workspace.ErrAlreadyAssigned) {
+		t.Fatalf("duplicate assign error=%v", err)
+	}
+}
+
+func TestWorkspaceAssignValidationAndUnknownSession(t *testing.T) {
+	ctx := context.Background()
+	validRoot := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "sessions.sqlite3")
+	created, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = created.close() })
+
+	if err := created.Assign(ctx, "missing", workspace.Binding{Root: validRoot}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("unknown session assign error=%v", err)
+	}
+	created.generateID = func() (session.ID, error) { return "s", nil }
+	if _, err := created.Create(ctx, session.CreateRequest{Title: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []workspace.Binding{{Root: ""}, {Root: "relative"}, {Root: "not/absolute"}} {
+		if err := created.Assign(ctx, "s", invalid); !errors.Is(err, workspace.ErrInvalidBinding) {
+			t.Fatalf("invalid binding %#v error=%v", invalid, err)
+		}
+	}
+	missingRoot := filepath.Join(t.TempDir(), "missing")
+	fileRoot := filepath.Join(t.TempDir(), "file.txt")
+	if err := os.WriteFile(fileRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []workspace.Binding{{Root: missingRoot}, {Root: fileRoot}} {
+		if err := created.Assign(ctx, "s", invalid); !errors.Is(err, workspace.ErrInvalidBinding) {
+			t.Fatalf("unusable binding %#v error=%v", invalid, err)
+		}
+	}
+	if _, err := created.Resolve(ctx, execution.Scope{SessionID: "missing"}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("resolve unknown session error=%v", err)
+	}
+	if _, err := created.Resolve(ctx, execution.Scope{SessionID: "s"}); !errors.Is(err, workspace.ErrNotAssigned) {
+		t.Fatalf("resolve unbound session error=%v", err)
+	}
+}
+
+func TestWorkspaceDeleteCascadesAndForkInherits(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "sessions.sqlite3")
+	created, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = created.close() })
+	ids := []session.ID{"source", "fork"}
+	created.generateID = func() (session.ID, error) {
+		id := ids[0]
+		ids = ids[1:]
+		return id, nil
+	}
+	if _, err := created.Create(ctx, session.CreateRequest{Title: "Source"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Assign(ctx, "source", workspace.Binding{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	forked, err := created.Fork(ctx, "source", session.ForkRequest{Title: "Fork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forked.ID != "fork" {
+		t.Fatalf("fork id=%q", forked.ID)
+	}
+	binding, err := created.Resolve(ctx, execution.Scope{SessionID: "fork"})
+	if err != nil || binding.Root != root {
+		t.Fatalf("fork binding=%#v err=%v", binding, err)
+	}
+	if err := created.Delete(ctx, "source"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := created.Resolve(ctx, execution.Scope{SessionID: "source"}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("resolve deleted session error=%v", err)
+	}
+	// The fork target keeps its inherited binding after the source is deleted.
+	if _, err := created.Resolve(ctx, execution.Scope{SessionID: "fork"}); err != nil {
+		t.Fatalf("fork resolve after source delete: %v", err)
+	}
+}
+
+func TestWorkspacePersistsAcrossOpen(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	databasePath := filepath.Join(t.TempDir(), "sessions.sqlite3")
+	created, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created.generateID = func() (session.ID, error) { return "s", nil }
+	if _, err := created.Create(ctx, session.CreateRequest{Title: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.Assign(ctx, "s", workspace.Binding{Root: root}); err != nil {
+		t.Fatal(err)
+	}
+	if err := created.close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.close() })
+	binding, err := reopened.Resolve(ctx, execution.Scope{SessionID: "s"})
+	if err != nil || binding.Root != root {
+		t.Fatalf("reopened binding=%#v err=%v", binding, err)
+	}
+}
+
+func TestConcurrentSessionsHaveIndependentWorkspaces(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "sessions.sqlite3")
+	created, err := openStore(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = created.close() })
+	var mu sync.Mutex
+	next := 0
+	created.generateID = func() (session.ID, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		next++
+		return session.ID(fmt.Sprintf("session-%d", next)), nil
+	}
+	const sessions = 8
+	for i := 1; i <= sessions; i++ {
+		if _, err := created.Create(ctx, session.CreateRequest{Title: "s"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	assignErrs := make([]error, sessions)
+	resolveErrs := make([]error, sessions)
+	roots := make([]string, sessions)
+	wantRoots := make([]string, sessions)
+	for i := 1; i <= sessions; i++ {
+		id := session.ID(fmt.Sprintf("session-%d", i))
+		root := t.TempDir()
+		wantRoots[i-1] = root
+		wg.Add(1)
+		go func(id session.ID, root string, idx int) {
+			defer wg.Done()
+			assignErrs[idx] = created.Assign(ctx, id, workspace.Binding{Root: root})
+			binding, err := created.Resolve(ctx, execution.Scope{SessionID: id})
+			resolveErrs[idx] = err
+			if err == nil {
+				roots[idx] = binding.Root
+			}
+		}(id, root, i-1)
+	}
+	wg.Wait()
+	for i := 0; i < sessions; i++ {
+		if assignErrs[i] != nil || resolveErrs[i] != nil {
+			t.Fatalf("session %d assign=%v resolve=%v", i+1, assignErrs[i], resolveErrs[i])
+		}
+	}
+	// Re-verify each session resolves to exactly its own committed root after the
+	// concurrent phase, with no cross-session contamination.
+	seen := map[session.ID]string{}
+	for i := 1; i <= sessions; i++ {
+		binding, err := created.Resolve(ctx, execution.Scope{SessionID: session.ID(fmt.Sprintf("session-%d", i))})
+		if err != nil {
+			t.Fatalf("resolve session %d: %v", i, err)
+		}
+		if binding.Root != wantRoots[i-1] {
+			t.Fatalf("session %d root = %q, want %q", i, binding.Root, wantRoots[i-1])
+		}
+		seen[session.ID(fmt.Sprintf("session-%d", i))] = binding.Root
+	}
+	if len(seen) != sessions {
+		t.Fatalf("expected %d distinct roots, got %d", sessions, len(seen))
 	}
 }

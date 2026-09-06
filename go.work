@@ -4,10 +4,8 @@ use (
 	.
 	./plugins/agent-default
 	./plugins/app-webui
-	./plugins/app-cli
 	./plugins/asset-local
 	./plugins/context-compact
-	./plugins/filesystem-local
 	./plugins/http-default
 	./plugins/interceptor-approval
 	./plugins/interceptor-script
@@ -16,8 +14,6 @@ use (
 	./plugins/prompt-default
 	./plugins/session-sqlite
 	./plugins/tool-ask
-	./plugins/tool-edit
-	./plugins/tool-fs
 	./plugins/tool-runtime
 	./plugins/tool-shell
 	./plugins/usage-default

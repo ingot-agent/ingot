@@ -54,4 +54,13 @@ describe('composer drafts', () => {
     await view.setProps({ sessionKey: 'first' })
     expect(view.get('textarea').element.value).toBe('')
   })
+
+  it('blocks submission while the session still needs a workspace', async () => {
+    const view = composer()
+    await view.get('textarea').setValue('wait for workspace')
+    await view.setProps({ disabled: true })
+    await view.get('form').trigger('submit')
+    expect(view.get('textarea').attributes('disabled')).toBeDefined()
+    expect(view.emitted('send')).toBeUndefined()
+  })
 })

@@ -12,6 +12,7 @@ import (
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 var (
@@ -32,12 +33,18 @@ type Dependencies struct {
 	State state.Scope
 }
 
-// Exports exposes the three independent session capabilities backed by one
-// transactional store.
+// Exports exposes the session and workspace capabilities backed by one
+// transactional store. One implementation provides both capability domains:
+// session.sqlite is a persistence implementation for session and workspace,
+// not one Plugin per interface. Session and workspace remain independent
+// capabilities.
 type Exports struct {
 	Store   session.Store
 	Manager session.Manager
 	Query   session.Query
+
+	WorkspaceResolver workspace.Resolver
+	WorkspaceManager  workspace.Manager
 }
 
 // New opens or creates the plugin-scoped session database. The returned
@@ -64,7 +71,7 @@ func New(ctx context.Context, _ Config, deps Dependencies) (Exports, ingotabi.Cl
 		}
 		return errors.Join(cleanupCtx.Err(), closeErr)
 	})
-	return Exports{Store: created, Manager: created, Query: created}, cleanup, nil
+	return Exports{Store: created, Manager: created, Query: created, WorkspaceResolver: created, WorkspaceManager: created}, cleanup, nil
 }
 
 func isNil(value any) bool {

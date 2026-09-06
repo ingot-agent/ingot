@@ -41,8 +41,8 @@ func (*accountingTools) Definitions() []tool.Definition {
 	return []tool.Definition{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}}
 }
 
-func (t *accountingTools) Call(_ context.Context, call tool.Call) (tool.Result, error) {
-	t.calls = append(t.calls, cloneCall(call))
+func (t *accountingTools) Call(_ context.Context, invocation tool.Invocation) (tool.Result, error) {
+	t.calls = append(t.calls, cloneCall(invocation.Call))
 	if t.err != nil {
 		return tool.Result{}, t.err
 	}

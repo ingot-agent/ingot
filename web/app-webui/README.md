@@ -31,6 +31,11 @@ npm run test:e2e
 
 Playwright 启动两个真实 Go HTTP/SSE 服务（`17316` 流式、`17317` Run-only），使用仅存在于 Go 测试代码中的确定性 SDK adapters，不访问模型、不需要凭据。覆盖会话生命周期、审批与自由文本、跨标签页同步、运行中历史阻塞、取消后的部分输出、附件历史、Operation、过期 cursor 和中英文/深色/移动布局。失败时保留 trace、截图及 HTML 报告。
 
+默认 fixture 使用 `GOWORK=off` 验证插件声明的已发布依赖。跨仓库 contract
+尚未发布时，可临时指定本地 workspace，例如
+`INGOT_WEBUI_FIXTURE_GOWORK=/absolute/path/to/go.work npm run test:e2e`；该选项只影响
+测试子进程，不改变插件的发布依赖。
+
 使用已有 Chromium 时可指定 `INGOT_TEST_CHROMIUM=/absolute/path/to/chrome npm run test:e2e`。手动预览测试数据：
 
 ```sh

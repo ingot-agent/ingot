@@ -8,6 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,8 +22,10 @@ import (
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/session"
+	"github.com/ingot-agent/sdk/workspace"
 )
 
 type testAgent struct {
@@ -40,8 +46,51 @@ func (a *testAgent) Load(context.Context, session.ID) ([]model.Message, error) {
 
 type testStore struct {
 	session.Store
-	mu    sync.Mutex
-	items []session.Metadata
+	mu         sync.Mutex
+	items      []session.Metadata
+	workspaces map[session.ID]string
+	nextID     uint64
+}
+
+func (s *testStore) findLocked(id session.ID) (session.Metadata, bool) {
+	for _, item := range s.items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return session.Metadata{}, false
+}
+
+func (s *testStore) Assign(_ context.Context, id session.ID, binding workspace.Binding) error {
+	if binding.Root == "" || !filepath.IsAbs(binding.Root) {
+		return workspace.ErrInvalidBinding
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.findLocked(id); !ok {
+		return session.ErrNotFound
+	}
+	if s.workspaces == nil {
+		s.workspaces = make(map[session.ID]string)
+	}
+	if _, exists := s.workspaces[id]; exists {
+		return workspace.ErrAlreadyAssigned
+	}
+	s.workspaces[id] = binding.Root
+	return nil
+}
+
+func (s *testStore) Resolve(_ context.Context, scope execution.Scope) (workspace.Binding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.findLocked(scope.SessionID); !ok {
+		return workspace.Binding{}, session.ErrNotFound
+	}
+	root, ok := s.workspaces[scope.SessionID]
+	if !ok {
+		return workspace.Binding{}, workspace.ErrNotAssigned
+	}
+	return workspace.Binding{Root: root}, nil
 }
 
 func (s *testStore) List(_ context.Context) ([]session.Metadata, error) {
@@ -53,7 +102,14 @@ func (s *testStore) List(_ context.Context) ([]session.Metadata, error) {
 func (s *testStore) Create(_ context.Context, request session.CreateRequest) (session.Metadata, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	id := session.ID(fmt.Sprintf("session-%d", len(s.items)+1))
+	var id session.ID
+	for {
+		s.nextID++
+		id = session.ID(fmt.Sprintf("session-%d", s.nextID))
+		if _, exists := s.findLocked(id); !exists {
+			break
+		}
+	}
 	now := time.Now().UTC()
 	metadata := session.Metadata{ID: id, Title: request.Title, CreatedAt: now, UpdatedAt: now}
 	s.items = append(s.items, metadata)
@@ -113,6 +169,7 @@ func (s *testStore) Delete(_ context.Context, id session.ID) error {
 	for i := range s.items {
 		if s.items[i].ID == id {
 			s.items = append(s.items[:i], s.items[i+1:]...)
+			delete(s.workspaces, id)
 			return nil
 		}
 	}
@@ -126,7 +183,20 @@ func (s *testStore) Fork(ctx context.Context, id session.ID, request session.For
 	if request.Title == "" {
 		request.Title = source.Title
 	}
-	return s.Create(ctx, session.CreateRequest{Title: request.Title})
+	target, err := s.Create(ctx, session.CreateRequest{Title: request.Title})
+	if err != nil {
+		return session.Metadata{}, err
+	}
+	s.mu.Lock()
+	root, bound := s.workspaces[id]
+	if bound {
+		if s.workspaces == nil {
+			s.workspaces = make(map[session.ID]string)
+		}
+		s.workspaces[target.ID] = root
+	}
+	s.mu.Unlock()
+	return target, nil
 }
 
 func testDependencies(t *testing.T, runtime *testAgent, store *testStore) Dependencies {
@@ -136,7 +206,7 @@ func testDependencies(t *testing.T, runtime *testAgent, store *testStore) Depend
 		t.Fatal(err)
 	}
 	process := &testProcess{shutdown: make(chan error, 1)}
-	return Dependencies{Backend: exports.Runtime, Agent: ingotabi.Some[agent.Runtime](runtime), History: runtime, Store: store, Sessions: store, SessionQuery: store, Invocation: process, Lifecycle: process}
+	return Dependencies{Backend: exports.Runtime, Agent: ingotabi.Some[agent.Runtime](runtime), History: runtime, Store: store, Sessions: store, SessionQuery: store, Workspaces: store, WorkspaceResolver: store, Invocation: process, Lifecycle: process}
 }
 
 func testApplication(t *testing.T) *application {
@@ -146,7 +216,7 @@ func testApplication(t *testing.T) *application {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessions, err := newSessionController(deps.Store, deps.Sessions, deps.SessionQuery)
+	sessions, err := newSessionController(deps.Store, deps.Sessions, deps.SessionQuery, deps.Workspaces, deps.WorkspaceResolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,12 +315,36 @@ func TestWriteJSONReportsEncodingFailure(t *testing.T) {
 	}
 }
 
+func TestTestStoreDeleteDoesNotReuseSessionIDOrRetainWorkspace(t *testing.T) {
+	store := &testStore{}
+	first, err := store.Create(context.Background(), session.CreateRequest{Title: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Assign(context.Background(), first.ID, workspace.Binding{Root: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create(context.Background(), session.CreateRequest{Title: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("deleted session ID was reused: %q", second.ID)
+	}
+	if _, exists := store.workspaces[first.ID]; exists {
+		t.Fatalf("workspace binding retained for deleted session %q", first.ID)
+	}
+}
+
 func TestSessionControllerListsAndFindsBeyondFirstPage(t *testing.T) {
 	store := &testStore{items: make([]session.Metadata, 1001)}
 	for i := range store.items {
 		store.items[i] = session.Metadata{ID: session.ID(fmt.Sprintf("session-%d", i))}
 	}
-	controller, err := newSessionController(store, store, store)
+	controller, err := newSessionController(store, store, store, store, store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +368,7 @@ func TestSessionHTTPAndBootstrap(t *testing.T) {
 		method, path, body string
 		status             int
 	}{
-		{http.MethodPost, "/api/sessions", `{"title":"first"}`, http.StatusCreated},
+		{http.MethodPost, "/api/sessions", `{"title":"first","workspace":"/tmp/ws"}`, http.StatusCreated},
 		{http.MethodPatch, "/api/sessions/session-1", `{"title":"renamed"}`, http.StatusOK},
 		{http.MethodGet, "/api/sessions/session-1", "", http.StatusOK},
 		{http.MethodGet, "/api/sessions/session-1/history", "", http.StatusOK},
@@ -360,7 +454,7 @@ func (r runtimeWithEvents) Events() appbackend.EventHub { return r.events }
 
 func TestConcurrentRenamesKeepEventsInMutationOrder(t *testing.T) {
 	a := testApplication(t)
-	if _, err := a.sessions.Create(context.Background(), "original"); err != nil {
+	if _, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: "/tmp/ws"}); err != nil {
 		t.Fatal(err)
 	}
 	hub := &gatedSessionHub{EventHub: a.backend.Events(), entered: make(chan struct{}), release: make(chan struct{})}
@@ -409,4 +503,257 @@ func readResponse(t *testing.T, response *http.Response, status int) []byte {
 		t.Fatalf("HTTP response = %d %s, want %d", response.StatusCode, body, status)
 	}
 	return body
+}
+
+func TestCreateSessionRequiresAbsoluteWorkspace(t *testing.T) {
+	a := testApplication(t)
+	for _, body := range []string{
+		`{"title":"x","workspace":""}`,
+		`{"title":"x","workspace":"relative/path"}`,
+		`{"title":"x"}`,
+	} {
+		w := httptest.NewRecorder()
+		a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/sessions", strings.NewReader(body)))
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"workspace_required"`) {
+			t.Fatalf("body %s = %d %s", body, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestSessionProjectionIncludesWorkspace(t *testing.T) {
+	a := testApplication(t)
+	root := t.TempDir()
+	item, err := a.sessions.Create(context.Background(), "with workspace", workspace.Binding{Root: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.Workspace != root {
+		t.Fatalf("created workspace = %q", item.Workspace)
+	}
+	listed, err := a.sessions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Workspace != root {
+		t.Fatalf("listed = %#v", listed)
+	}
+	got, err := a.sessions.Get(context.Background(), session.ID(item.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Workspace != root {
+		t.Fatalf("get workspace = %q", got.Workspace)
+	}
+	renamed, err := a.sessions.Rename(context.Background(), session.ID(item.ID), "renamed")
+	if err != nil || renamed.Workspace != root {
+		t.Fatalf("renamed = %#v err=%v", renamed, err)
+	}
+	archived, err := a.sessions.Archive(context.Background(), session.ID(item.ID))
+	if err != nil || archived.Workspace != root {
+		t.Fatalf("archived = %#v err=%v", archived, err)
+	}
+	restored, err := a.sessions.Restore(context.Background(), session.ID(item.ID))
+	if err != nil || restored.Workspace != root {
+		t.Fatalf("restored = %#v err=%v", restored, err)
+	}
+	forked, err := a.sessions.Fork(context.Background(), session.ID(item.ID), "forked")
+	if err != nil || forked.Workspace != root {
+		t.Fatalf("forked = %#v err=%v", forked, err)
+	}
+}
+
+type failingWorkspaceResolver struct {
+	err error
+}
+
+func (r failingWorkspaceResolver) Resolve(context.Context, execution.Scope) (workspace.Binding, error) {
+	return workspace.Binding{}, r.err
+}
+
+func TestSessionProjectionPropagatesResolverFailure(t *testing.T) {
+	store := &testStore{}
+	metadata, err := store.Create(context.Background(), session.CreateRequest{Title: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolveErr := errors.New("workspace database unavailable")
+	controller, err := newSessionController(store, store, store, store, failingWorkspaceResolver{err: resolveErr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Get(context.Background(), metadata.ID); !errors.Is(err, resolveErr) {
+		t.Fatalf("Get error = %v", err)
+	}
+	if _, err := controller.List(context.Background()); !errors.Is(err, resolveErr) {
+		t.Fatalf("List error = %v", err)
+	}
+}
+
+// failAssignManager rejects every assignment, modeling a workspace Manager
+// that cannot bind the newly created session.
+type failAssignManager struct {
+	workspace.Manager
+}
+
+func (failAssignManager) Assign(context.Context, session.ID, workspace.Binding) error {
+	return workspace.ErrAlreadyAssigned
+}
+
+func TestSessionCreateCompensatesFailedAssignment(t *testing.T) {
+	store := &testStore{}
+	controller, err := newSessionController(store, store, store, failAssignManager{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = controller.Create(context.Background(), "orphan", workspace.Binding{Root: "/repo/x"})
+	if !errors.Is(err, workspace.ErrAlreadyAssigned) {
+		t.Fatalf("create error = %v", err)
+	}
+	items, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("orphaned sessions remain after compensation: %#v", items)
+	}
+}
+
+type failingDeleteSessionManager struct {
+	session.Manager
+	err error
+}
+
+func (m failingDeleteSessionManager) Delete(context.Context, session.ID) error {
+	return m.err
+}
+
+func TestSessionCreateReportsFailedCompensation(t *testing.T) {
+	store := &testStore{}
+	deleteErr := errors.New("session delete unavailable")
+	manager := failingDeleteSessionManager{Manager: store, err: deleteErr}
+	controller, err := newSessionController(store, manager, store, failAssignManager{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = controller.Create(context.Background(), "orphan", workspace.Binding{Root: "/repo/x"})
+	if !errors.Is(err, workspace.ErrAlreadyAssigned) || !errors.Is(err, deleteErr) {
+		t.Fatalf("create error = %v", err)
+	}
+	items, listErr := store.List(context.Background())
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(items) != 1 {
+		t.Fatalf("failed compensation should leave one reported orphan, got %#v", items)
+	}
+}
+
+type cancelingWorkspaceManager struct {
+	cancel context.CancelFunc
+}
+
+func (m cancelingWorkspaceManager) Assign(ctx context.Context, _ session.ID, _ workspace.Binding) error {
+	m.cancel()
+	return ctx.Err()
+}
+
+type contextCheckingSessionManager struct {
+	session.Manager
+}
+
+func (m contextCheckingSessionManager) Delete(ctx context.Context, id session.ID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return m.Manager.Delete(ctx, id)
+}
+
+func TestSessionCreateCompensationSurvivesRequestCancellation(t *testing.T) {
+	store := &testStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	manager := contextCheckingSessionManager{Manager: store}
+	controller, err := newSessionController(store, manager, store, cancelingWorkspaceManager{cancel: cancel}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = controller.Create(ctx, "orphan", workspace.Binding{Root: t.TempDir()})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("create error = %v", err)
+	}
+	items, err := store.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("orphaned sessions remain after canceled assignment: %#v", items)
+	}
+}
+
+func TestUnboundSessionCanAssignWorkspaceOnce(t *testing.T) {
+	a := testApplication(t)
+	controller := a.sessions.(*defaultSessionController)
+	metadata, err := controller.store.Create(context.Background(), session.CreateRequest{Title: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	turn := httptest.NewRecorder()
+	a.routes().ServeHTTP(turn, httptest.NewRequest(http.MethodPost, "/api/turns", strings.NewReader(`{"sessionId":"`+string(metadata.ID)+`","input":"hello"}`)))
+	if turn.Code != http.StatusConflict || !strings.Contains(turn.Body.String(), `"workspace_not_assigned"`) {
+		t.Fatalf("unbound turn = %d %s", turn.Code, turn.Body.String())
+	}
+
+	root := t.TempDir()
+	body := `{"workspace":` + strconv.Quote(root) + `}`
+	assigned := httptest.NewRecorder()
+	a.routes().ServeHTTP(assigned, httptest.NewRequest(http.MethodPost, "/api/sessions/"+string(metadata.ID)+"/workspace", strings.NewReader(body)))
+	if assigned.Code != http.StatusOK {
+		t.Fatalf("assign workspace = %d %s", assigned.Code, assigned.Body.String())
+	}
+	var item appbackend.Session
+	if err := json.Unmarshal(assigned.Body.Bytes(), &item); err != nil {
+		t.Fatal(err)
+	}
+	if item.Workspace != root {
+		t.Fatalf("assigned workspace = %q, want %q", item.Workspace, root)
+	}
+
+	duplicate := httptest.NewRecorder()
+	a.routes().ServeHTTP(duplicate, httptest.NewRequest(http.MethodPost, "/api/sessions/"+string(metadata.ID)+"/workspace", strings.NewReader(body)))
+	if duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), `"workspace_already_assigned"`) {
+		t.Fatalf("duplicate assignment = %d %s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+func TestWorkspaceBrowseListsSubdirectories(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "project-a")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a := testApplication(t)
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/workspace/browse?path="+url.QueryEscape(root), nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("browse = %d %s", w.Code, w.Body.String())
+	}
+	var result appbackend.WorkspaceBrowse
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Path != root {
+		t.Fatalf("path = %q want %q", result.Path, root)
+	}
+	if len(result.Directories) != 1 || result.Directories[0].Name != "project-a" || result.Directories[0].Path != sub {
+		t.Fatalf("directories = %#v", result.Directories)
+	}
+	// A relative path must be rejected.
+	w = httptest.NewRecorder()
+	a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/workspace/browse?path=relative", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("relative browse = %d", w.Code)
+	}
 }

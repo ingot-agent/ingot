@@ -2,9 +2,10 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Activity, ArrowDown, ChevronRight, Copy, LoaderCircle, X } from 'lucide-vue-next'
+import { Activity, ArrowDown, ChevronRight, Copy, FolderOpen, LoaderCircle, X } from 'lucide-vue-next'
 import { useRuntime } from '../stores/runtime'
 import { APIError, errorMessage } from '../api'
+import { copyableText } from '../copy'
 import type { Attachment, LiveTurn, Message, Part } from '../protocol'
 import Brand from '../components/Brand.vue'
 import Composer from '../components/Composer.vue'
@@ -16,6 +17,7 @@ import ExecutionPanel from '../components/ExecutionPanel.vue'
 import SessionMenu from '../components/SessionMenu.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import Overlay from '../components/Overlay.vue'
+import DirectoryPicker from '../components/DirectoryPicker.vue'
 import JsonBlock from '../components/JsonBlock.vue'
 import WorkspaceHeader from '../components/WorkspaceHeader.vue'
 import { readPreference, savePreference } from '../theme'
@@ -33,6 +35,31 @@ const requests = computed(() => Object.values(runtime.interactions).filter(item 
 const hostStates = computed(() => Object.values(runtime.interactionStates).filter(item => item.scope?.agent?.sessionId === sessionId.value || !item.scope))
 const sending = ref(false)
 const details = ref(readPreference('details', 'closed') === 'open')
+// The workspace root for a brand-new conversation is chosen here, then bound
+// immutably to the created Session. The most recently used root is remembered
+// for convenience; the durable authority remains the Session binding.
+const workspace = ref(localStorage.getItem('ingot.workspace') || '')
+const pickerOpen = ref(false)
+const assigningWorkspace = ref(false)
+const needsWorkspace = computed(() => Boolean(session.value && !session.value.workspace))
+function rememberWorkspace() {
+  const root = workspace.value.trim()
+  if (root) localStorage.setItem('ingot.workspace', root)
+}
+async function selectWorkspace(path: string) {
+  workspace.value = path
+  pickerOpen.value = false
+  rememberWorkspace()
+  if (!needsWorkspace.value || !sessionId.value) return
+  assigningWorkspace.value = true
+  try {
+    await runtime.assignWorkspace(sessionId.value, path)
+  } catch (error) {
+    runtime.notify(errorMessage(error))
+  } finally {
+    assigningWorkspace.value = false
+  }
+}
 const narrow = ref(window.matchMedia('(max-width: 1199px)').matches)
 const scroll = ref<HTMLElement>()
 const following = ref(true)
@@ -89,9 +116,20 @@ async function send(input: string, attachments: Attachment[], done: () => void) 
   try {
     let id = sessionId.value
     if (!id) {
-      const item = await runtime.createSession(t('newChat'))
+      const root = workspace.value.trim()
+      if (!root) {
+        runtime.notify(t('workspaceRequired'), 'error')
+        return
+      }
+      rememberWorkspace()
+      const item = await runtime.createSession(t('newChat'), root)
       id = item.id
       await router.push('/sessions/' + encodeURIComponent(id))
+    }
+    if (needsWorkspace.value) {
+      runtime.notify(t('workspaceRequiredExisting'), 'error')
+      pickerOpen.value = true
+      return
     }
     await runtime.send(id, input, attachments)
     done()
@@ -100,7 +138,9 @@ async function send(input: string, attachments: Attachment[], done: () => void) 
   finally { sending.value = false }
 }
 async function copy(message: Message) {
-  try { await navigator.clipboard.writeText(message.content.filter(part => part.kind === 'text').map(part => part.text).join('\n')); runtime.notify(t('copied'), 'info') }
+  const text = copyableText(message)
+  if (!text) return
+  try { await navigator.clipboard.writeText(text); runtime.notify(t('copied'), 'info') }
   catch (error) { runtime.notify(errorMessage(error)) }
 }
 async function restore() {
@@ -112,7 +152,7 @@ onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.act
   <div class="chat-layout" :class="{ 'with-details': details && !narrow }">
     <section class="chat-main">
       <WorkspaceHeader class="conversation-header" @navigation="$emit('navigation')" @pending="$emit('pending')">
-        <h1 class="truncate" :title="session?.title || t('newChat')">{{ session?.title || t('newChat') }}</h1><span v-if="session?.archivedAt" class="muted text-xs shrink-0">{{ t('archived') }}</span>
+        <h1 class="truncate" :title="session?.title || t('newChat')">{{ session?.title || t('newChat') }}</h1><span v-if="session?.archivedAt" class="muted text-xs shrink-0">{{ t('archived') }}</span><div v-if="session?.workspace" class="muted text-xs truncate" :title="session.workspace">{{ t('workspace') }}: {{ session.workspace }}</div>
         <template #actions><button class="icon-button" :class="{ accent: details }" :aria-label="t('execution')" :aria-expanded="details" @click="details = !details"><Activity :size="18" /></button><SessionMenu v-if="session" :session="session" /></template>
       </WorkspaceHeader>
       <div ref="scroll" class="conversation-scroll" @scroll.passive="onScroll">
@@ -131,7 +171,7 @@ onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.act
               <div v-if="entry.message.role !== 'user'" class="message-byline"><Brand /><span>{{ entry.message.role === 'assistant' ? t('assistant') : entry.message.role }}</span></div>
               <div class="message-content"><ContentParts :parts="entry.message.content" /></div>
               <ToolCard v-for="call in entry.message.toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="toolResults.get(call.id)?.content" />
-              <button v-if="entry.message.role === 'assistant' && entry.message.content.length" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(entry.message)"><Copy :size="14" /></button>
+              <button v-if="entry.message.role === 'assistant' && copyableText(entry.message)" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(entry.message)"><Copy :size="14" /></button>
             </article>
             <article v-else class="message message-assistant live-message">
               <template v-if="showTurn(entry.turn)">
@@ -148,12 +188,24 @@ onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.act
         </div>
       </div>
       <div class="composer-dock" :class="{ 'welcome-composer': welcome }">
+        <div v-if="welcome" class="workspace-picker">
+          <button type="button" class="workspace-browse" :aria-label="t('chooseWorkspace')" @click="pickerOpen = true">
+            <FolderOpen :size="16" /><span>{{ t('chooseWorkspace') }}</span>
+          </button>
+          <span v-if="workspace" class="workspace-chosen truncate" :title="workspace">{{ workspace }}</span>
+          <span class="muted text-xs shrink-0">{{ t('workspaceHint') }}</span>
+        </div>
         <button v-if="!following && !welcome" class="latest-button" @click="latest"><ArrowDown :size="14" />{{ t('showLatest') }}</button>
+        <div v-if="needsWorkspace" class="workspace-assignment-banner">
+          <div><strong>{{ t('workspaceRequiredTitle') }}</strong><p>{{ t('workspaceRequiredExisting') }}</p></div>
+          <button type="button" class="btn small" :disabled="assigningWorkspace" @click="pickerOpen = true"><LoaderCircle v-if="assigningWorkspace" class="spin" :size="14" /><FolderOpen v-else :size="14" />{{ t(assigningWorkspace ? 'workspaceAssigning' : 'chooseWorkspace') }}</button>
+        </div>
         <div v-if="session?.archivedAt" class="archive-banner"><span>{{ t('archivedSession') }}</span><button class="btn small" @click="restore">{{ t('restore') }}</button></div>
-        <Composer :session-key="sessionId || 'new'" :running="running" :archived="!!session?.archivedAt || (!!sessionId && !session)" :sending="sending" @send="send" />
+        <Composer :session-key="sessionId || 'new'" :running="running" :archived="!!session?.archivedAt || (!!sessionId && !session)" :disabled="needsWorkspace || assigningWorkspace" :sending="sending" @send="send" />
       </div>
     </section>
     <aside v-if="details && !narrow" class="details-sidebar"><header><h2>{{ t('execution') }}</h2><button class="icon-button" :aria-label="t('close')" @click="details = false"><X :size="17" /></button></header><ExecutionPanel :session-id="sessionId" /></aside>
     <Overlay :open="details && narrow" :title="t('execution')" drawer @update:open="details = $event"><ExecutionPanel :session-id="sessionId" /></Overlay>
   </div>
+  <DirectoryPicker :open="pickerOpen" :initial-path="workspace || undefined" @update:open="pickerOpen = $event" @select="selectWorkspace" />
 </template>
