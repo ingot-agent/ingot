@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { Activity, ArrowDown, ChevronRight, Copy, FolderOpen, LoaderCircle, X } from 'lucide-vue-next'
 import { useRuntime } from '../stores/runtime'
 import { APIError, errorMessage } from '../api'
-import { copyableText } from '../copy'
+import { turnCopyTexts } from '../copy'
 import { titleForFirstMessage } from '../title'
 import type { Attachment, LiveTurn, Message, Part } from '../protocol'
 import Brand from '../components/Brand.vue'
@@ -64,7 +64,7 @@ async function selectWorkspace(path: string) {
 const narrow = ref(window.matchMedia('(max-width: 1199px)').matches)
 const scroll = ref<HTMLElement>()
 const following = ref(true)
-type TranscriptEntry = { id: string; kind: 'message'; message: Message } | { id: string; kind: 'turn'; turn: LiveTurn }
+type TranscriptEntry = { id: string; kind: 'message'; message: Message; index: number } | { id: string; kind: 'turn'; turn: LiveTurn }
 const transcript = computed(() => {
   const entries: TranscriptEntry[] = []
   const settled = liveTurns.value.filter(turn => turn.reconciled)
@@ -73,16 +73,17 @@ const transcript = computed(() => {
   }
   appendTurns(0)
   messages.value.forEach((message, index) => {
-    if (message.role !== 'tool') entries.push({ id: 'history-' + index, kind: 'message', message })
+    if (message.role !== 'tool') entries.push({ id: 'history-' + index, kind: 'message', message, index })
     appendTurns(index + 1)
   })
   for (const turn of liveTurns.value.filter(turn => !turn.reconciled)) {
     const local = runtime.optimistic[turn.id]
-    if (local) entries.push({ id: 'local-' + turn.id, kind: 'message', message: local.message })
+    if (local) entries.push({ id: 'local-' + turn.id, kind: 'message', message: local.message, index: -1 })
     entries.push({ id: turn.id, kind: 'turn', turn })
   }
   return entries
 })
+const turnCopies = computed(() => turnCopyTexts(messages.value))
 const toolResults = computed(() => new Map(messages.value.filter(message => message.role === 'tool').map(message => [message.toolCallId, message])))
 const historicalToolIds = computed(() => new Set(messages.value.flatMap(message => (message.toolCalls || []).map(call => call.id))))
 const timelineToolIds = computed(() => new Set(liveTurns.value.flatMap(turn => (turn.blocks || []).flatMap(block => block.kind === 'tool' ? [block.call.id] : []))))
@@ -146,8 +147,7 @@ async function send(input: string, attachments: Attachment[], done: () => void) 
   } catch (error) { runtime.notify(error instanceof APIError ? error.message : t('unknownSend') + ' ' + errorMessage(error)) }
   finally { sending.value = false }
 }
-async function copy(message: Message) {
-  const text = copyableText(message)
+async function copy(text: string) {
   if (!text) return
   try { await navigator.clipboard.writeText(text); runtime.notify(t('copied'), 'info') }
   catch (error) { runtime.notify(errorMessage(error)) }
@@ -180,7 +180,7 @@ onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.act
               <div v-if="entry.message.role !== 'user'" class="message-byline"><Brand /><span>{{ entry.message.role === 'assistant' ? t('assistant') : entry.message.role }}</span></div>
               <div class="message-content"><ContentParts :parts="entry.message.content" /></div>
               <ToolCard v-for="call in entry.message.toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="toolResults.get(call.id)?.content" />
-              <button v-if="entry.message.role === 'assistant' && copyableText(entry.message)" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(entry.message)"><Copy :size="14" /></button>
+              <button v-if="entry.message.role === 'assistant' && turnCopies.has(entry.index)" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(turnCopies.get(entry.index)!)"><Copy :size="14" /></button>
             </article>
             <article v-else class="message message-assistant live-message">
               <template v-if="showTurn(entry.turn)">
