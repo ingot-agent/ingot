@@ -52,7 +52,7 @@ v0.1 决策：
 - `shell` required，使用 absolute executable path；不通过 PATH 搜索；
 - `timeout_seconds` absent/0 默认 120，必须 `> 0`；
 - `max_output_bytes` absent/0 默认 1 MiB，必须 `> 0`；
-- 子进程环境从非 nil 的空集合开始，只加入 `environment` 和 `inherit_env` allowlist；空配置不得退化为继承父进程环境；
+- 子进程环境默认继承父进程完整环境（用户实际环境），使 PATH/HOME 等用户变量对命令可用；显式配置 `inherit_env` 时按 allowlist 只加入所列变量；显式 `inherit_env = []` 提供隔离路径，此时不继承任何父进程变量；
 - environment key 重复、非法或 `inherit_env` 中变量不存在时返回 Config Error；Windows 按环境变量名大小写不敏感的语义判断重复；
 - Config 不提供 approval bypass、root shell 或 unrestricted environment 开关。
 
@@ -111,7 +111,7 @@ stdout/stderr 分别捕获，最终按固定顺序呈现。`max_output_bytes` �
 Plugin 仍需执行自身安全边界：
 
 - 命令工作目录只来自 `workspace.Resolver`，不依赖 process cwd 或隐藏 context 约定；
-- environment allowlist；
+- environment 继承或 allowlist（`inherit_env` 显式配置时），但无论是继承还是 allowlist，都不允许模型覆盖；
 - output 和 execution time limit；
 - 不允许模型覆盖 shell path 或 environment；
 - Context error 保留 `context.Canceled`/`DeadlineExceeded`；
@@ -135,7 +135,7 @@ package = "."
 
 - Definition 名称、描述和 exact schema；
 - working directory 和 environment isolation；
-- 空 environment 不继承父进程变量，显式 `inherit_env` allowlist 正常传递；
+- 默认继承父进程环境；显式 `inherit_env` allowlist 正常传递；显式 `inherit_env = []` 隔离父进程变量；
 - stdout/stderr/exit code；
 - stdout/stderr ToolProgress channel、Content ownership，且不重复 lifecycle event；
 - invalid arguments 在 Runtime schema validation 阶段被拒绝；
