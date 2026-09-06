@@ -28,7 +28,7 @@ test('conversation creation, streamed output, execution detail, and history refr
   await page.getByRole('button', { name: 'Execution details', exact: true }).click()
   await expect(page.getByText('Input tokens', { exact: true })).toBeVisible()
   await page.reload()
-  await expect(page.getByText('hello workspace', { exact: true })).toHaveCount(1)
+  await expect(page.locator('.message-user .message-content')).toHaveText('hello workspace')
   await expect(page.getByText('Your workspace is ready. We can take the next step together.', { exact: true })).toHaveCount(1)
   expect(errors).toEqual([])
 })
