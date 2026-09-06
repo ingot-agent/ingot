@@ -107,6 +107,13 @@ function resize() { narrow.value = media.matches }
 media.addEventListener('change', resize)
 watch(details, value => savePreference('details', value ? 'open' : 'closed'))
 watch(sessionId, id => { runtime.activeSession = id; following.value = true; if (id) void runtime.loadHistory(id) }, { immediate: true })
+// A directory chosen in the sidebar starts a brand-new conversation scoped to that workspace.
+watch(() => route.query.workspace, value => {
+  if (welcome.value && typeof value === 'string' && value) {
+    workspace.value = value
+    rememberWorkspace()
+  }
+}, { immediate: true })
 function onScroll() { if (scroll.value) following.value = scroll.value.scrollHeight - scroll.value.scrollTop - scroll.value.clientHeight < 100 }
 async function latest() { following.value = true; await nextTick(); scroll.value?.scrollTo({ top: scroll.value.scrollHeight, behavior: 'smooth' }) }
 watch(() => [transcript.value.length, ...liveTurns.value.map(turn => turn.output.length + turn.reasoning.length + (turn.blocks?.length || 0)), requests.value.length, toolCalls.value.length], async () => {
