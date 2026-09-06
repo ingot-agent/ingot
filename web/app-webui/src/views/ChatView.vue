@@ -6,6 +6,7 @@ import { Activity, ArrowDown, ChevronRight, Copy, FolderOpen, LoaderCircle, X } 
 import { useRuntime } from '../stores/runtime'
 import { APIError, errorMessage } from '../api'
 import { copyableText } from '../copy'
+import { titleForFirstMessage } from '../title'
 import type { Attachment, LiveTurn, Message, Part } from '../protocol'
 import Brand from '../components/Brand.vue'
 import Composer from '../components/Composer.vue'
@@ -122,7 +123,8 @@ async function send(input: string, attachments: Attachment[], done: () => void) 
         return
       }
       rememberWorkspace()
-      const item = await runtime.createSession(t('newChat'), root)
+      const title = titleForFirstMessage(input) || t('newChat')
+      const item = await runtime.createSession(title, root)
       id = item.id
       await router.push('/sessions/' + encodeURIComponent(id))
     }
