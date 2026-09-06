@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28">
+  <!-- Mirrors the webui nav-brand brand-mark: a 28 by 28 tile holding the
+       20px lucide Anvil glyph (stroke 1.65) plus the accent corner dot. -->
+  <style>
+    .mark { fill: none; stroke: #282a28; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+    .dot  { fill: #bd5627; }
+    @media (prefers-color-scheme: dark) {
+      .mark { stroke: #e5e7e1; }
+      .dot  { fill: #ed9d6d; }
+    }
+  </style>
+  <g class="mark" transform="translate(4 4) scale(0.83333)">
+    <path d="M7 10H6a4 4 0 0 1-4-4 1 1 0 0 1 1-1h4"/>
+    <path d="M7 5a1 1 0 0 1 1-1h13a1 1 0 0 1 1 1 7 7 0 0 1-7 7H8a1 1 0 0 1-1-1z"/>
+    <path d="M9 12v5"/>
+    <path d="M15 12v5"/>
+    <path d="M5 20a3 3 0 0 1 3-3h8a3 3 0 0 1 3 3 1 1 0 0 1-1 1H6a1 1 0 0 1-1-1"/>
+  </g>
+  <rect class="dot" x="24" y="1" width="4" height="4" rx="1" transform="rotate(20 26 3)"/>
+</svg>
