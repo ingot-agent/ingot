@@ -21,7 +21,7 @@ Plugin 设计必须遵循：
 | [`session.sqlite`](./session.sqlite_v0.1.md) | Implemented v0.1 (M5) | `session.Store` + `session.Manager` + `session.Query` | transaction ordering、opaque Fork、archive lifecycle、deterministic discovery |
 | [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace-scoped working directory、子进程树、环境隔离、输出与时间边界 |
 | [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
-| [`tool.edit`](./tool.edit_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace-relative 精确 UTF-8 文本替换 |
+| [`tool.edit`](./tool.edit_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace 文本编辑/读取/搜索（edit_file、read_file、search），带行区间读取 |
 | [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
 | [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
 | [`interceptor.script`](./interceptor.script_v0.1.md) | Implemented v0.1 | typed Interceptors | 外部策略/审计hook协议与进程回收 |

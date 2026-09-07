@@ -110,13 +110,22 @@ Input Schema：
   "additionalProperties": false,
   "required": ["path"],
   "properties": {
-    "path": {"type": "string", "minLength": 1}
+    "path": {"type": "string", "minLength": 1},
+    "start_line": {"type": "integer", "minimum": 1},
+    "end_line": {"type": "integer", "minimum": 1}
   }
 }
 ```
 
-- 返回目标文件的完整文本内容（Content 为单一 text part）；
-- 业务结果：文件不存在、是目录、超限、非 UTF-8、路径越界。
+- `path` 必填，`workspace` 相对路径；
+- `start_line` / `end_line` 可选，1-based、含边界，用于只读取一个行区间。两者都省略
+  时返回全文；只给 `start_line` 表示读到文件末尾，只给 `end_line` 表示从第 1 行开始；
+- 返回 Content 为单一 text part；`start_line`/`end_line` 均省略时返回字符串原文，
+  指定行区间时按行拼接（省略终止换行），不输出行号前缀；
+- 行区间规则：`start_line` 与 `end_line` 均须 `>= 1`，且 `start_line <= end_line`；
+  `end_line` 超出文件行数时收窄到末行；`start_line` 超过文件行数时作为业务结果返回；
+  文件末尾单个换行不额外计为一行；
+- 业务结果：文件不存在、是目录、超限、非 UTF-8、路径越界、非法行区间。
 
 ### 4.3 `search`
 
@@ -182,7 +191,9 @@ package = "."
 
 - 三个 Definition 名称、描述与 exact schema；
 - `edit_file` 默认只替换第一处、`replace_all` 全替换、原子写入保留权限；业务结果路径；
-- `read_file` 返回完整内容；文件不存在/目录/超限/非 UTF-8/越界业务结果；
+- `read_file` 返回完整内容；`start_line`/`end_line` 区间（start-only、end-only、
+  双边界含、单行、end 收窄、末尾换行不计为一、空文件）；非法行区间业务结果；
+  文件不存在/目录/超限/非 UTF-8/越界业务结果；
 - `search` 跨目录命中、默认根目录、glob 过滤、隐藏与二进制跳过、scan 上限
   truncated、无匹配/路径不存在/路径非目录/越界业务结果；
 - 参数非法（缺失字段、空串、未知字段、错 call name）；
