@@ -110,8 +110,11 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 
 func (t *editTool) Definition() tool.Definition {
 	return tool.Definition{
-		Name:        toolName,
-		Description: "Replace an exact UTF-8 text substring in a workspace-relative file.",
+		Name: toolName,
+		Description: "Replace an exact UTF-8 text substring in a workspace-relative file. " +
+			"By default only the first occurrence is replaced; set replace_all to true to " +
+			"replace every occurrence. new defaults to an empty string (deletion). " +
+			"Example: {\"path\":\"src/main.go\",\"old\":\"foo\",\"new\":\"bar\",\"replace_all\":true}",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["path","old"],"properties":{"path":{"type":"string","minLength":1},"old":{"type":"string","minLength":1},"new":{"type":"string"},"replace_all":{"type":"boolean"}}}`),
 	}
 }

@@ -34,8 +34,11 @@ type searchArguments struct {
 // Definition implements tool.Tool.
 func (t *searchTool) Definition() tool.Definition {
 	return tool.Definition{
-		Name:        searchToolName,
-		Description: "Search workspace-relative UTF-8 text files for an exact substring and report matching lines.",
+		Name: searchToolName,
+		Description: "Search workspace-relative UTF-8 text files for an exact substring and report matching lines. " +
+			"By default the search starts at the workspace root. Pass path to search within a " +
+			"subdirectory and glob to filter files by name pattern. " +
+			"Example: {\"pattern\":\"func main\",\"path\":\"src\",\"glob\":\"*.go\"}",
 		InputSchema: json.RawMessage(`{"type":"object","additionalProperties":false,"required":["pattern"],"properties":{"pattern":{"type":"string","minLength":1},"path":{"type":"string"},"glob":{"type":"string"}}}`),
 	}
 }
