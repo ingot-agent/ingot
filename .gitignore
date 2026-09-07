@@ -9,3 +9,7 @@ dist
 node_modules/
 web/app-webui/test-results/
 web/app-webui/playwright-report/
+
+# Local Windows build outputs.
+/ingot.exe
+/ingot.exe~

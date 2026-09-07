@@ -49,7 +49,7 @@ v0.1 决策：
 
 - `working_directory` 不再是 Config：命令工作目录由每个 `Invocation` 的 `execution.Scope` 经 `workspace.Resolver` 决定，配置阶段无法预先固定；
 - `workspace.Resolver` 为 required dependency，缺少时 `New` 返回 Config Error；
-- `shell` required，使用 absolute executable path；不通过 PATH 搜索；
+- `shell` optional；省略或为空时在 `New()` 阶段自动解析默认 Shell，不通过 PATH 搜索；非空值必须是 absolute executable path；
 - `timeout_seconds` absent/0 默认 120，必须 `> 0`；
 - `max_output_bytes` absent/0 默认 1 MiB，必须 `> 0`；
 - 子进程环境默认继承父进程完整环境（用户实际环境），使 PATH/HOME 等用户变量对命令可用；显式配置 `inherit_env` 时按 allowlist 只加入所列变量；显式 `inherit_env = []` 提供隔离路径，此时不继承任何父进程变量；
@@ -89,9 +89,9 @@ stderr:
 解析得到的 Workspace Root 只设置 child process 的初始 cwd，不是 filesystem、network、process 或 OS 权限 sandbox；Sandbox 是独立的 security capability，不在本 Plugin 内实现。
 
 
-stdout/stderr 分别捕获，最终按固定顺序呈现。`max_output_bytes` 在构造采集器时固定分配为 stdout 配额 `ceil(limit/2)` 和 stderr 配额 `floor(limit/2)`；任一流超过自己的配额时截断，并在实际被截断的流中显式添加 truncation marker。若截断点落在 UTF-8 多字节字符中间，丢弃该流末尾不完整的编码字节后再添加 marker，不能由截断制造非法 UTF-8。采集器继续 drain 两条 pipe，不得静默丢弃。stdout 与 stderr reader 的完成和错误必须分别归因，不能按 goroutine 完成顺序推断来源。无 exit code 的启动或 Context 错误直接返回 error。
+stdout/stderr 视为外部进程提供的不可信 byte stream，在进入 collector 前通过有状态 decoder 统一归一化为合法 UTF-8；Unix 保持 UTF-8 contract，Windows 优先识别 UTF-8，无法解释时按运行时 native code page 转换，最终无法恢复的字节替换为 U+FFFD。`max_output_bytes` 作用于归一化后的 UTF-8 payload，并在构造采集器时固定分配为 stdout 配额 `ceil(limit/2)` 和 stderr 配额 `floor(limit/2)`；任一流超过自己的配额时只保留完整 UTF-8 rune，并在实际被截断的流中显式添加 truncation marker。采集器继续 drain 两条 pipe，不得静默丢弃；进程结束或 timeout 后先 flush decoder 再格式化结果。stdout 与 stderr reader 的完成和错误必须分别归因，不能按 goroutine 完成顺序推断来源。无 exit code 的启动或 Context 错误直接返回 error。
 
-若 Graph 提供 Observation Consumer，每次 stdout/stderr write 同时产生 `ToolProgress`，Channel 分别为 opaque local convention `stdout` / `stderr`。有效 UTF-8 chunk 使用 text Content；其他 bytes 使用 `application/octet-stream` file Content，避免制造非法 text。Progress 是 transient fact，不改变 fixed final Result envelope；Tool lifecycle Started/Finished 仍由 Agent Runtime 统一拥有，`tool.shell` 不重复产生。
+若 Graph 提供 Observation Consumer，每次 stdout/stderr write 经同一个 stateful decoder 归一化后产生 `ToolProgress`，Channel 分别为 opaque local convention `stdout` / `stderr`；text Content 永远是合法 UTF-8，无法恢复的输入使用 replacement character，不降级为 binary Content。Progress 与 Final Result 共用同一个 decoder，避免实时输出和最终结果的编码语义不一致。Progress 是 transient fact，不改变 fixed final Result envelope；Tool lifecycle Started/Finished 仍由 Agent Runtime 统一拥有，`tool.shell` 不重复产生。
 
 ## 5. 执行与生命周期
 
@@ -138,6 +138,7 @@ package = "."
 - 默认继承父进程环境；显式 `inherit_env` allowlist 正常传递；显式 `inherit_env = []` 隔离父进程变量；
 - stdout/stderr/exit code；
 - stdout/stderr ToolProgress channel、Content ownership，且不重复 lifecycle event；
+- stdout/stderr 的 UTF-8 normalization、跨 Write 字符边界、Windows native code page 与 replacement fallback；
 - invalid arguments 在 Runtime schema validation 阶段被拒绝；
 - timeout、caller cancellation 和平台 containment primitive 回收；
 - output truncation marker；
@@ -145,4 +146,6 @@ package = "."
 - Windows/Linux/macOS platform adapter conformance；
 - race test 无 goroutine/process leak。
 
-待确认：官方支持的 shell 列表、Windows Job Object 与 Unix process group 的完整跨平台 conformance、non-zero exit 是否需要额外结构化字段。v0.1 不允许 `shell="auto"`，避免不同主机产生隐式行为差异。
+默认 Shell 只覆盖当前 invocation protocol 支持的 baseline：Unix 按 `/bin/sh`、`/usr/bin/sh` 顺序选择；Windows 按 `%ComSpec%`（仅接受 basename 为 `cmd.exe`）和 `%SystemRoot%\System32\cmd.exe` 顺序选择；其他平台的自动模式不受支持。自动解析在 `New()` 阶段执行一次，显式配置始终优先且错误时不 fallback。Shell 默认解析不读取 `$SHELL`、不使用 PATH，也不自动发现 PowerShell、Fish、Nushell 等用户偏好 Shell。
+
+待确认：Windows Job Object 与 Unix process group 的完整跨平台 conformance、non-zero exit 是否需要额外结构化字段。`tool.shell` 不使用 `"auto"` 等魔法配置值；缺省 `shell` 本身即表示默认模式。

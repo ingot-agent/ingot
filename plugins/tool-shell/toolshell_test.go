@@ -62,16 +62,6 @@ func testShell(t *testing.T, cfg Config) tool.Tool {
 
 func testShellRoot(t *testing.T, cfg Config, root string) tool.Tool {
 	t.Helper()
-	if cfg.Shell == "" {
-		if runtime.GOOS == "windows" {
-			cfg.Shell = os.Getenv("ComSpec")
-			if cfg.Shell == "" {
-				cfg.Shell = filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
-			}
-		} else {
-			cfg.Shell = "/bin/sh"
-		}
-	}
 	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
 	if err != nil {
 		t.Fatal(err)
@@ -100,6 +90,9 @@ func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 	result, err := shell.Invoke(context.Background(), testInvocation("shell_exec", []byte("{\"command\":\"echo hello\"}")))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !utf8.ValidString(resultText(result)) {
+		t.Fatalf("shell result is not valid UTF-8: %q", resultText(result))
 	}
 	if !strings.HasPrefix(resultText(result), "exit_code: 0\nstdout:\n") || !strings.Contains(resultText(result), "hello") || !strings.Contains(resultText(result), "\nstderr:\n") {
 		t.Fatalf("unexpected shell result: %q", resultText(result))
@@ -159,27 +152,43 @@ func TestOutputCollectorUsesFixedPerStreamQuotas(t *testing.T) {
 	t.Parallel()
 
 	collector := newOutputCollector(4)
-	collector.write(false, []byte("ab"))
-	collector.write(true, []byte("12"))
+	collector.writeUTF8(false, []byte("ab"))
+	collector.writeUTF8(true, []byte("12"))
 	if got := collector.format(0); strings.Contains(got, outputTruncationMarker) {
 		t.Fatalf("exact quotas marked as truncated: %q", got)
 	}
-	collector.write(false, []byte("c"))
+	collector.writeUTF8(false, []byte("c"))
 	if got := collector.format(0); !strings.Contains(got, outputTruncationMarker) {
 		t.Fatalf("overflow missing truncation marker: %q", got)
 	}
 
 	stderrCollector := newOutputCollector(4)
-	stderrCollector.write(true, []byte("123"))
+	stderrCollector.writeUTF8(true, []byte("123"))
 	want := "exit_code: 0\nstdout:\n\nstderr:\n12\n" + outputTruncationMarker
 	if got := stderrCollector.format(0); got != want {
 		t.Fatalf("stderr truncation = %q, want %q", got, want)
 	}
 
 	utf8Collector := newOutputCollector(4)
-	utf8Collector.write(false, []byte("世"))
+	utf8Collector.writeUTF8(false, []byte("世"))
 	if got := utf8Collector.format(0); !utf8.ValidString(got) {
 		t.Fatalf("truncation split UTF-8 output: %q", got)
+	}
+
+	runeCollector := newOutputCollector(5)
+	runeCollector.writeUTF8(false, []byte("世a"))
+	runeResult := runeCollector.format(0)
+	if !utf8.ValidString(runeResult) || !strings.Contains(runeResult, "世") || !strings.Contains(runeResult, outputTruncationMarker) {
+		t.Fatalf("rune-safe truncation = %q", runeResult)
+	}
+
+	boundaryCollector := newOutputCollector(4)
+	boundaryCollector.writeUTF8(false, []byte("世"))
+	boundaryCollector.writeUTF8(false, []byte("a"))
+	boundaryResult := boundaryCollector.format(0)
+	wantBoundary := "exit_code: 0\nstdout:\n\n" + outputTruncationMarker + "\nstderr:\n"
+	if boundaryResult != wantBoundary {
+		t.Fatalf("writes after rune-boundary truncation = %q, want %q", boundaryResult, wantBoundary)
 	}
 }
 
@@ -361,6 +370,47 @@ func resultText(result tool.Result) string {
 	return value
 }
 
+func workingDirectoryCommand() string {
+	if runtime.GOOS == "windows" {
+		return "cd"
+	}
+	return "pwd"
+}
+
+func TestShellExplicitConfigErrorsDoNotFallback(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing-shell")
+	if runtime.GOOS == "windows" {
+		missing += ".exe"
+	}
+	if _, _, err := New(context.Background(), Config{Shell: missing}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing explicit shell error = %v", err)
+	}
+	if _, _, err := New(context.Background(), Config{Shell: "sh"}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("relative explicit shell error = %v", err)
+	}
+}
+
+func TestFirstUsableShellUsesCandidateOrder(t *testing.T) {
+	var checked []string
+	got, err := firstUsableShell([]string{"first", "second", "third"}, func(candidate string) bool {
+		checked = append(checked, candidate)
+		return candidate == "second"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "second" || strings.Join(checked, ",") != "first,second" {
+		t.Fatalf("candidate selection got %q after checking %v", got, checked)
+	}
+}
+
+func TestFirstUsableShellReportsAllCandidatesWhenUnavailable(t *testing.T) {
+	_, err := firstUsableShell([]string{"first", "second"}, func(string) bool { return false })
+	if err == nil || !strings.Contains(err.Error(), "[first second]") {
+		t.Fatalf("unavailable candidates error = %v", err)
+	}
+}
+
 func testShellPath() string {
 	if runtime.GOOS == "windows" {
 		if shell := os.Getenv("ComSpec"); shell != "" {
@@ -387,7 +437,7 @@ func TestShellResolvesWorkspaceFromInvocationScope(t *testing.T) {
 	run := func(scope session.ID) string {
 		result, err := shell.Invoke(context.Background(), tool.Invocation{
 			Scope: execution.Scope{SessionID: scope},
-			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"pwd"}`)},
+			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"` + workingDirectoryCommand() + `"}`)},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -447,7 +497,7 @@ func TestConcurrentSessionsResolveIndependentWorkspaces(t *testing.T) {
 	invoke := func(scope session.ID) (string, error) {
 		result, err := shell.Invoke(context.Background(), tool.Invocation{
 			Scope: execution.Scope{SessionID: scope},
-			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"pwd"}`)},
+			Call:  tool.Call{Name: "shell_exec", Arguments: []byte(`{"command":"` + workingDirectoryCommand() + `"}`)},
 		})
 		if err != nil {
 			return "", err

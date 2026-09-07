@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -113,19 +112,9 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
-	if cfg.Shell == "" || !filepath.IsAbs(cfg.Shell) {
-		return normalizedConfig{}, fmt.Errorf("shell must be an absolute executable path: %w", ErrInvalidConfig)
-	}
-	shell, err := filepath.Abs(cfg.Shell)
+	shell, err := resolveShell(cfg.Shell)
 	if err != nil {
-		return normalizedConfig{}, fmt.Errorf("resolve shell: %w: %w", ErrInvalidConfig, err)
-	}
-	shellInfo, err := os.Stat(shell)
-	if err != nil {
-		return normalizedConfig{}, fmt.Errorf("stat shell: %w: %w", ErrInvalidConfig, err)
-	}
-	if shellInfo.IsDir() || shellInfo.Mode()&0o111 == 0 && runtime.GOOS != "windows" {
-		return normalizedConfig{}, fmt.Errorf("shell is not executable: %w", ErrInvalidConfig)
+		return normalizedConfig{}, err
 	}
 	timeoutSeconds := cfg.TimeoutSeconds
 	if timeoutSeconds == 0 {
@@ -331,8 +320,10 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 	command.Dir = binding.Root
 	command.Env = commandEnvironment(t.config.environment, t.config.inheritEnvironment, binding.Root)
 	collector := newOutputCollector(t.config.maxOutputBytes)
-	command.Stdout = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stdout"}
-	command.Stderr = outputWriter{ctx: ctx, collector: collector, observation: t.observation, channel: "stderr", stderr: true}
+	stdoutWriter := newOutputWriter(ctx, collector, t.observation, "stdout", false)
+	stderrWriter := newOutputWriter(ctx, collector, t.observation, "stderr", true)
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
 	controller, err := newProcessController(command)
 	if err != nil {
 		return tool.Result{}, err
@@ -356,6 +347,8 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 	case <-runCtx.Done():
 		cleanupErr := terminateProcess(command, controller)
 		waitErr = <-waitDone
+		stdoutWriter.Flush()
+		stderrWriter.Flush()
 		if closeErr := controller.Close(); closeErr != nil {
 			cleanupErr = errors.Join(cleanupErr, closeErr)
 		}
@@ -375,6 +368,8 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 		}
 		return tool.Result{}, ctx.Err()
 	}
+	stdoutWriter.Flush()
+	stderrWriter.Flush()
 	closeErr := controller.Close()
 	if closeErr != nil {
 		return tool.Result{}, fmt.Errorf("close process controller: %w: %w", ErrProcessCleanup, closeErr)
@@ -409,11 +404,11 @@ func exitCode(err error) int {
 func terminateAndWait(command *exec.Cmd, controller processController) error {
 	var cleanupErr error
 	if command.Process != nil {
-		if err := controller.Terminate(command.Process); err != nil {
+		if err := controller.Terminate(command.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			cleanupErr = errors.Join(cleanupErr, err)
-		}
-		if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			cleanupErr = errors.Join(cleanupErr, err)
+			if killErr := command.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+				cleanupErr = errors.Join(cleanupErr, killErr)
+			}
 		}
 		if err := command.Wait(); err != nil {
 			var exitErr *exec.ExitError
@@ -438,9 +433,13 @@ func terminateProcess(command *exec.Cmd, controller processController) error {
 	var cleanupErr error
 	if err := controller.Terminate(command.Process); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		cleanupErr = errors.Join(cleanupErr, err)
-	}
-	if err := command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		cleanupErr = errors.Join(cleanupErr, err)
+		// Platform controllers terminate the direct process together with its
+		// descendants. Only fall back to a direct kill when containment failed;
+		// on Windows, killing again after a successful Job Object termination can
+		// return syscall.EINVAL even though cleanup completed successfully.
+		if killErr := command.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			cleanupErr = errors.Join(cleanupErr, killErr)
+		}
 	}
 	if cleanupErr != nil {
 		return fmt.Errorf("%w: %w", ErrProcessCleanup, cleanupErr)
@@ -466,23 +465,30 @@ func newOutputCollector(limit int) *outputCollector {
 	}
 	return &outputCollector{stdoutLimit: stdoutLimit, stderrLimit: limit / 2}
 }
-func (c *outputCollector) write(stderr bool, p []byte) {
+func (c *outputCollector) writeUTF8(stderr bool, p []byte) {
+	if !utf8.Valid(p) {
+		p = bytes.ToValidUTF8(p, []byte(string(utf8.RuneError)))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if (stderr && c.stderrTruncated) || (!stderr && c.stdoutTruncated) {
+		return
+	}
 	limit, used := c.stdoutLimit, c.stdoutUsed
 	if stderr {
 		limit, used = c.stderrLimit, c.stderrUsed
 	}
 	remaining := limit - used
 	if remaining > 0 {
-		if len(p) > remaining {
-			p = p[:remaining]
+		prefix := utf8PrefixWithinLimit(p, remaining)
+		if len(prefix) < len(p) {
 			if stderr {
 				c.stderrTruncated = true
 			} else {
 				c.stdoutTruncated = true
 			}
 		}
+		p = prefix
 		if stderr {
 			_, _ = c.stderr.Write(p)
 		} else {
@@ -516,11 +522,9 @@ func (c *outputCollector) formatWithNote(code int, note string) string {
 	defer c.mu.Unlock()
 	stdout, stderr := c.stdout.String(), c.stderr.String()
 	if c.stdoutTruncated {
-		stdout = trimIncompleteUTF8Suffix(stdout)
 		stdout += "\n" + outputTruncationMarker
 	}
 	if c.stderrTruncated {
-		stderr = trimIncompleteUTF8Suffix(stderr)
 		stderr += "\n" + outputTruncationMarker
 	}
 	if note != "" {
@@ -535,41 +539,71 @@ func (c *outputCollector) formatWithNote(code int, note string) string {
 	return fmt.Sprintf("exit_code: %d\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
 }
 
-func trimIncompleteUTF8Suffix(value string) string {
-	if value == "" || utf8.ValidString(value) {
-		return value
+func utf8PrefixWithinLimit(data []byte, limit int) []byte {
+	if limit <= 0 || len(data) == 0 {
+		return nil
 	}
-	data := []byte(value)
-	start := len(data) - 1
-	for start > 0 && !utf8.RuneStart(data[start]) {
-		start--
+	if len(data) <= limit {
+		return data
 	}
-	if utf8.FullRune(data[start:]) {
-		return value
+	used := 0
+	for used < len(data) {
+		_, size := utf8.DecodeRune(data[used:])
+		if used+size > limit {
+			break
+		}
+		used += size
 	}
-	return string(data[:start])
+	return data[:used]
 }
 
 type outputWriter struct {
+	mu          sync.Mutex
 	ctx         context.Context
+	decoder     textDecoder
 	collector   *outputCollector
 	observation observation.Consumer
 	channel     string
 	stderr      bool
 }
 
-func (w outputWriter) Write(p []byte) (int, error) {
-	w.collector.write(w.stderr, p)
-	if w.observation != nil && len(p) > 0 {
+func newOutputWriter(ctx context.Context, collector *outputCollector, observation observation.Consumer, channel string, stderr bool) *outputWriter {
+	return &outputWriter{
+		ctx:         ctx,
+		decoder:     newTextDecoder(),
+		collector:   collector,
+		observation: observation,
+		channel:     channel,
+		stderr:      stderr,
+	}
+}
+
+func (w *outputWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writeNormalized(w.decoder.Feed(p))
+	return len(p), nil
+}
+
+func (w *outputWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writeNormalized(w.decoder.Flush())
+}
+
+func (w *outputWriter) writeNormalized(p []byte) {
+	if len(p) == 0 {
+		return
+	}
+	if !utf8.Valid(p) {
+		p = bytes.ToValidUTF8(p, []byte(string(utf8.RuneError)))
+	}
+	w.collector.writeUTF8(w.stderr, p)
+	if w.observation != nil {
 		progress := tool.Progress{Channel: w.channel}
-		if utf8.Valid(p) {
-			progress.Content = content.FromText(string(p))
-		} else {
-			progress.Content = content.Content{content.Inline(content.KindFile, "application/octet-stream", w.channel, p)}
-		}
+		progress.Content = content.FromText(string(p))
 		w.observation.Emit(w.ctx, observation.ToolProgress{Progress: progress})
 	}
-	return len(p), nil
 }
 
 func decodeObject(raw json.RawMessage, target any) error {

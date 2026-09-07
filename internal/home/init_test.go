@@ -92,6 +92,12 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if strings.Contains(string(configData), "streaming =") {
 		t.Fatalf("config.toml advertises the ignored agent streaming key:\n%s", configData)
 	}
+	if !strings.Contains(string(configData), "[plugins.\"tool.shell\"]") {
+		t.Fatalf("default config lacks tool.shell table:\n%s", configData)
+	}
+	if strings.Contains(string(configData), "\nshell =") {
+		t.Fatalf("default config must not persist a machine-specific shell path:\n%s", configData)
+	}
 	var document struct {
 		Plugins map[string]struct {
 			SystemPrompt string `toml:"system_prompt"`
