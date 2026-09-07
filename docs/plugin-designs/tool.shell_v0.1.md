@@ -74,7 +74,7 @@ Input Schema：
 }
 ```
 
-per-call timeout 不得超过 Config 上限。`command` 作为一个参数传给配置 shell 的 command flag；shell flag 由平台 adapter 固定，不接受模型输入。
+per-call timeout 不得超过 Config 上限。`command` 作为一个参数传给已解析 Shell 的 command flag；PowerShell 使用 `-Command`，Windows cmd 使用 `/C`，Unix Shell 使用 `-c`，这些参数由 adapter 决定且不接受模型输入。
 
 Result 使用确定性 text envelope：
 
@@ -146,6 +146,6 @@ package = "."
 - Windows/Linux/macOS platform adapter conformance；
 - race test 无 goroutine/process leak。
 
-默认 Shell 只覆盖当前 invocation protocol 支持的 baseline：Unix 按 `/bin/sh`、`/usr/bin/sh` 顺序选择；Windows 按 `%ComSpec%`（仅接受 basename 为 `cmd.exe`）和 `%SystemRoot%\System32\cmd.exe` 顺序选择；其他平台的自动模式不受支持。自动解析在 `New()` 阶段执行一次，显式配置始终优先且错误时不 fallback。Shell 默认解析不读取 `$SHELL`、不使用 PATH，也不自动发现 PowerShell、Fish、Nushell 等用户偏好 Shell。
+默认 Shell 先尊重操作系统用户配置，再使用平台 fallback。Unix 使用 `os/user.Current()` 确认当前账户；由于 Go 的 `user.User` 不暴露 Shell 字段，再从 `/etc/passwd` 读取该账户的登录 Shell，找不到或不可执行时依次尝试 `/usr/bin/zsh`、`/usr/bin/sh`、`/bin/sh`。Windows 没有对应的用户登录 Shell 字段，因此依次尝试标准安装位置的 PowerShell 7 (`pwsh.exe`)、Windows PowerShell 5 (`powershell.exe`) 和 cmd (`cmd.exe`)。解析不使用 PATH；自动解析在 `New()` 阶段执行一次，显式配置始终优先且错误时不 fallback。其他平台的自动模式不受支持。
 
 待确认：Windows Job Object 与 Unix process group 的完整跨平台 conformance、non-zero exit 是否需要额外结构化字段。`tool.shell` 不使用 `"auto"` 等魔法配置值；缺省 `shell` 本身即表示默认模式。

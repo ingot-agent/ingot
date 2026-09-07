@@ -194,10 +194,7 @@ func TestOutputCollectorUsesFixedPerStreamQuotas(t *testing.T) {
 
 func TestShellTimeoutReturnsResult(t *testing.T) {
 	shell := testShell(t, Config{TimeoutSeconds: 5})
-	command := "/bin/sleep 2"
-	if runtime.GOOS == "windows" {
-		command = `for /L %i in (1,1,100000000) do @rem`
-	}
+	command := commandForDefaultShell(t, "/bin/sleep 2", "Start-Sleep -Seconds 2", `for /L %i in (1,1,100000000) do @rem`)
 	arguments, err := json.Marshal(map[string]any{"command": command, "timeout_seconds": 1})
 	if err != nil {
 		t.Fatal(err)
@@ -217,10 +214,7 @@ func TestShellTimeoutReturnsResult(t *testing.T) {
 
 func TestShellTimeoutHonorsParentCancellation(t *testing.T) {
 	shell := testShell(t, Config{TimeoutSeconds: 5})
-	command := "/bin/sleep 2"
-	if runtime.GOOS == "windows" {
-		command = `for /L %i in (1,1,100000000) do @rem`
-	}
+	command := commandForDefaultShell(t, "/bin/sleep 2", "Start-Sleep -Seconds 2", `for /L %i in (1,1,100000000) do @rem`)
 	arguments, err := json.Marshal(map[string]any{"command": command, "timeout_seconds": 1})
 	if err != nil {
 		t.Fatal(err)
@@ -235,10 +229,7 @@ func TestShellTimeoutHonorsParentCancellation(t *testing.T) {
 
 func TestShellUsesConfiguredWorkingDirectory(t *testing.T) {
 	workingDirectory := t.TempDir()
-	command := `pwd`
-	if runtime.GOOS == "windows" {
-		command = `cd`
-	}
+	command := commandForDefaultShell(t, "pwd", "[Console]::Out.Write((Get-Location).Path)", "cd")
 	shell := testShellRoot(t, Config{}, workingDirectory)
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
@@ -256,10 +247,7 @@ func TestShellUsesConfiguredWorkingDirectory(t *testing.T) {
 func TestShellInheritsParentEnvironmentByDefault(t *testing.T) {
 	const inheritedKey = "INGOT_TOOL_SHELL_DEFAULT_INHERIT"
 	t.Setenv(inheritedKey, "inherited-value")
-	command := `printf %s "$` + inheritedKey + `"`
-	if runtime.GOOS == "windows" {
-		command = `echo %` + inheritedKey + `%`
-	}
+	command := commandForDefaultShell(t, `printf %s "$`+inheritedKey+`"`, `[Console]::Out.Write($env:`+inheritedKey+`)`, `echo %`+inheritedKey+`%`)
 	shell := testShell(t, Config{})
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
@@ -276,10 +264,11 @@ func TestShellInheritsParentEnvironmentByDefault(t *testing.T) {
 func TestShellExplicitEmptyInheritEnvIsolates(t *testing.T) {
 	const secretKey = "INGOT_TOOL_SHELL_ISOLATE_SECRET"
 	t.Setenv(secretKey, "must-not-leak")
-	command := `if [ -n "${` + secretKey + `+x}" ]; then printf inherited; else printf isolated; fi`
-	if runtime.GOOS == "windows" {
-		command = `if defined ` + secretKey + ` (echo inherited) else (echo isolated)`
-	}
+	command := commandForDefaultShell(t,
+		`if [ -n "${`+secretKey+`+x}" ]; then printf inherited; else printf isolated; fi`,
+		`if (Test-Path Env:`+secretKey+`) { [Console]::Out.Write('inherited') } else { [Console]::Out.Write('isolated') }`,
+		`if defined `+secretKey+` (echo inherited) else (echo isolated)`,
+	)
 	shell := testShell(t, Config{InheritEnv: []string{}})
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
@@ -314,10 +303,7 @@ func TestShellInheritedPWDMatchesWorkspaceRoot(t *testing.T) {
 func TestShellAllowsOnlyExplicitlyInheritedEnvironment(t *testing.T) {
 	const inheritedKey = "INGOT_TOOL_SHELL_ALLOWED"
 	t.Setenv(inheritedKey, "allowed-value")
-	command := `printf %s "$` + inheritedKey + `"`
-	if runtime.GOOS == "windows" {
-		command = `echo %` + inheritedKey + `%`
-	}
+	command := commandForDefaultShell(t, `printf %s "$`+inheritedKey+`"`, `[Console]::Out.Write($env:`+inheritedKey+`)`, `echo %`+inheritedKey+`%`)
 	shell := testShell(t, Config{InheritEnv: []string{inheritedKey}})
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
@@ -329,10 +315,7 @@ func TestShellAllowsOnlyExplicitlyInheritedEnvironment(t *testing.T) {
 }
 
 func TestShellReturnsStderrAndNonZeroExitAsResult(t *testing.T) {
-	command := `printf problem >&2; exit 7`
-	if runtime.GOOS == "windows" {
-		command = `echo problem 1>&2 & exit /b 7`
-	}
+	command := commandForDefaultShell(t, `printf problem >&2; exit 7`, `[Console]::Error.Write('problem'); exit 7`, `echo problem 1>&2 & exit /b 7`)
 	shell := testShell(t, Config{})
 	result, err := invokeShell(t, shell, command)
 	if err != nil {
@@ -377,6 +360,21 @@ func workingDirectoryCommand() string {
 	return "pwd"
 }
 
+func commandForDefaultShell(t *testing.T, unixCommand, powershellCommand, cmdCommand string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return unixCommand
+	}
+	shell, err := inferDefaultShell()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isPowerShell(shell) {
+		return powershellCommand
+	}
+	return cmdCommand
+}
+
 func TestShellExplicitConfigErrorsDoNotFallback(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing-shell")
 	if runtime.GOOS == "windows" {
@@ -408,6 +406,19 @@ func TestFirstUsableShellReportsAllCandidatesWhenUnavailable(t *testing.T) {
 	_, err := firstUsableShell([]string{"first", "second"}, func(string) bool { return false })
 	if err == nil || !strings.Contains(err.Error(), "[first second]") {
 		t.Fatalf("unavailable candidates error = %v", err)
+	}
+}
+
+func TestShellCommandArgsMatchDialect(t *testing.T) {
+	if got := shellCommandArgs(filepath.Join("C:\\", "Program Files", "PowerShell", "7", "pwsh.exe"), "echo hi"); strings.Join(got, "|") != "-Command|echo hi" {
+		t.Fatalf("PowerShell arguments = %v", got)
+	}
+	wantFlag := "-c"
+	if runtime.GOOS == "windows" {
+		wantFlag = "/C"
+	}
+	if got := shellCommandArgs(testShellPath(), "echo hi"); strings.Join(got, "|") != wantFlag+"|echo hi" {
+		t.Fatalf("platform shell arguments = %v, want flag %s", got, wantFlag)
 	}
 }
 

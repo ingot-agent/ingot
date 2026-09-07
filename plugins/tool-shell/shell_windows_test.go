@@ -16,53 +16,100 @@ import (
 	"github.com/ingot-agent/sdk/workspace"
 )
 
-func TestInferDefaultShellPrefersValidComSpec(t *testing.T) {
+func TestInferDefaultShellPrefersPowerShell7(t *testing.T) {
 	root := t.TempDir()
-	comspec := filepath.Join(root, "cmd.exe")
-	if err := os.WriteFile(comspec, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ComSpec", comspec)
-	t.Setenv("SystemRoot", filepath.Join(root, "missing-system-root"))
+	programFiles, systemRoot := setWindowsShellRoots(t, root)
+	pwsh := filepath.Join(programFiles, "PowerShell", "7", "pwsh.exe")
+	powershell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	cmd := filepath.Join(systemRoot, "System32", "cmd.exe")
+	writeTestExecutable(t, pwsh)
+	writeTestExecutable(t, powershell)
+	writeTestExecutable(t, cmd)
 
 	got, err := inferDefaultShell()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != comspec {
-		t.Fatalf("inferred shell = %q, want %q", got, comspec)
+	if got != pwsh {
+		t.Fatalf("inferred shell = %q, want %q", got, pwsh)
+	}
+}
+
+func TestInferDefaultShellFallsBackToWindowsPowerShell5(t *testing.T) {
+	root := t.TempDir()
+	_, systemRoot := setWindowsShellRoots(t, root)
+	powershell := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	cmd := filepath.Join(systemRoot, "System32", "cmd.exe")
+	writeTestExecutable(t, powershell)
+	writeTestExecutable(t, cmd)
+
+	got, err := inferDefaultShell()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != powershell {
+		t.Fatalf("inferred shell = %q, want %q", got, powershell)
+	}
+}
+
+func TestInferDefaultShellFallsBackToCmd(t *testing.T) {
+	root := t.TempDir()
+	_, systemRoot := setWindowsShellRoots(t, root)
+	cmd := filepath.Join(systemRoot, "System32", "cmd.exe")
+	writeTestExecutable(t, cmd)
+
+	got, err := inferDefaultShell()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != cmd {
+		t.Fatalf("inferred shell = %q, want %q", got, cmd)
 	}
 }
 
 func TestInferDefaultShellRejectsNonCmdComSpec(t *testing.T) {
 	root := t.TempDir()
-	systemRoot := filepath.Join(root, "system-root")
-	fallback := filepath.Join(systemRoot, "System32", "cmd.exe")
-	if err := os.MkdirAll(filepath.Dir(fallback), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fallback, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("ComSpec", filepath.Join(root, "pwsh.exe"))
-	t.Setenv("SystemRoot", systemRoot)
+	_, systemRoot := setWindowsShellRoots(t, root)
+	cmd := filepath.Join(systemRoot, "System32", "cmd.exe")
+	writeTestExecutable(t, cmd)
+	t.Setenv("ComSpec", filepath.Join(root, "custom-shell.exe"))
 
 	got, err := inferDefaultShell()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != fallback {
-		t.Fatalf("inferred shell = %q, want fallback %q", got, fallback)
+	if got != cmd {
+		t.Fatalf("inferred shell = %q, want fallback %q", got, cmd)
 	}
 }
 
 func TestInferDefaultShellFailsWhenAllCandidatesAreUnavailable(t *testing.T) {
-	root := t.TempDir()
-	t.Setenv("ComSpec", filepath.Join(root, "pwsh.exe"))
-	t.Setenv("SystemRoot", filepath.Join(root, "missing-system-root"))
-
+	setWindowsShellRoots(t, t.TempDir())
 	if _, err := inferDefaultShell(); err == nil {
-		t.Fatal("inference should fail when no cmd.exe candidate exists")
+		t.Fatal("inference should fail when no supported shell exists")
+	}
+}
+
+func setWindowsShellRoots(t *testing.T, root string) (programFiles, systemRoot string) {
+	t.Helper()
+	programFiles = filepath.Join(root, "program-files")
+	systemRoot = filepath.Join(root, "windows")
+	t.Setenv("ProgramW6432", programFiles)
+	t.Setenv("ProgramFiles", programFiles)
+	t.Setenv("ProgramFiles(x86)", filepath.Join(root, "program-files-x86"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(root, "local-app-data"))
+	t.Setenv("SystemRoot", systemRoot)
+	t.Setenv("ComSpec", filepath.Join(systemRoot, "System32", "cmd.exe"))
+	return programFiles, systemRoot
+}
+
+func writeTestExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -116,7 +163,8 @@ func TestWindowsDecoderPreservesUTF8(t *testing.T) {
 
 func TestWindowsShellChineseOutputIsUTF8(t *testing.T) {
 	shell := testShell(t, Config{})
-	result, err := invokeShell(t, shell, `echo 中文 & echo 错误 1>&2`)
+	command := commandForDefaultShell(t, "", `[Console]::Out.WriteLine('中文'); [Console]::Error.WriteLine('错误')`, `echo 中文 & echo 错误 1>&2`)
+	result, err := invokeShell(t, shell, command)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +186,8 @@ func TestWindowsShellChineseProgressIsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := invokeShell(t, exports.Tools[0], `echo 中文 & echo 错误 1>&2`); err != nil {
+	command := commandForDefaultShell(t, "", `[Console]::Out.WriteLine('中文'); [Console]::Error.WriteLine('错误')`, `echo 中文 & echo 错误 1>&2`)
+	if _, err := invokeShell(t, exports.Tools[0], command); err != nil {
 		t.Fatal(err)
 	}
 	consumer.mu.Lock()

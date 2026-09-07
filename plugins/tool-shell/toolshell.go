@@ -316,7 +316,7 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := exec.Command(t.config.shell, shellCommandArgs(*args.Command)...)
+	command := exec.Command(t.config.shell, shellCommandArgs(t.config.shell, *args.Command)...)
 	command.Dir = binding.Root
 	command.Env = commandEnvironment(t.config.environment, t.config.inheritEnvironment, binding.Root)
 	collector := newOutputCollector(t.config.maxOutputBytes)
@@ -381,13 +381,6 @@ func (t *shellTool) Invoke(ctx context.Context, invocation tool.Invocation) (too
 		}
 	}
 	return tool.Result{Content: content.FromText(collector.format(exitCode(waitErr)))}, nil
-}
-
-func shellCommandArgs(command string) []string {
-	if runtime.GOOS == "windows" {
-		return []string{"/C", command}
-	}
-	return []string{"-c", command}
 }
 
 func exitCode(err error) int {

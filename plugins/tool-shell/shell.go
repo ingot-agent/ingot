@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func resolveShell(configured string) (string, error) {
@@ -60,4 +61,19 @@ func firstUsableShell(candidates []string, usable func(string) bool) (string, er
 		}
 	}
 	return "", fmt.Errorf("no usable default shell found; tried: %v", candidates)
+}
+
+func shellCommandArgs(shell, command string) []string {
+	if isPowerShell(shell) {
+		return []string{"-Command", command}
+	}
+	if runtime.GOOS == "windows" {
+		return []string{"/C", command}
+	}
+	return []string{"-c", command}
+}
+
+func isPowerShell(shell string) bool {
+	base := strings.ToLower(filepath.Base(shell))
+	return base == "pwsh" || base == "pwsh.exe" || base == "powershell" || base == "powershell.exe"
 }
