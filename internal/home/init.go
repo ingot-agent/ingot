@@ -112,7 +112,7 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 	if profile.Name == "default" {
 		systemPrompt = prompts.CodingAgent()
 	}
-	configData, err := renderConfigTOML(home.Root, entries, systemPrompt)
+	configData, err := renderConfigTOML(entries, systemPrompt)
 	if err != nil {
 		return InitResult{}, err
 	}
@@ -189,7 +189,7 @@ func renderDesiredTOML(entries []bundle.Entry) ([]byte, error) {
 // renderConfigTOML renders the default runtime config template. Every plugin
 // of the profile gets exactly one table (required by the runtime config
 // decoder); plugins with required values get a commented sample.
-func renderConfigTOML(homeRoot string, entries []bundle.Entry, systemPrompt string) ([]byte, error) {
+func renderConfigTOML(entries []bundle.Entry, systemPrompt string) ([]byte, error) {
 	var output bytes.Buffer
 	output.WriteString("# ingot runtime configuration.\n")
 	output.WriteString("#\n")
@@ -231,11 +231,7 @@ func renderConfigTOML(homeRoot string, entries []bundle.Entry, systemPrompt stri
 		}
 	}
 	if _, ok := byName["tool.shell"]; ok {
-		shell, shellErr := defaultShellPath()
-		if shellErr != nil {
-			return nil, shellErr
-		}
-		write("--- shell tool execution boundary ---\nThe command working directory comes from the session Workspace binding, not config.", "tool.shell", fmt.Sprintf("shell = %s\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n", strconv.Quote(shell)))
+		write("--- shell tool execution boundary ---\nThe command working directory comes from the session Workspace binding, not config.\nShell is automatically resolved when omitted.\nSet an absolute shell path to override the default.", "tool.shell", "# shell = \"/absolute/path/to/shell\"\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n")
 	}
 	for _, entry := range entries {
 		switch entry.Name {
@@ -282,26 +278,4 @@ func renderTOMLMultilineString(value string) string {
 	// config stays readable without adding a trailing newline to the value.
 	output.WriteString("\\\n\"\"\"")
 	return output.String()
-}
-
-// defaultShellPath picks an absolute shell executable that exists on this
-// machine so the generated config passes startup validation out of the box.
-func defaultShellPath() (string, error) {
-	var candidates []string
-	if shell := os.Getenv("SHELL"); shell != "" {
-		candidates = append(candidates, shell)
-	}
-	if comspec := os.Getenv("ComSpec"); comspec != "" {
-		candidates = append(candidates, comspec)
-	}
-	candidates = append(candidates, "/bin/sh", "/bin/bash", "/usr/bin/sh", "C:\\Windows\\System32\\cmd.exe")
-	for _, candidate := range candidates {
-		if !filepath.IsAbs(candidate) {
-			continue
-		}
-		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
-			return candidate, nil
-		}
-	}
-	return "", fmt.Errorf("no absolute executable shell found on this machine (checked %s)", strings.Join(candidates, ", "))
 }
