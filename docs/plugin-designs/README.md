@@ -21,6 +21,7 @@ Plugin 设计必须遵循：
 | [`session.sqlite`](./session.sqlite_v0.1.md) | Implemented v0.1 (M5) | `session.Store` + `session.Manager` + `session.Query` | transaction ordering、opaque Fork、archive lifecycle、deterministic discovery |
 | [`tool.shell`](./tool.shell_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace-scoped working directory、子进程树、环境隔离、输出与时间边界 |
 | [`tool.ask`](./tool.ask_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Tool内同步用户交互 |
+| [`tool.edit`](./tool.edit_v0.1.md) | Implemented v0.1 | `[]tool.Tool` | Workspace-relative 精确 UTF-8 文本替换 |
 | [`tool.runtime`](./tool.runtime_v0.1.md) | Implemented v0.1 | `tool.Runtime` | lookup、schema validation、Interceptor chokepoint |
 | [`interceptor.approval`](./interceptor.approval_v0.1.md) | Implemented v0.1 | `[]tool.Interceptor` | allow/ask/deny与fail-closed审批 |
 | [`interceptor.script`](./interceptor.script_v0.1.md) | Implemented v0.1 | typed Interceptors | 外部策略/审计hook协议与进程回收 |
@@ -31,13 +32,13 @@ Plugin 设计必须遵循：
 | [`context.compact`](./context.compact_v0.1.md) | Implemented v0.1 | `contextwindow.Compactor` | 非破坏式增量摘要、事实Delta与checkpoint复用 |
 | [`agent.default`](./agent.default_v0.1.md) | Implemented v0.1 | `agent.Runtime` | Session序列化、Model/Tool循环和持久化 |
 
-共15个Plugin；`app.backend`包含`host`和`app`两个Component，其余 Plugin 各一个 Component。
+共16个Plugin；`app.backend`包含`host`和`app`两个Component，其余 Plugin 各一个 Component。
 
 ## 依赖与建议实施批次
 
 ```text
 Batch 1  asset.local / http.default / session.sqlite（Session + Workspace）
-Batch 2  tool.shell / tool.ask / approval / tool.runtime
+Batch 2  tool.shell / tool.ask / tool.edit / approval / tool.runtime
 Batch 3  model.openai-compatible / model.runtime / usage.default
 Batch 4  prompt.default / context.compact / agent.default
 Batch 5  app.backend / interceptor.script hardening
