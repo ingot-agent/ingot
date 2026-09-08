@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Activity, ArrowDown, ChevronRight, Copy, FolderOpen, LoaderCircle, X } from 'lucide-vue-next'
+import { Activity, ArrowDown, ChevronRight, Copy, FolderOpen, LoaderCircle, Terminal, X } from 'lucide-vue-next'
 import { useRuntime } from '../stores/runtime'
 import { APIError, errorMessage } from '../api'
 import { turnCopyTexts } from '../copy'
@@ -22,6 +22,7 @@ import DirectoryPicker from '../components/DirectoryPicker.vue'
 import JsonBlock from '../components/JsonBlock.vue'
 import WorkspaceHeader from '../components/WorkspaceHeader.vue'
 import { readPreference, savePreference } from '../theme'
+import { shouldShowHistoryMessage, shouldShowTurnByline } from './conversationDisplay'
 defineEmits<{ navigation: []; pending: [] }>()
 const runtime = useRuntime()
 const route = useRoute()
@@ -36,6 +37,7 @@ const requests = computed(() => Object.values(runtime.interactions).filter(item 
 const hostStates = computed(() => Object.values(runtime.interactionStates).filter(item => item.scope?.agent?.sessionId === sessionId.value || !item.scope))
 const sending = ref(false)
 const details = ref(readPreference('details', 'closed') === 'open')
+const showToolCalls = ref(readPreference('tool-calls', 'visible') === 'visible')
 // The workspace root for a brand-new conversation is chosen here, then bound
 // immutably to the created Session. The most recently used root is remembered
 // for convenience; the durable authority remains the Session binding.
@@ -62,7 +64,10 @@ async function selectWorkspace(path: string) {
   }
 }
 const narrow = ref(window.matchMedia('(max-width: 1199px)').matches)
+const chatMain = ref<HTMLElement>()
 const scroll = ref<HTMLElement>()
+const composerDock = ref<HTMLElement>()
+let composerObserver: ResizeObserver | undefined
 const following = ref(true)
 type TranscriptEntry = { id: string; kind: 'message'; message: Message; index: number } | { id: string; kind: 'turn'; turn: LiveTurn }
 const transcript = computed(() => {
@@ -106,7 +111,18 @@ const welcome = computed(() => !sessionId.value)
 const media = window.matchMedia('(max-width: 1199px)')
 function resize() { narrow.value = media.matches }
 media.addEventListener('change', resize)
+function syncComposerSpace() {
+  if (chatMain.value && composerDock.value) chatMain.value.style.setProperty('--composer-space', `${composerDock.value.offsetHeight}px`)
+}
+onMounted(() => {
+  syncComposerSpace()
+  if (composerDock.value && typeof ResizeObserver !== 'undefined') {
+    composerObserver = new ResizeObserver(syncComposerSpace)
+    composerObserver.observe(composerDock.value)
+  }
+})
 watch(details, value => savePreference('details', value ? 'open' : 'closed'))
+watch(showToolCalls, value => savePreference('tool-calls', value ? 'visible' : 'hidden'))
 watch(sessionId, id => { runtime.activeSession = id; following.value = true; if (id) void runtime.loadHistory(id) }, { immediate: true })
 // A directory chosen in the sidebar starts a brand-new conversation scoped to that workspace.
 watch(() => route.query.workspace, value => {
@@ -116,10 +132,35 @@ watch(() => route.query.workspace, value => {
   }
 }, { immediate: true })
 function onScroll() { if (scroll.value) following.value = scroll.value.scrollHeight - scroll.value.scrollTop - scroll.value.clientHeight < 100 }
-async function latest() { following.value = true; await nextTick(); scroll.value?.scrollTo({ top: scroll.value.scrollHeight, behavior: 'smooth' }) }
-watch(() => [transcript.value.length, ...liveTurns.value.map(turn => turn.output.length + turn.reasoning.length + (turn.blocks?.length || 0)), requests.value.length, toolCalls.value.length], async () => {
-  if (following.value) { await nextTick(); if (scroll.value) scroll.value.scrollTop = scroll.value.scrollHeight }
+function scrollToBottom(behavior: ScrollBehavior = 'auto') {
+  const element = scroll.value
+  if (!element) return
+  const max = Math.max(0, element.scrollHeight - element.clientHeight)
+  if (Math.abs(element.scrollTop - max) <= 1) return
+  element.scrollTo({ top: max, behavior })
+}
+async function latest() { following.value = true; await nextTick(); scrollToBottom('smooth') }
+async function keepFollowingLatest() {
+  if (!following.value) return
+  await nextTick()
+  scrollToBottom()
+}
+watch(() => [transcript.value.length, ...liveTurns.value.map(turn => turn.output.length + turn.reasoning.length + (turn.blocks || []).filter(block => block.kind !== 'tool').length), requests.value.length].join('|'), keepFollowingLatest, { flush: 'post' })
+watch(() => liveTurns.value.map(turn => (turn.blocks || []).filter(block => block.kind === 'tool').length).join('|'), () => {
+  if (showToolCalls.value) void keepFollowingLatest()
 }, { flush: 'post' })
+watch(() => toolCalls.value.length, () => {
+  if (showToolCalls.value) void keepFollowingLatest()
+}, { flush: 'post' })
+async function toggleToolCalls() {
+  const container = scroll.value
+  const wasFollowing = following.value
+  const anchor = container ? { top: container.scrollTop } : undefined
+  showToolCalls.value = !showToolCalls.value
+  await nextTick()
+  if (!container || !anchor) return
+  container.scrollTop = wasFollowing ? Math.max(0, container.scrollHeight - container.clientHeight) : anchor.top
+}
 async function send(input: string, attachments: Attachment[], done: () => void) {
   sending.value = true
   try {
@@ -155,14 +196,14 @@ async function copy(text: string) {
 async function restore() {
   try { await runtime.mutateSession(sessionId.value, 'restore') } catch (error) { runtime.notify(errorMessage(error)) }
 }
-onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.activeSession = '' })
+onBeforeUnmount(() => { media.removeEventListener('change', resize); composerObserver?.disconnect(); runtime.activeSession = '' })
 </script>
 <template>
   <div class="chat-layout" :class="{ 'with-details': details && !narrow }">
-    <section class="chat-main">
+    <section ref="chatMain" class="chat-main">
       <WorkspaceHeader class="conversation-header" @navigation="$emit('navigation')" @pending="$emit('pending')">
         <h1 class="truncate" :title="session?.title || t('newChat')">{{ session?.title || t('newChat') }}</h1><span v-if="session?.archivedAt" class="muted text-xs shrink-0">{{ t('archived') }}</span><div v-if="session?.workspace" class="muted text-xs truncate" :title="session.workspace">{{ t('workspace') }}: {{ session.workspace }}</div>
-        <template #actions><button class="icon-button" :class="{ accent: details }" :aria-label="t('execution')" :aria-expanded="details" @click="details = !details"><Activity :size="18" /></button><SessionMenu v-if="session" :session="session" /></template>
+        <template #actions><button type="button" class="icon-button tool-calls-toggle" :class="{ accent: showToolCalls }" :aria-label="t(showToolCalls ? 'hideToolCalls' : 'showToolCalls')" :aria-pressed="showToolCalls" :title="t(showToolCalls ? 'hideToolCalls' : 'showToolCalls')" @click="toggleToolCalls"><Terminal :size="18" /></button><button type="button" class="icon-button" :class="{ accent: details }" :aria-label="t('execution')" :aria-expanded="details" @click="details = !details"><Activity :size="18" /></button><SessionMenu v-if="session" :session="session" /></template>
       </WorkspaceHeader>
       <div ref="scroll" class="conversation-scroll" @scroll.passive="onScroll">
         <div v-if="welcome" class="welcome">
@@ -176,27 +217,29 @@ onBeforeUnmount(() => { media.removeEventListener('change', resize); runtime.act
           <div v-if="runtime.historyLoading[sessionId] && !messages.length" class="history-loading"><LoaderCircle class="spin" :size="16" /><div>{{ t('loadingHistory') }}<p v-if="running.length" class="muted text-xs mt-1">{{ t('historyWaiting') }}</p></div></div>
           <div v-if="runtime.historyErrors[sessionId]" class="error-banner"><p>{{ runtime.historyErrors[sessionId] }}</p><button class="text-button" @click="runtime.loadHistory(sessionId)">{{ t('retry') }}</button></div>
           <template v-for="entry in transcript" :key="entry.id">
-            <article v-if="entry.kind === 'message'" class="message" :class="'message-' + entry.message.role">
-              <div v-if="entry.message.role !== 'user'" class="message-byline"><Brand /><span>{{ entry.message.role === 'assistant' ? t('assistant') : entry.message.role }}</span></div>
-              <div class="message-content"><ContentParts :parts="entry.message.content" /></div>
-              <ToolCard v-for="call in entry.message.toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="toolResults.get(call.id)?.content" />
-              <button v-if="entry.message.role === 'assistant' && turnCopies.has(entry.index)" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(turnCopies.get(entry.index)!)"><Copy :size="14" /></button>
-            </article>
+            <template v-if="entry.kind === 'message'">
+              <article v-if="shouldShowHistoryMessage(entry.message, showToolCalls)" class="message" :class="'message-' + entry.message.role">
+                <div v-if="entry.message.role !== 'user'" class="message-byline"><Brand /><span>{{ entry.message.role === 'assistant' ? t('assistant') : entry.message.role }}</span></div>
+                <div class="message-content"><ContentParts :parts="entry.message.content" /></div>
+                <template v-if="showToolCalls"><ToolCard v-for="call in entry.message.toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="toolResults.get(call.id)?.content" /></template>
+                <button v-if="entry.message.role === 'assistant' && turnCopies.has(entry.index)" class="icon-button message-copy" :aria-label="t('copy')" @click="copy(turnCopies.get(entry.index)!)"><Copy :size="14" /></button>
+              </article>
+            </template>
             <article v-else class="message message-assistant live-message">
               <template v-if="showTurn(entry.turn)">
-                <div class="message-byline"><Brand /><span>Ingot</span><StatusBadge :status="entry.turn.status" /></div>
-                <TurnContent :turn="entry.turn" :interactions="runtime.interactions" :historical-tool-ids="historicalToolIds" />
+                <div v-if="shouldShowTurnByline(entry.turn, showToolCalls, runtime.interactions)" class="message-byline"><Brand /><span>Ingot</span><StatusBadge :status="entry.turn.status" /></div>
+                <TurnContent :turn="entry.turn" :interactions="runtime.interactions" :historical-tool-ids="historicalToolIds" :show-tool-calls="showToolCalls" />
               </template>
               <p v-if="entry.turn.error" class="error-banner">{{ entry.turn.error.message }}</p>
               <button v-if="entry.turn.status !== 'running'" class="execution-link" @click="details = true"><Activity :size="13" /><span>{{ t('status.' + entry.turn.status) }}</span><template v-if="entry.turn.outcome"><span>·</span><span>{{ (entry.turn.outcome.durationNs / 1e9).toFixed(1) }}s</span></template><ChevronRight :size="12" /></button>
             </article>
           </template>
-          <ToolCard v-for="call in toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="call.content" :status="call.status" :error="call.error" />
+          <template v-if="showToolCalls"><ToolCard v-for="call in toolCalls" :key="call.id" :name="call.name" :arguments="call.arguments" :content="call.content" :status="call.status" :error="call.error" /></template>
           <InteractionCard v-for="item in looseRequests" :key="item.id" :interaction="item" />
           <details v-for="state in hostStates" :key="state.id" class="host-state"><summary>{{ state.description || state.name }}</summary><JsonBlock :value="state.values" /></details>
         </div>
       </div>
-      <div class="composer-dock" :class="{ 'welcome-composer': welcome }">
+      <div ref="composerDock" class="composer-dock" :class="{ 'welcome-composer': welcome }">
         <div v-if="welcome" class="workspace-picker">
           <button type="button" class="workspace-browse" :aria-label="t('chooseWorkspace')" @click="pickerOpen = true">
             <FolderOpen :size="16" /><span>{{ t('chooseWorkspace') }}</span>

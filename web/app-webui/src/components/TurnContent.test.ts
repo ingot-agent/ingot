@@ -24,7 +24,7 @@ describe('chronological turn content', () => {
     reduceTurn(turns, { type: 'agent.tool.started', scope, data: { call: { id: 'call', name: 'inspect', arguments: {} } } })
     delta('reasoning', 'Second thought')
     reduceTurn(turns, { type: 'interaction.requested', scope, data: interactions.question })
-    wrapper = mount(TurnContent, { props: { turn: turns.web, interactions, historicalToolIds: new Set<string>() }, global: { plugins: [pinia, i18n] } })
+    wrapper = mount(TurnContent, { props: { turn: turns.web, interactions, historicalToolIds: new Set<string>(), showToolCalls: true }, global: { plugins: [pinia, i18n] } })
     const firstReasoning = wrapper.get('.reasoning-block').element as HTMLDetailsElement
     firstReasoning.open = true
     await wrapper.get('textarea').setValue('Keep this answer')
@@ -44,5 +44,25 @@ describe('chronological turn content', () => {
     expect(wrapper.text()).toContain('report.txt')
     expect(wrapper.find('.interaction-card').exists()).toBe(false)
     expect(wrapper.find('.thinking-dots').exists()).toBe(false)
+  })
+
+  it('hides tool blocks while keeping interactions visible and reveals live calls when enabled', async () => {
+    const pinia = createPinia()
+    const interactions = reactive<Record<string, Interaction>>({ question: { id: 'question', name: 'ask', fields: [{ name: 'answer', label: 'Answer', kind: 'string', required: true, sensitive: false, hasDefault: false }] } })
+    const turn: LiveTurn = {
+      id: 'hidden-tool', sessionId: 's', revision: 0, output: 'Visible answer', reasoning: '', status: 'running',
+      blocks: [
+        { id: 'tool', kind: 'tool', call: { id: 'call', name: 'inspect', arguments: {} }, status: 'running' },
+        { id: 'interaction', kind: 'interaction', interactionId: 'question' },
+        { id: 'answer', kind: 'output', text: 'Visible answer', boundary: 0 },
+      ],
+    }
+    wrapper = mount(TurnContent, { props: { turn, interactions, historicalToolIds: new Set<string>(), showToolCalls: false }, global: { plugins: [pinia, i18n] } })
+    expect(wrapper.find('.tool-card').exists()).toBe(false)
+    expect(wrapper.find('.interaction-card').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Visible answer')
+
+    await wrapper.setProps({ showToolCalls: true })
+    expect(wrapper.find('.tool-card').exists()).toBe(true)
   })
 })

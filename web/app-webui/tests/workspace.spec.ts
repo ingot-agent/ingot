@@ -82,6 +82,41 @@ test('multi-round reasoning, commentary, tools and interactions append in order'
   await expect(history).toHaveText(["I'll inspect the workspace first.", 'workspace.inspect', "The first check is complete. I'll verify the result.", 'workspace.verify', 'Your workspace is ready. We can take the next step together.'])
 })
 
+test('tool call visibility is a persistent conversation preference', async ({ page }) => {
+  await ready(page)
+  await send(page, 'timeline approve')
+  await expect(page.locator('.tool-card')).toHaveCount(1)
+  await expect(page.getByText('Allow workspace inspection?', { exact: true })).toBeVisible()
+  const scrollLayout = await page.locator('.conversation-scroll').evaluate(element => {
+    const scrollRect = element.getBoundingClientRect()
+    const composerRect = document.querySelector('.composer-dock')!.getBoundingClientRect()
+    return { scrollBottom: scrollRect.bottom, composerTop: composerRect.top, viewportBottom: window.innerHeight }
+  })
+  expect(scrollLayout.scrollBottom).toBeGreaterThan(scrollLayout.composerTop)
+  expect(scrollLayout.scrollBottom).toBeCloseTo(scrollLayout.viewportBottom, 0)
+
+  await page.getByRole('button', { name: 'Hide tool calls', exact: true }).click()
+  await expect(page.locator('.tool-card')).toHaveCount(0)
+  await expect(page.getByText('Allow workspace inspection?', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Show tool calls', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(async () => page.locator('.conversation-scroll').evaluate(element => element.scrollTop + element.clientHeight >= element.scrollHeight - 1)).toBe(true)
+
+  await page.getByRole('radio', { name: 'Yes', exact: true }).check()
+  await page.getByRole('button', { name: 'Submit response', exact: true }).click()
+  await expect(page.getByText('Continue with verification?', { exact: true })).toBeVisible()
+  await expect(page.locator('.tool-card')).toHaveCount(0)
+  await page.getByRole('textbox', { name: 'Answer', exact: true }).fill('Continue')
+  await page.getByRole('button', { name: 'Submit response', exact: true }).click()
+  await expect(page.getByText('Your workspace is ready. We can take the next step together.', { exact: true })).toBeVisible()
+
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Show tool calls', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await expect(page.locator('.tool-card')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Show tool calls', exact: true }).click()
+  await expect(page.locator('.tool-card')).toHaveCount(2)
+})
+
 test('global request drawer has independent accessible fields and settles inline requests', async ({ page }) => {
   await ready(page)
   await send(page, 'ask from the global drawer')

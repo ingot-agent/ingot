@@ -8,7 +8,7 @@ import MarkdownContent from './MarkdownContent.vue'
 import ToolCard from './ToolCard.vue'
 import InteractionCard from './InteractionCard.vue'
 
-const props = defineProps<{ turn: LiveTurn; interactions: Record<string, Interaction>; historicalToolIds: Set<string> }>()
+const props = defineProps<{ turn: LiveTurn; interactions: Record<string, Interaction>; historicalToolIds: Set<string>; showToolCalls: boolean }>()
 const { t } = useI18n()
 type DisplayBlock = TurnBlock | { id: string; kind: 'content'; parts: Part[] }
 const blocks = computed<DisplayBlock[]>(() => {
@@ -20,7 +20,7 @@ const blocks = computed<DisplayBlock[]>(() => {
     if (last?.kind === 'output') items.splice(-1, 1, result)
     else items.push(result)
   }
-  return items.filter(block => block.kind === 'tool' ? !props.historicalToolIds.has(block.call.id)
+  return items.filter(block => block.kind === 'tool' ? props.showToolCalls && !props.historicalToolIds.has(block.call.id)
     : block.kind !== 'interaction' || props.interactions[block.interactionId])
 })
 </script>

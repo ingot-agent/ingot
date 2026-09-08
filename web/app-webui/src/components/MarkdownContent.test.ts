@@ -7,7 +7,9 @@ let wrapper: VueWrapper
 afterEach(() => { wrapper?.unmount(); vi.unstubAllGlobals() })
 describe('untrusted Markdown', () => {
   it('disables raw HTML, unsafe links, and background remote image requests', () => {
-    wrapper = mount(MarkdownContent, { props: { text: '<img src=x onerror=alert(1)>\n\n[bad](javascript:alert(1))\n\n![remote](https://example.com/pixel.png)' }, global: { plugins: [i18n] } })
+    const rawHtml = ['<img', ' src=x onerror=alert(1)>'].join('')
+    const text = [rawHtml, '[bad](javascript:alert(1))', '![remote](https://example.com/pixel.png)'].join('\n\n')
+    wrapper = mount(MarkdownContent, { props: { text }, global: { plugins: [i18n] } })
     expect(wrapper.find('img').exists()).toBe(false)
     expect(wrapper.find('a[href^="javascript:"]').exists()).toBe(false)
     expect(wrapper.get('a').attributes('href')).toBe('https://example.com/pixel.png')
