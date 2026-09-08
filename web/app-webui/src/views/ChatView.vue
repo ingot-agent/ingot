@@ -22,7 +22,7 @@ import DirectoryPicker from '../components/DirectoryPicker.vue'
 import JsonBlock from '../components/JsonBlock.vue'
 import WorkspaceHeader from '../components/WorkspaceHeader.vue'
 import { readPreference, savePreference } from '../theme'
-import { shouldShowHistoryMessage, shouldShowTurnByline } from './conversationDisplay'
+import { shouldShowTurnByline } from './conversationDisplay'
 defineEmits<{ navigation: []; pending: [] }>()
 const runtime = useRuntime()
 const route = useRoute()
