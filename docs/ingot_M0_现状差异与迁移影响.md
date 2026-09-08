@@ -126,20 +126,21 @@ M0 冻结的 5 个对象中，**没有任何一个在现有代码中完整存在
 | Plugin 自己加载 config/state | Host 统一 decode | 方向性反转 |
 | 移除统一 `config.toml` | 强依赖 | 需删除并迁移 |
 | Plugin 可处于 Unconfigured | 缺失 table 即启动失败 | 必须改造 |
-| Config 参数保留、类型换成来源（D2） | 参数是 Host 解码的 TOML 结构 | 需新增 ABI Contract + 改 16 个 Component |
+| Config 参数移除（D2） | 参数是 Host 解码的 TOML 结构 | 需移除参数 + 改 16 个 Component |
 | Configuration Operation convention | 无 | 全新 |
 | secret 不经普通读 Operation 明文返回 | 无约定 | 全新 |
 | `restart_required` | 无 | 全新 |
 
 ### 5.3 迁移影响（M1 核心）
 
-1. **generated wiring 必须去掉统一 decode。** `writeRuntimeConfig` / `decodeConfigs` / `resolveConfigTable` / `strictDecodeConfig` 全部需要移除，改为注入 Config 来源（M0 决策 D2）。
-2. **`New` 签名改造是最大破坏点。** M0 已定保留 Config 参数、类型换成注入的来源 Contract（D2）。影响 15 个官方 Plugin / 16 个 Component（`New(ctx, cfg Config, deps Dependencies)` → `New(ctx, cfg Source, deps Dependencies)`），并且需要在 `ingot-abi` 新增该 Contract，是 M1 的主要工作量。
+1. **generated wiring 必须去掉统一 decode。** `writeRuntimeConfig` / `decodeConfigs` / `resolveConfigTable` / `strictDecodeConfig` 全部需要移除（M0 决策 D2）。
+2. **`New` 签名改造是最大破坏点。** M0 已定移除 Config 参数（D2）：`New(ctx, cfg Config, deps Dependencies)` → `New(ctx, deps Dependencies)`。影响 15 个官方 Plugin / 16 个 Component，是 M1 的主要工作量。不新增 ABI 类型：配置读写走已有的 `deps.State state.Scope`。
+3. **Host 侧 Config 机制要一并移除。** `ConfigImport`/`ConfigType` 与「根 package 必须有 `Config` struct」校验（`graph.go:37-39, 157-164`）、`RootPackage`（`lock.go`、`resolve.go:292`、`build.go:328`）、manifest `config_package`（`manifest.go:24,78`）都不再被 Runtime 使用；字段删除与版本提升由 M1 按格式兼容性决定。
 3. **存量 `config.toml` 不迁移（D4）。** 不读取、不解析、不转换，也不提供迁移命令；用户在新模型下通过 Configuration Operation 重新配置。`ingot init` 不再生成 config 模板。
 4. **`ingot init` 的 config 模板需要删除。** `renderConfigTOML`（`internal/home/init.go:192`）生成的模板（含 `api_key` 等）不再适用，取而代之应是「Runtime Home 初始化 + Plugin setup 指引」。
 5. **pre-switch check 在未配置下必须通过（D5）。** 现在 check 依赖 `config.toml` 可 decode；去掉后，check 判定标准变为「`New` 在无持久化配置下构造成功」，要求 Plugin 的 `New` 在无 state 时安全。
 6. **Operation 基础设施已存在但未用于 config。** `sdk/operation/operation.go` 已定义 `Definition`/`Request`/`Result` 与 JSON Schema 约定，`plugins/app-webui/app/server.go` 的 `Dependencies.Operations []operation.Operation` 已能收集并暴露 Operation。Configuration Operation 可以复用这套 contract；缺口是「不依赖 app.backend 的调用入口」（即 M1 的 Runtime Management Channel）。
-7. **`state.Scope` 覆盖面不足。** 当前只有 `asset.local` 与 `session.sqlite` 声明了 `State state.Scope` 依赖；若 Config 与 State 同址（D2），其余 13 个 Plugin 需要补上该依赖（或由新的 Config 来源 Contract 承载位置信息，M1 定稿）。
+7. **`state.Scope` 覆盖面不足。** 当前只有 `asset.local` 与 `session.sqlite` 声明了 `State state.Scope` 依赖。移除 Config 参数后（D2），**其余 13 个 Plugin 需要补上 `State state.Scope`** 才能持久化自己的配置，这是 M1 中除签名改造外的第二项必做工作。
 
 ## 6. Collection
 
@@ -175,11 +176,11 @@ M0 冻结的 5 个对象中，**没有任何一个在现有代码中完整存在
 | 仓库 | M0 冻结带来的影响 |
 |---|---|
 | `ingot-core` | 最大：generated wiring、home 模型、CLI、builder manifest 都要改 |
-| `ingot-abi` | 需新增 Config 来源 Contract（M0 决策 D2）；`state.Scope` 方向不变 |
+| `ingot-abi` | **无需改动**：`state.Scope` 已足够承载 Plugin 配置持久化（M0 决策 D2 不新增 ABI 类型） |
 | `sdk` | `operation` 已可用于 Configuration Operation；可能需要新增 config/setup 相关通用类型 |
-| `plugins/*`（在 core 内） | `New` 签名改造（Config 类型换成来源）+ config 加载方式改变，影响全部 15 个官方 Plugin |
+| `plugins/*`（在 core 内） | `New` 签名改造（移除 Config 参数）+ 补 `state.Scope` 依赖，影响全部 15 个官方 Plugin |
 
-`ingot-abi` 的 `state.Scope` 注释已经写明「Scope carries only the persistent location: file access, schema migration and any business persistence remain the Plugin's responsibility」，与 M0 第 5、6 节一致，无需反转。新增的 Config 来源 Contract 应遵循同一原则：只提供位置与读写能力，不解释内容。
+`ingot-abi` 的 `state.Scope` 注释已经写明「Scope carries only the persistent location: file access, schema migration and any business persistence remain the Plugin's responsibility」，与 M0 第 5、6 节一致，无需反转，也无需新增 Config 相关 Contract。
 
 ## 8. M1 建议实施顺序（差异驱动）
 
@@ -188,11 +189,11 @@ M0 冻结的 5 个对象中，**没有任何一个在现有代码中完整存在
 ```text
 1. Runtime Home 解析（INGOT_RUNTIME_HOME / <exe>.home）+ 目录创建 + 首次输出
       ↓
-2. ingot-abi 新增 Config 来源 Contract
+2. generated wiring 移除统一 config.toml decode 与 Config 注入
       ↓
-3. generated wiring 移除统一 config.toml decode，改为注入 Config 来源
+3. Builder 移除 ConfigImport / ConfigType / RootPackage 依赖
       ↓
-4. Plugin 改造（New 参数类型 + 自行读取/持久化配置），含 state.Scope 补齐
+4. Plugin 改造（移除 New 的 Config 参数 + 补 state.Scope 依赖 + 自行读写配置）
       ↓
 5. Unconfigured 语义（含 pre-switch check 在未配置下可构造）
       ↓
@@ -203,14 +204,14 @@ M0 冻结的 5 个对象中，**没有任何一个在现有代码中完整存在
 8. standalone 验收（download → chmod +x → ./agent）
 ```
 
-第 3、4 步是破坏性最强的，建议先出迁移方案文档再动代码；第 7 步虽然列在 M1，但它是「Operation 可被调用」的前提，若延期则 M1 的验收项「通过 Operation 配置 Plugin」无法闭环。
+第 2–4 步是破坏性最强的，建议先出迁移方案文档再动代码；第 7 步虽然列在 M1，但它是「Operation 可被调用」的前提，若延期则 M1 的验收项「通过 Operation 配置 Plugin」无法闭环。
 
 ## 9. M0 决策（已确认）
 
 | 编号 | 问题 | 决策 |
 |---|---|---|
 | D1 | 旧 Runtime 环境变量退场方式 | 直接移除 `INGOT_STATE_ROOT` / `INGOT_CONFIG`，只保留 `INGOT_RUNTIME_HOME` |
-| D2 | Plugin 如何获得配置 | 保留 `New` 的 Config 参数，类型换成注入的 Config 来源 Contract |
+| D2 | Plugin 如何获得配置 | 移除 `New` 的 Config 参数，配置持久化走 `deps.State`（`state.Scope`），不新增 ABI 类型 |
 | D3 | `<plugin-scope>` 拼写 | manifest 短名 |
 | D4 | 存量统一 `config.toml` | 不迁移、不提供迁移命令 |
 | D5 | 未配置时 pre-switch check | 通过 |
