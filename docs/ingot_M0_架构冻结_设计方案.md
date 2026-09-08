@@ -2,7 +2,7 @@
 
 > 状态：Frozen（M0 已定稿，决策记录见第 11 节）
 > 范围：仅冻结 Contract，不交付功能
-> 上游：`../../Ingot 下一阶段 Roadmap：Runtime、Composition 与 Plugin Ecosystem.md`（M0）
+> 上游：`../Ingot Roadmap：Runtime、Composition And Plugin Ecosystem.md`（M0）
 > 关联：`./ingot_架构设计_v0.3.md`、`./ingot.plugin.toml_设计方案_v0.1.md`、`./ingot_plugins.toml_v0.1_设计方案.md`、`./ingot_plugins.lock_v0.1_设计方案.md`、`./ingot_ABI_v0.1_设计提案.md`、`../../sdk/`、`../../ingot-abi/`
 > 现状差异与迁移影响见：`./ingot_M0_现状差异与迁移影响.md`
 
