@@ -461,38 +461,45 @@ Plugin loads its own state/config
 Runtime starts
 ```
 
-#### 6.2.1 Config 加载来源（M0 决策）
+#### 6.2.1 Config 参数移除（M0 决策 D2）
 
-`New` 保留 Config 参数，但参数类型不再是「Host 解码好的 TOML 结构」：
+`New` 的 Config 参数被**移除**：
 
 ```text
-New(ctx, config Source, deps Dependencies) (Exports, ingotabi.Cleanup, error)
+New(ctx, deps Dependencies) (Exports, ingotabi.Cleanup, error)
 ```
 
 冻结语义：
 
-- `Source` 是一个 **Config 加载来源 Contract**（候选名：`ingotabi/config.Source`），由 generated runtime 注入；
-- Host 不解析 Plugin Config 内容，只提供「读取 + 定位」能力；
-- Plugin 自己完成 schema、validation、persistence、migration、secret handling；
+- Plugin 通过已有的 `deps.State state.Scope` 读写自己的配置与状态；
+- **不新增任何 ABI 类型**。`state.Scope` 只提供绝对路径（`Dir() string`），文件访问、schema、validation、migration、secret handling 全部是 Plugin 的责任，这与 `state` package 现有文档注释一致；
+- Host 不再解码 Plugin Config，也不再需要知道 Config 类型；
 - Plugin Config 的持久化位置**就是自己的 Plugin State Scope**（`<runtime home>/state/<plugin-scope>/`），不额外引入第二个位置；
-- `Source` 至少需要能表达：读取当前持久化配置、判断 `Unconfigured`、写入/更新（供 Configuration Operation 使用）；
-- `Source` 的具体接口形状在 M1 定稿，M0 只冻结「参数保留 + 类型换成来源 + Host 不解释内容」三点。
+- Plugin 自己判断 `Unconfigured`（6.3）。
 
-理由与约束：
+理由：
 
-- 保留参数可以避免 `Dependencies` 变成「什么都塞进去」的杂物袋，Config 与 capability 依赖在类型上保持分离；
-- Config 与 State 同址，因此 Plugin 不需要同时处理两个持久化位置；
-- `Source` 必须允许在 `Unconfigured` 下返回零值而不报错，否则与 6.3 冲突。
+- `state.Scope` 已经提供了配置持久化所需的一切（一个 Plugin 独占的绝对目录），把文件读写再包一层 ABI 接口，等于用 ABI 去管它明确声明不管的事；
+- 引入第二个「Config 来源」概念会让同一个位置被两个类型表达，Plugin 需要处理两套语义；
+- 新增 host 类型需要改动 `internal/builder/graph.go` 的 `hostTypes` 表与 `hostTypeName`，以及 `generate.go` 的注入逻辑，收益为负；
+- 移除参数后，`Dependencies` 继续承载全部注入能力，不存在「杂物袋」问题：Config 不再是一个需要单独通道注入的东西，而是 Plugin 自己的持久化数据。
 
-实现约束（来自当前 Builder 语义）：generated wiring 只能为 `Dependencies`/`Exports` 中的**精确 host interface** 注入 host 值（`internal/builder/graph.go:292-295`），且 host interface 不允许出现在集合类型里（`graph.go:297-300`）。因此 `Source` 必须是顶层精确接口类型，不能是 `Optional[Source]` 或 `[]Source`。
+#### 6.2.2 移除 Host 侧 Config 机制
 
-#### 6.2.2 不再需要 `config_package`
+Config 参数移除后，以下机制不再需要：
 
-`ingot.plugin.toml` 的 `config_package` 原本用于定位「Host 要解码的 Config 类型所在 package」（`internal/builder/manifest.go:24`、`internal/builder/resolve.go:283/292`）。Config 改为来源注入后，Host 不再需要该类型，因此：
+| 移除项 | 位置 |
+|---|---|
+| `writeRuntimeConfig` / `decodeConfigs` / `resolveConfigTable` / `strictDecodeConfig` | `internal/builder/generate.go:340-382` |
+| `ConfigImport` / `ConfigType` 字段与「根 package 必须有 `Config` struct」校验 | `internal/builder/graph.go:37-39, 157-164` |
+| `RootPackage`（`config_package` 在 lock 中的镜像） | `internal/builder/lock.go`、`resolve.go:292`、`build.go:328` |
+| manifest `config_package` 字段 | `internal/builder/manifest.go:24,78` |
 
-- `config_package` 标记为 **deprecated**，不再参与 `New` 的生成；
-- 为保持 manifest 文件稳定，M0 不立即删除该字段，也不因此提升 `manifest_version`；
-- 真正删除字段与提升版本留到后续 manifest 演进（M3 拆仓时一并处理）。
+处置规则：
+
+- `config_package` 与 lock 的 `root_package` 涉及**已发布的文件格式**，M0 只冻结「不再被 Runtime 使用」这一语义；
+- 字段是否删除、以及是否因此提升 `manifest_version` / lock schema 版本，由 M1 在实现时按格式兼容性决定；
+- M0 不要求立刻删除字段，但要求**不得再依赖它们生成 `New` 调用**。
 
 ### 6.3 Unconfigured 状态
 
@@ -752,8 +759,8 @@ Contract 层面，以下条目全部冻结才算 M0 完成。状态列反映本�
 | 15 | 旧环境变量处置定稿（直接移除 `INGOT_STATE_ROOT` / `INGOT_CONFIG`） | 已定（5.6） |
 | 16 | Plugin Configuration 定义（state + Operation management surface）冻结 | 已冻结 |
 | 17 | 统一 Runtime `config.toml` 移除方向冻结 | 已冻结 |
-| 18 | Config 参数保留 + 类型换成来源 Contract | 已定（6.2.1） |
-| 19 | `config_package` deprecated 处置 | 已定（6.2.2） |
+| 18 | 移除 `New` 的 Config 参数，配置走 `deps.State`，不新增 ABI 类型 | 已定（6.2.1） |
+| 19 | Host 侧 Config 机制移除范围 | 已定（6.2.2） |
 | 20 | Unconfigured 状态语义冻结 | 已冻结 |
 | 21 | pre-switch check 在 Unconfigured 下通过 | 已定（6.3.1） |
 | 22 | Configuration Operation convention 要素冻结（含 secret 与 restart_required） | 已冻结 |
@@ -779,7 +786,7 @@ M0 无未决项，可以进入 M1。
 | Process registry 字段与生命周期 API | M2 |
 | Image GC 引用关系计算 | M2 |
 | Runtime Management Channel 的传输与协议 | M1（建议同时落地） |
-| Config `Source` Contract 的具体接口形状 | M1（M0 已冻结语义，见 6.2.1） |
+| Config 参数移除后的 `Dependencies` 形态与迁移细节 | M1（M0 已冻结方向，见 6.2.1） |
 | Plugin state migration policy 的兼容边界表达 | M2/M8 |
 | Collection 文件 TOML schema | M4 |
 | Source Resolver 接口与分发形态 | M3/M7 |
@@ -791,11 +798,11 @@ M0 无未决项，可以进入 M1。
 | 编号 | 决策 | 结论 | 位置 |
 |---|---|---|---|
 | D1 | 旧 Runtime 环境变量退场方式 | 直接移除 `INGOT_STATE_ROOT` / `INGOT_CONFIG`，只保留 `INGOT_RUNTIME_HOME` | 5.6 |
-| D2 | Plugin 如何获得配置 | 保留 `New` 的 Config 参数，类型换成注入的 Config 来源 Contract | 6.2.1 |
+| D2 | Plugin 如何获得配置 | 移除 `New` 的 Config 参数，配置持久化走 `deps.State`（`state.Scope`），不新增 ABI 类型 | 6.2.1 |
 | D3 | `<plugin-scope>` 拼写 | manifest 短名 | 5.3.1 |
 | D4 | 存量统一 `config.toml` | 不迁移、不提供迁移命令 | 6.6 |
 | D5 | 未配置时 pre-switch check | 通过 | 6.3.1 |
 | D6 | Configuration Operation 命名 | `config.get` / `config.status` / `config.update` | 6.5 |
 | D7 | secret 读取语义 | 只返回「已设置/未设置」 | 6.4 |
 | D8 | `restart_required` 表达 | 输出布尔字段 | 6.4 |
-| D9 | `config_package` 去留 | 标记 deprecated，不立即删除、不升 manifest_version | 6.2.2 |
+| D9 | Host 侧 Config 机制去留 | 移除 Runtime 对 `config_package` / `root_package` 的依赖；字段删除与版本提升由 M1 按格式兼容性决定 | 6.2.2 |
