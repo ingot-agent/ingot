@@ -49,7 +49,7 @@ func TestCheckModeDoesNotOpenListener(t *testing.T) {
 	cfg := appbackend.Config{Backend: appbackend.BackendConfig{Address: listener.Addr().String()}}
 	deps := testDependencies(t, &testAgent{}, &testStore{})
 	deps.Invocation = &testProcess{check: true}
-	_, cleanup, err := New(ctx, cfg, deps)
+	_, cleanup, err := New(ctx, withState(t, cfg, deps))
 	if err != nil || cleanup != nil {
 		t.Fatalf("check mode started server or failed on occupied port: cleanup = %v, err = %v", cleanup != nil, err)
 	}
@@ -89,7 +89,7 @@ func TestIsWebInvocation(t *testing.T) {
 func TestConstructorRequiresProcessControl(t *testing.T) {
 	deps := testDependencies(t, &testAgent{}, &testStore{})
 	deps.Lifecycle = nil
-	_, cleanup, err := New(context.Background(), appbackend.Config{}, deps)
+	_, cleanup, err := New(context.Background(), withState(t, appbackend.Config{}, deps))
 	if cleanup != nil {
 		_ = cleanup(context.Background())
 	}
@@ -155,6 +155,8 @@ func TestCleanupCancelsSSEAndWaitsForBackgroundTurn(t *testing.T) {
 		return operation.Result{}, ctx.Err()
 	}
 	deps.Operations = []operation.Operation{op}
+	// The HTTP boundary addresses operations by internal ID, not display name.
+	operationID := operationInternalID("wait", 0)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +164,7 @@ func TestCleanupCancelsSSEAndWaitsForBackgroundTurn(t *testing.T) {
 	address := listener.Addr().String()
 	listener.Close()
 	ctx := context.Background()
-	_, cleanup, err := New(ctx, appbackend.Config{Backend: appbackend.BackendConfig{Address: address}}, deps)
+	_, cleanup, err := New(ctx, withState(t, appbackend.Config{Backend: appbackend.BackendConfig{Address: address}}, deps))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +178,7 @@ func TestCleanupCancelsSSEAndWaitsForBackgroundTurn(t *testing.T) {
 		}
 	})
 	client := &http.Client{Timeout: 3 * time.Second}
-	operationResponse, err := client.Post("http://"+address+"/api/operations/wait", "application/json", strings.NewReader(`{"input":{"value":9007199254740993}}`))
+	operationResponse, err := client.Post("http://"+address+"/api/operations/"+operationID, "application/json", strings.NewReader(`{"input":{"value":9007199254740993}}`))
 	if err != nil {
 		t.Fatal(err)
 	}

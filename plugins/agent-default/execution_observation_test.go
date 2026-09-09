@@ -95,11 +95,11 @@ func TestExecutionObservationLifecycleProgressCorrelationAndSequence(t *testing.
 		}
 		return response, nil
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming),
 		Tools: &progressTools{observation: consumer}, Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}},
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,11 +161,11 @@ func TestPostDispatchToolFailureStopsExecutionAndMarksScopesFailed(t *testing.T)
 		{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{}`)}}}},
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
 	}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &progressTools{observation: consumer, err: errors.New("tool failed")},
 		Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}, Assets: newMemoryAssets(),
 		Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,11 +201,11 @@ func TestRoundPolicyRejectsAfterSuccessfulModelObservation(t *testing.T) {
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{
 		Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{}`)}},
 	}}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &progressTools{observation: consumer}, Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}},
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
 		RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,10 +243,10 @@ func TestPersistenceFailureDoesNotRewriteSuccessfulToolExecution(t *testing.T) {
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{
 		Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{}`)}},
 	}}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &progressTools{observation: consumer}, Store: store,
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,10 +273,10 @@ func TestPersistenceFailureDoesNotRewriteSuccessfulToolExecution(t *testing.T) {
 
 func TestExecutionPanicStillFinishesStartedScopesAndPropagates(t *testing.T) {
 	consumer := &recordingConsumer{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: panicModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}},
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

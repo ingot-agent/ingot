@@ -24,11 +24,11 @@ func (contractResolver) ResolveRequest(_ context.Context, request model.Request)
 
 func TestPublicComponentContract(t *testing.T) {
 	t.Parallel()
-	var constructor func(context.Context, usagedefault.Config, usagedefault.Dependencies) (usagedefault.Exports, ingotabi.Cleanup, error) = usagedefault.New
+	var constructor func(context.Context, usagedefault.Dependencies) (usagedefault.Exports, ingotabi.Cleanup, error) = usagedefault.New
 	_ = constructor
-	exports, cleanup, err := usagedefault.New(context.Background(), usagedefault.Config{
+	exports, cleanup, err := usagedefault.New(context.Background(), withState(t, usagedefault.Config{
 		Routes: []usagedefault.Route{{Provider: "provider", ModelPattern: "model", Profile: "unicode-estimate-v1"}},
-	}, usagedefault.Dependencies{Resolver: contractResolver{}})
+	}, usagedefault.Dependencies{Resolver: contractResolver{}}))
 	if err != nil {
 		t.Fatal(err)
 	}

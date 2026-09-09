@@ -72,7 +72,7 @@ ingot --home /path/to/home status
 ├── builder.toml        # builder configuration (ingot ABI is fixed, no SDK list)
 ├── plugins.toml        # desired plugin set (maintained by you or the CLI)
 ├── plugins.lock        # exact resolution: module graph, digests, build flags
-├── config.toml         # runtime configuration values (read by the image)
+├── state/              # Runtime Home for `ingot <command>`; plugin-owned state
 ├── bundled-plugins/    # materialized official plugin sources (written by `ingot init`)
 ├── current             # atomic pointer to the active image ID
 ├── current.previous    # previous image ID (used by rollback/GC safety)
@@ -124,10 +124,11 @@ longer part of the schema and are rejected.
 
 ```text
 install ingot
-  -> ingot init           official plugin set + plugins.toml + config template
-  -> edit config.toml     set your model provider
+  -> ingot init           official plugin set + plugins.toml
   -> ingot apply          resolve + build + switch
   -> ingot web            open the browser workspace (app.backend)
+  -> configure plugins    through their own operations (for example
+                          app.backend.config); no shared config file exists
 ```
 
 `apply` is a shortcut for `resolve` + `build` + switching `current`.
@@ -161,8 +162,10 @@ Initializes a working ingot home:
    content is not rewritten);
 3. writes a default `plugins.toml` (every profile plugin is a local dev
    source);
-4. writes the default `builder.toml` (Builder configuration; no SDK list);
-5. writes a default `config.toml` template.
+4. writes the default `builder.toml` (Builder configuration; no SDK list).
+
+`init` writes no runtime configuration: plugins start Unconfigured and own
+their own persistent state inside the Runtime Home.
 
 | Option | Meaning |
 |---|---|
@@ -172,8 +175,8 @@ Initializes a working ingot home:
 | `--apply` | Run `apply` (resolve + build + switch current) right after init. |
 
 `init` is idempotent: an existing `plugins.toml` blocks re-initialization
-(unless `--force`) and an existing `config.toml` is preserved. It prints the
-next steps: edit `config.toml`, run `ingot apply`, run `ingot web`.
+(unless `--force`). It prints the next steps: run `ingot apply`, run
+`ingot web`, then configure plugins through their own operations.
 
 ### `bundle`
 
@@ -188,8 +191,8 @@ installed and available digests, whether an update is available, local drift,
 and how many selected plugins use the managed bundle.
 
 `bundle update` stages and validates the available distribution before
-replacing the managed copy. It preserves `plugins.toml`, plugin order, and
-`config.toml`. Run `ingot apply` afterwards, or pass `--apply` to resolve,
+replacing the managed copy. It preserves `plugins.toml` and plugin order. Run
+`ingot apply` afterwards, or pass `--apply` to resolve,
 build, validate, and activate the updated image immediately. A failed
 `--apply` restores the previous bundle and `plugins.lock`.
 
@@ -197,24 +200,20 @@ Re-running an official install script automatically refreshes the bundle for
 an existing home before the normal apply step. `--bundle PATH` is intended for
 development builds and non-standard installation layouts.
 
-### System prompt
+### Plugin configuration
 
-The default profile writes the official Ingot coding-agent system prompt when
-`ingot init` creates `~/.ingot/config.toml`:
+There is no shared runtime `config.toml`. Every plugin owns its persistent
+configuration inside its Runtime state scope:
 
-```toml
-[plugins."prompt.default"]
-system_prompt = """
-You are Ingot, a software engineering agent.
-...
-"""
+```text
+<runtime home>/state/<plugin>/
 ```
 
-Edit `system_prompt` directly to customize the agent's stable behavior, then
-restart the current runtime image. The normal `init` flow preserves an existing
-`config.toml`; `ingot init --force` regenerates the official default prompt.
-The `minimal` profile keeps the `prompt.default` table for runtime
-configuration compatibility but does not install a coding-agent prompt.
+The official `prompt.default` plugin stores its `system_prompt` there. Configure
+a plugin either by invoking its own operation (the browser workspace exposes
+them under Operations) or by editing its state file directly. A plugin that has
+not been configured yet still starts with defaults, so first-time setup is
+always possible through an operation.
 
 ### `resolve`
 
@@ -405,14 +404,14 @@ runtime image:
 ingot web
 ```
 
-The runtime binary is executed with `INGOT_HOME` set to the ingot home, so the
-image can find `config.toml` and its persistent state. The runtime's exit code
-is propagated.
+The runtime binary is executed with `INGOT_RUNTIME_HOME` set to
+`<ingot home>/state`, so the image resolves its Runtime Home and plugin state
+scopes there. The runtime's exit code is propagated.
 
 `web` is the `app.backend` runtime command: it serves the embedded Vue browser
 workspace on a local HTTP/SSE address (default `http://127.0.0.1:7316/`) and
-prints that link. Model provider and API keys are configured in
-`config.toml`, not on the command line.
+prints that link. Model provider and API keys are configured through plugin
+operations (or each plugin's own state file), not on the command line.
 
 Every conversation belongs to a Session that is bound to one immutable local
 Workspace directory. When you start a new conversation from the browser
@@ -484,9 +483,9 @@ Full flow from scratch:
 
 ```sh
 ingot init
-# edit ~/.ingot/config.toml: model provider base_url / api_key
 ingot apply
 ingot web
+# then configure the model provider through the app.backend operations
 ```
 
 Check that your home is consistent:

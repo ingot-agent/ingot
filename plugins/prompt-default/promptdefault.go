@@ -12,8 +12,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -41,14 +43,17 @@ type Config struct {
 	MaxSystemBytes int    `toml:"max_system_bytes"`
 }
 
-// Dependencies contains contributors in stable MANY order.
+// Dependencies contains contributors in stable MANY order and this Plugin's
+// own persistent state scope.
 type Dependencies struct {
 	Contributors []prompt.Contributor
+	State        state.Scope
 }
 
 // Exports contains the renderer capability.
 type Exports struct {
-	Renderer prompt.Renderer
+	Renderer   prompt.Renderer
+	Operations []operation.Operation
 }
 
 type renderer struct {
@@ -58,13 +63,22 @@ type renderer struct {
 	contributors []prompt.Contributor
 }
 
-// New validates configuration and snapshots the contributor collection.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New snapshots the contributor collection and loads this Plugin's own
+// configuration from its state scope. A missing configuration file is the
+// normal Unconfigured state: the system prompt is empty and defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct prompt.default: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct prompt.default: %w: %w", err, ErrInvalidConfig)
 	}
 	if !utf8.ValidString(cfg.SystemPrompt) {
 		return Exports{}, nil, fmt.Errorf("system_prompt is invalid UTF-8: %w", ErrInvalidConfig)
@@ -87,7 +101,10 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		}
 		contributors[i] = contributor
 	}
-	return Exports{Renderer: &renderer{systemPrompt: cfg.SystemPrompt, maxBlock: maxBlock, maxSystem: maxSystem, contributors: contributors}}, nil, nil
+	return Exports{
+		Renderer:   &renderer{systemPrompt: cfg.SystemPrompt, maxBlock: maxBlock, maxSystem: maxSystem, contributors: contributors},
+		Operations: []operation.Operation{&setupOperation{scope: deps.State}},
+	}, nil, nil
 }
 
 func positiveDefault(value, fallback int, field string) (int, error) {

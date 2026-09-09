@@ -13,8 +13,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -37,15 +39,17 @@ type Dependencies struct {
 	Providers          []ingotabi.Named[model.Provider]
 	Interceptors       []model.Interceptor
 	StreamInterceptors []model.StreamInterceptor
+	State              state.Scope
 }
 
 // Exports contains the complete and streaming runtimes, plus the read-only
 // request resolver used by components that need the materialized provider and
 // model selection before invocation.
 type Exports struct {
-	Runtime   model.Runtime
-	Streaming model.StreamingRuntime
-	Resolver  model.RequestResolver
+	Runtime    model.Runtime
+	Streaming  model.StreamingRuntime
+	Resolver   model.RequestResolver
+	Operations []operation.Operation
 }
 
 type runtime struct {
@@ -56,17 +60,28 @@ type runtime struct {
 	streamInterceptors []model.StreamInterceptor
 }
 
-// New snapshots providers and composes immutable runtime state.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New snapshots providers, loads this Plugin's own configuration from its
+// state scope, and composes immutable runtime state. A missing configuration
+// file is the normal Unconfigured state: no default provider or model is
+// selected and callers must supply them explicitly.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct model.runtime: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if len(deps.Providers) == 0 {
-		return Exports{}, nil, fmt.Errorf("providers must not be empty: %w", ErrInvalidConfig)
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
 	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct model.runtime: %w: %w", err, ErrInvalidConfig)
+	}
+	// An Unconfigured provider Plugin exports no providers. The runtime must
+	// still construct so the user can complete setup through an Operation;
+	// model calls then fail with model.ErrProviderNotFound at call time
+	// instead of preventing the whole Runtime from starting.
 	if err := ingotabi.CheckUniqueNames(deps.Providers); err != nil {
 		return Exports{}, nil, fmt.Errorf("providers: %w: %w", ErrInvalidConfig, err)
 	}
@@ -79,12 +94,16 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	}
 	defaultProvider := cfg.DefaultProvider
 	if defaultProvider == "" {
-		if len(deps.Providers) != 1 {
+		if len(deps.Providers) > 1 {
 			return Exports{}, nil, fmt.Errorf("default_provider is required with multiple providers: %w", ErrInvalidConfig)
 		}
-		defaultProvider = deps.Providers[0].Name
-	} else if _, ok := providers[defaultProvider]; !ok {
-		return Exports{}, nil, fmt.Errorf("default provider %q: %w: %w", defaultProvider, model.ErrProviderNotFound, ErrInvalidConfig)
+		if len(deps.Providers) == 1 {
+			defaultProvider = deps.Providers[0].Name
+		}
+	} else if len(providers) > 0 {
+		if _, ok := providers[defaultProvider]; !ok {
+			return Exports{}, nil, fmt.Errorf("default provider %q: %w: %w", defaultProvider, model.ErrProviderNotFound, ErrInvalidConfig)
+		}
 	}
 
 	interceptors := make([]model.Interceptor, len(deps.Interceptors))
@@ -106,7 +125,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		providers: providers, defaultProvider: defaultProvider, defaultModel: cfg.DefaultModel,
 		interceptors: interceptors, streamInterceptors: streamInterceptors,
 	}
-	return Exports{Runtime: instance, Streaming: instance, Resolver: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, Resolver: instance, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 }
 
 // ResolveRequest returns a caller-owned request with provider and model

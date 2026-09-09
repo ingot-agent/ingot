@@ -68,7 +68,7 @@ ingot --home /path/to/home status
 ├── builder.toml        # Builder 配置（ingot ABI 固定，无 SDK 列表）
 ├── plugins.toml        # 期望的插件集合（由你或 CLI 维护）
 ├── plugins.lock        # 精确解析结果：模块图、摘要、构建参数
-├── config.toml         # 运行时配置值（由镜像读取）
+├── state/              # Runtime Home（`ingot <命令>` 使用）；插件自有状态
 ├── bundled-plugins/    # 物化后的官方插件源码（由 ingot init 写入）
 ├── current             # 指向当前激活镜像 ID 的原子指针
 ├── current.previous    # 上一个镜像 ID（回滚/GC 安全使用）
@@ -114,7 +114,7 @@ sum = "h1:..."
 ```text
 安装 ingot
   -> ingot init          写官方插件集 + plugins.toml + 配置模板
-  -> 编辑 config.toml    设置模型提供商
+  -> 通过插件自己的 Operation 配置
   -> ingot apply         解析 + 构建 + 切换
   -> ingot web           打开浏览器工作区
 ```
@@ -142,8 +142,10 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 1. 定位官方插件集（`--bundle` 显式指定，否则按可执行文件相对位置探测：安装脚本的 `<prefix>/share/ingot/plugins` 或仓库根目录的 `plugins/`）；
 2. 将其物化到 `~/.ingot/bundled-plugins/`（幂等：内容未变化时不重写）；
 3. 写入默认 `plugins.toml`（profile 内所有插件均为本地开发源码）；
-4. 写入默认的 `builder.toml`（Builder 配置，无 SDK 列表）；
-5. 写入默认 `config.toml` 模板。
+4. 写入默认的 `builder.toml`（Builder 配置，无 SDK 列表）。
+
+`init` 不写入任何运行时配置：插件以未配置状态启动，并在 Runtime Home 内各自
+持久化自己的状态。
 
 | 选项 | 含义 |
 |---|---|
@@ -152,7 +154,7 @@ ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
 | `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
 | `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
 
-`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）；已有 `config.toml` 时保留用户配置。输出下一步提示：编辑 `config.toml`、运行 `ingot apply`、运行 `ingot web`。
+`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）。输出下一步提示：运行 `ingot apply`、运行 `ingot web`，再通过插件自己的 Operation 完成配置。
 
 ### `bundle`
 
@@ -166,33 +168,26 @@ ingot bundle update [--bundle PATH] [--apply]
 它也会检测 `bundled-plugins/` 中偏离已安装摘要的本地修改。
 
 `bundle update` 先在临时目录复制并校验新版插件集，再替换 home 中的受管副本。
-它不会改写 `plugins.toml`、插件顺序或 `config.toml`，因此用户添加、删除、重排的
-插件和运行时配置都会保留。不带 `--apply` 时，随后运行 `ingot apply` 以生成并切换
+它不会改写 `plugins.toml` 或插件顺序，因此用户添加、删除、重排的插件都会保留。不带 `--apply` 时，随后运行 `ingot apply` 以生成并切换
 到使用新版源码的镜像；带 `--apply` 时一步完成更新、解析、构建和切换，失败会恢复
 旧 Bundle 与 `plugins.lock`。
 
 重新运行官方安装脚本时，脚本会对已有 home 自动执行 `bundle update`，然后按正常
 安装流程执行 `apply`。`--bundle PATH` 主要用于开发构建或非标准安装布局。
 
-### 系统提示词
+### 插件配置
 
-使用默认 profile 执行 `ingot init` 时，官方 Coding Agent 系统提示词会写入：
+不存在统一的运行时 `config.toml`。每个插件在 Runtime Home 内的独立作用域中
+持久化自己的配置：
 
 ```text
-~/.ingot/config.toml
+<runtime home>/state/<plugin>/
 ```
 
-对应配置为：
-
-```toml
-[plugins."prompt.default"]
-system_prompt = """
-You are Ingot, a software engineering agent.
-...
-"""
-```
-
-你可以直接编辑 `system_prompt` 来定制 Agent 的稳定行为，修改后重启当前 Runtime Image。普通 `ingot init` 会保留已有的 `config.toml`；`ingot init --force` 会重新生成当前版本的官方默认提示词。`minimal` profile 仍会保留 `prompt.default` 配置表以满足 Runtime 配置要求，但不会写入 Coding Agent 默认提示词。
+官方 `prompt.default` 插件的 `system_prompt` 就存放在那里。配置插件有两种方式：
+调用插件自己的 Operation（浏览器工作台的 Operations 页面会列出全部 Operation），
+或直接编辑它的状态文件。尚未配置的插件仍会以默认值启动，因此首次配置始终可以
+通过 Operation 完成。
 
 ### `resolve`
 
@@ -367,11 +362,12 @@ ingot plugin inspect <id-or-name>
 ingot web
 ```
 
-运行时会以 `INGOT_HOME` 指向 ingot home 执行，使镜像能找到 `config.toml` 与持久化状态。运行时的退出码会被透传。
+运行时以 `INGOT_RUNTIME_HOME` 指向 `<ingot home>/state` 执行，镜像据此解析
+Runtime Home 与各插件的状态作用域。运行时的退出码会被透传。
 
 `web` 是 `app.backend` 的 runtime 命令：它在本地 HTTP/SSE 地址（默认
 `http://127.0.0.1:7316/`）上提供内嵌 Vue 浏览器工作区并打印该链接。模型
-provider 与 API key 在 `config.toml` 中配置，不通过命令行传入。
+provider 与 API key 通过插件 Operation（或插件自己的状态文件）配置，不通过命令行传入。
 
 每个对话都属于一个 Session，Session 绑定到一个不可变的本地 Workspace 目录。
 在浏览器工作区新建对话时选择该 Workspace 路径；应用随即创建 Session、绑定
@@ -435,7 +431,7 @@ ArtifactDigest = SHA256(最终二进制内容)
 
 ```sh
 ingot init
-# 编辑 ~/.ingot/config.toml：填写模型提供商 base_url / api_key
+# 通过 app.backend 的 Operation 填写模型提供商 base_url / api_key
 ingot apply
 ingot web
 ```

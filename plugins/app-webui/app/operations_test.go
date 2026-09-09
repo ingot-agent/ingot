@@ -76,19 +76,39 @@ func TestOperationDefinitionsValidateAndOwnSnapshots(t *testing.T) {
 			o.definition.InputSchema = json.RawMessage(`{"$ref":"file:///should-not-be-read.json"}`)
 		}, false},
 		{"output schema", func(o *testOperation) { o.definition.OutputSchema = json.RawMessage(`null`) }, false},
-		{"duplicate", func(*testOperation) {}, true},
+		{"group", func(o *testOperation) { o.definition.Group = "Bad/Group" }, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			o := operationFixture("echo")
 			test.alter(o)
-			operations := []operation.Operation{o}
-			if test.duplicate {
-				operations = append(operations, o)
-			}
-			if _, err := newOperationController(operations); !errors.Is(err, appbackend.ErrInvalidOperationDefinition) {
+			if _, err := newOperationController([]operation.Operation{o}); !errors.Is(err, appbackend.ErrInvalidOperationDefinition) {
 				t.Fatalf("invalid definition = %v", err)
 			}
 		})
+	}
+}
+
+// TestSameNameOperationsCoexist proves that two Plugins exporting the same
+// display name are both retained and are addressed by distinct internal IDs.
+func TestSameNameOperationsCoexist(t *testing.T) {
+	first, second := operationFixture("echo"), operationFixture("echo")
+	first.definition.Group = "alpha"
+	second.definition.Group = "beta"
+	c, err := newOperationController([]operation.Operation{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := c.List()
+	if len(definitions) != 2 {
+		t.Fatalf("definitions = %#v", definitions)
+	}
+	if definitions[0].ID == definitions[1].ID {
+		t.Fatalf("internal IDs must differ: %#v", definitions)
+	}
+	for i, want := range []string{"alpha", "beta"} {
+		if definitions[i].Name != "echo" || definitions[i].Group != want || definitions[i].ID == "" {
+			t.Fatalf("definition[%d] = %#v", i, definitions[i])
+		}
 	}
 }
 
@@ -104,7 +124,7 @@ func TestOperationInputValidationPrecedesDispatchAndChecksOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, input := range []string{`null`, `[]`, `{}`, `{"value":9007199254740992}`, `{"value":"9007199254740993"}`, `{"value":9007199254740993} {}`} {
-		_, err := c.Invoke(context.Background(), "echo", operation.Request{Input: json.RawMessage(input), Interaction: interaction.Unavailable()})
+		_, err := c.Invoke(context.Background(), c.List()[0].ID, operation.Request{Input: json.RawMessage(input), Interaction: interaction.Unavailable()})
 		if !errors.Is(err, appbackend.ErrInvalidOperationInput) {
 			t.Fatalf("input %s: %v", input, err)
 		}
@@ -113,7 +133,7 @@ func TestOperationInputValidationPrecedesDispatchAndChecksOutput(t *testing.T) {
 		t.Fatal("invalid input dispatched an operation")
 	}
 	input := json.RawMessage(`{"value":9007199254740993}`)
-	result, err := c.Invoke(context.Background(), "echo", operation.Request{Input: input, Interaction: interaction.Unavailable()})
+	result, err := c.Invoke(context.Background(), c.List()[0].ID, operation.Request{Input: input, Interaction: interaction.Unavailable()})
 	if err != nil || calls.Load() != 1 {
 		t.Fatalf("valid large integer: %v, calls=%d", err, calls.Load())
 	}
@@ -124,7 +144,7 @@ func TestOperationInputValidationPrecedesDispatchAndChecksOutput(t *testing.T) {
 	o.invoke = func(context.Context, operation.Request) (operation.Result, error) {
 		return operation.Result{Output: json.RawMessage(`{"value":"wrong"}`)}, nil
 	}
-	_, err = c.Invoke(context.Background(), "echo", operation.Request{Input: json.RawMessage(`{"value":9007199254740993}`), Interaction: interaction.Unavailable()})
+	_, err = c.Invoke(context.Background(), c.List()[0].ID, operation.Request{Input: json.RawMessage(`{"value":9007199254740993}`), Interaction: interaction.Unavailable()})
 	if !errors.Is(err, appbackend.ErrInvalidOperationOutput) {
 		t.Fatalf("invalid output: %v", err)
 	}
@@ -137,10 +157,10 @@ func TestOperationSchemaSupportsLocalReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := c.validateInput("echo", json.RawMessage(`{"value":1}`)); err != nil {
+	if err := c.validateInput(c.List()[0].ID, json.RawMessage(`{"value":1}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.validateInput("echo", json.RawMessage(`{}`)); !errors.Is(err, appbackend.ErrInvalidOperationInput) {
+	if err := c.validateInput(c.List()[0].ID, json.RawMessage(`{}`)); !errors.Is(err, appbackend.ErrInvalidOperationInput) {
 		t.Fatalf("local ref was ignored: %v", err)
 	}
 }
@@ -179,7 +199,7 @@ func TestOperationHTTPInteractionAndRefreshRetention(t *testing.T) {
 	}
 	configureOperations(t, a, 2, o)
 	ctx, cancel := context.WithCancel(context.Background())
-	r := httptest.NewRequest(http.MethodPost, "/api/operations/confirm", strings.NewReader(`{"sessionId":"session-1","input":{"value":9007199254740993}}`)).WithContext(ctx)
+	r := httptest.NewRequest(http.MethodPost, "/api/operations/"+a.operations.List()[0].ID, strings.NewReader(`{"sessionId":"session-1","input":{"value":9007199254740993}}`)).WithContext(ctx)
 	w := httptest.NewRecorder()
 	a.routes().ServeHTTP(w, r)
 	cancel()
@@ -244,7 +264,7 @@ func TestOperationRetentionCancellationAndPreflightErrors(t *testing.T) {
 		status     int
 	}{
 		{"/api/operations/missing", `{"input":{}}`, http.StatusNotFound},
-		{"/api/operations/echo", `{"input":{}}`, http.StatusBadRequest},
+		{"/api/operations/" + a.operations.List()[0].ID, `{"input":{}}`, http.StatusBadRequest},
 	} {
 		w := httptest.NewRecorder()
 		a.routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body)))
@@ -255,12 +275,13 @@ func TestOperationRetentionCancellationAndPreflightErrors(t *testing.T) {
 	if len(a.operationInvocations.Snapshots()) != 0 {
 		t.Fatal("invalid input created an invocation")
 	}
-	first, err := a.operationInvocations.Start("echo", "", json.RawMessage(`{"value":9007199254740993}`))
+	operationID := a.operations.List()[0].ID
+	first, err := a.operationInvocations.Start(operationID, "", json.RawMessage(`{"value":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitOperation(t, a, first, true)
-	second, err := a.operationInvocations.Start("echo", "", json.RawMessage(`{"value":9007199254740993}`))
+	second, err := a.operationInvocations.Start(operationID, "", json.RawMessage(`{"value":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,7 +296,7 @@ func TestOperationRetentionCancellationAndPreflightErrors(t *testing.T) {
 		<-ctx.Done()
 		return operation.Result{}, ctx.Err()
 	}
-	third, err := a.operationInvocations.Start("echo", "", json.RawMessage(`{"value":9007199254740993}`))
+	third, err := a.operationInvocations.Start(operationID, "", json.RawMessage(`{"value":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}

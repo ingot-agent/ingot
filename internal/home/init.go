@@ -6,11 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/ingot-agent/ingot/internal/builder"
 	"github.com/ingot-agent/ingot/internal/bundle"
-	"github.com/ingot-agent/ingot/internal/prompts"
 )
 
 // InitOptions configures ingot init.
@@ -38,11 +36,9 @@ type InitResult struct {
 	Profile            string       `json:"profile"`
 	PluginsPath        string       `json:"plugins_path"`
 	BuilderConfigPath  string       `json:"builder_config_path"`
-	ConfigPath         string       `json:"config_path"`
 	BundledPath        string       `json:"bundled_path"`
 	WrotePlugins       bool         `json:"wrote_plugins"`
 	WroteBuilderConfig bool         `json:"wrote_builder_config"`
-	WroteConfig        bool         `json:"wrote_config"`
 	Plugins            []InitPlugin `json:"plugins"`
 }
 
@@ -52,12 +48,12 @@ type InitResult struct {
 //     the executable) and materializes it under <home>/bundled-plugins/
 //     (idempotent);
 //  2. it writes a default plugins.toml for the selected profile;
-//  3. it writes the default builder.toml configuration scaffold;
-//  4. it writes a default config.toml template.
+//  3. it writes the default builder.toml configuration scaffold.
 //
-// Init never modifies an existing plugins.toml, builder.toml, or config.toml
-// unless Force is set. Init does not resolve or build; the caller decides
-// whether to apply.
+// Init does not write any runtime configuration: Plugins own their persistent
+// configuration inside their own Runtime state scope and start Unconfigured.
+// Init never modifies an existing plugins.toml or builder.toml unless Force
+// is set. Init does not resolve or build; the caller decides whether to apply.
 func (home *Home) Init(options InitOptions) (InitResult, error) {
 	profile, err := bundle.LookupProfile(options.Profile)
 	if err != nil {
@@ -68,7 +64,6 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 		Profile:           profile.Name,
 		PluginsPath:       home.DesiredPath(),
 		BuilderConfigPath: home.BuilderConfigPath(),
-		ConfigPath:        home.ConfigPath(),
 		BundledPath:       filepath.Join(home.Root, bundle.BundledDirectory),
 	}
 	if !options.Force {
@@ -108,14 +103,6 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 	if err != nil {
 		return InitResult{}, err
 	}
-	systemPrompt := ""
-	if profile.Name == "default" {
-		systemPrompt = prompts.CodingAgent()
-	}
-	configData, err := renderConfigTOML(entries, systemPrompt)
-	if err != nil {
-		return InitResult{}, err
-	}
 	builderConfig, err := builder.DefaultBuilderConfig()
 	if err != nil {
 		return InitResult{}, err
@@ -133,21 +120,12 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 			return InitResult{}, err
 		}
 		result.WroteBuilderConfig = true
-		if err := atomicWrite(home.ConfigPath(), configData, 0o600); err != nil {
-			return InitResult{}, err
-		}
-		result.WroteConfig = true
 	} else {
 		wrote, err := writeIfMissing(home.BuilderConfigPath(), builderConfigData)
 		if err != nil {
 			return InitResult{}, err
 		}
 		result.WroteBuilderConfig = wrote
-		wrote, err = writeIfMissing(home.ConfigPath(), configData)
-		if err != nil {
-			return InitResult{}, err
-		}
-		result.WroteConfig = wrote
 	}
 	return result, nil
 }
@@ -184,98 +162,4 @@ func renderDesiredTOML(entries []bundle.Entry) ([]byte, error) {
 		_, _ = fmt.Fprintf(&output, "[[plugins]]\nmodule = %s\npath = %s\n", strconv.Quote(entry.Module), strconv.Quote(pathForBundledPlugin(entry.Directory)))
 	}
 	return output.Bytes(), nil
-}
-
-// renderConfigTOML renders the default runtime config template. Every plugin
-// of the profile gets exactly one table (required by the runtime config
-// decoder); plugins with required values get a commented sample.
-func renderConfigTOML(entries []bundle.Entry, systemPrompt string) ([]byte, error) {
-	var output bytes.Buffer
-	output.WriteString("# ingot runtime configuration.\n")
-	output.WriteString("#\n")
-	output.WriteString("# Every plugin in the current image needs exactly one [plugins] table, keyed by\n")
-	output.WriteString("# canonical module ID or manifest short name. Empty tables are fine when defaults\n")
-	output.WriteString("# are acceptable. Unknown tables are ignored; unknown keys inside a known table\n")
-	output.WriteString("# are rejected at startup.\n")
-	output.WriteString("#\n")
-	output.WriteString("# Edit this file and restart the current image for changes to take effect.\n")
-	byName := make(map[string]bundle.Entry, len(entries))
-	for _, entry := range entries {
-		byName[entry.Name] = entry
-	}
-	write := func(comment string, name string, body string) {
-		output.WriteString("\n")
-		if comment != "" {
-			for _, line := range strings.Split(comment, "\n") {
-				output.WriteString("#")
-				if line != "" {
-					output.WriteString(" ")
-				}
-				output.WriteString(line)
-				output.WriteString("\n")
-			}
-		}
-		_, _ = fmt.Fprintf(&output, "[plugins.%s]\n", strconv.Quote(name))
-		output.WriteString(body)
-	}
-	write("--- model provider: required to run the agent ---\nFill in base_url, api_key and your model names.", "model.openai-compatible", "providers = [\n  { name = \"openai\", base_url = \"https://api.example.com/v1\", api_key = \"\", models = [\"gpt-4o-mini\"] },\n]\n")
-	write("--- defaults used when a request leaves provider/model empty ---\nKeep these in sync with the provider name and models above.", "model.runtime", "default_provider = \"openai\"\ndefault_model = \"gpt-4o-mini\"\n")
-	write("--- immutable media storage used by agents and model providers ---\nValues are byte limits; omitted values use conservative local defaults.", "asset.local", "# max_object_bytes = 67108864\n# max_total_bytes = 10737418240\n# io_concurrency = 8\n")
-	write("--- agent loop defaults (optional) ---\nStreaming is selected by applications through agent.StreamingRuntime; the legacy streaming key is ignored.", "agent.default", "# provider = \"openai\"\n# model = \"gpt-4o-mini\"\n# max_rounds = 8\n")
-	write("--- browser workspace: HTTP/SSE server bind address ---\nKeep 127.0.0.1 for trusted local single-user use; do not expose it to a network.", "app.backend", "backend = { address = \"127.0.0.1:7316\" }\n# backend = { replay_capacity = 1024, subscriber_buffer = 64, heartbeat_interval_seconds = 15, operation_retention = 128, max_asset_bytes = 67108864 }\n")
-	if _, ok := byName["prompt.default"]; ok {
-		if systemPrompt != "" {
-			write("--- system prompt ---\nCustomize this prompt to change the default agent behavior.\nRestart the current image after editing config.toml.", "prompt.default", "system_prompt = "+renderTOMLMultilineString(systemPrompt)+"\n")
-		} else {
-			write("", "prompt.default", "")
-		}
-	}
-	if _, ok := byName["tool.shell"]; ok {
-		write("--- shell tool execution boundary ---\nThe command working directory comes from the session Workspace binding, not config.\nShell is automatically resolved when omitted.\nSet an absolute shell path to override the default.", "tool.shell", "# shell = \"/absolute/path/to/shell\"\n# timeout_seconds = 30\n# max_output_bytes = 1048576\n")
-	}
-	for _, entry := range entries {
-		switch entry.Name {
-		case "model.openai-compatible", "model.runtime", "asset.local", "agent.default", "app.backend", "prompt.default", "tool.shell":
-			continue
-		}
-		write("", entry.Name, "")
-	}
-	return output.Bytes(), nil
-}
-
-// renderTOMLMultilineString encodes value as a TOML multiline basic string.
-// The newline after the opening delimiter is intentionally part of the
-// template rather than value: TOML trims that first newline when decoding.
-func renderTOMLMultilineString(value string) string {
-	var output strings.Builder
-	output.Grow(len(value) + 8)
-	output.WriteString("\"\"\"\n")
-	for _, r := range value {
-		switch r {
-		case '\\':
-			output.WriteString(`\\`)
-		case '"':
-			output.WriteString(`\"`)
-		case '\r':
-			output.WriteString(`\r`)
-		case '\n':
-			output.WriteRune(r)
-		case '\b':
-			output.WriteString(`\b`)
-		case '\t':
-			output.WriteRune(r)
-		case '\f':
-			output.WriteString(`\f`)
-		default:
-			if r < 0x20 || r == 0x7f {
-				fmt.Fprintf(&output, `\u%04X`, r)
-				continue
-			}
-			output.WriteRune(r)
-		}
-	}
-	// Escape the line ending before the closing delimiter so the generated
-	// config stays readable without adding a trailing newline to the value.
-	output.WriteString("\\\n\"\"\"")
-	return output.String()
 }

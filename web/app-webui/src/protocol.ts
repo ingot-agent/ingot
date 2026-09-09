@@ -67,12 +67,16 @@ export interface InteractionField {
   name: string
   label?: string
   description?: string
-  kind: 'string' | 'integer' | 'number' | 'boolean' | 'choice' | 'multichoice'
+  kind: 'string' | 'integer' | 'number' | 'boolean' | 'choice' | 'multichoice' | 'object' | 'list'
   required: boolean
   sensitive: boolean
   hasDefault: boolean
   default?: unknown
   options?: { value: string; label?: string; description?: string }[]
+  // Object fields carry their members; list fields carry one element
+  // descriptor. Both nest, so renderers must recurse.
+  fields?: InteractionField[]
+  element?: InteractionField
 }
 export interface Interaction {
   id: string
@@ -100,9 +104,17 @@ export interface Schema {
   default?: unknown
   [key: string]: unknown
 }
-export interface Operation { name: string; description: string; inputSchema: Schema; outputSchema: Schema }
+export interface Operation {
+  id: string
+  name: string
+  description: string
+  group?: string
+  inputSchema: Schema
+  outputSchema: Schema
+}
 export interface OperationInvocation {
   id: string
+  operationId: string
   name: string
   sessionId?: string
   status: Status

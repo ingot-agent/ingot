@@ -130,10 +130,10 @@ func TestStreamFallbackRequiresZeroDeliveredAgentEvents(t *testing.T) {
 				streamRequest = cloneModelRequest(request)
 				return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("ignore")}}, tc.stream(handler)
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: complete, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: &fakeTools{},
 				Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -180,11 +180,11 @@ func TestStreamingFallbackObservesBothRealModelAttempts(t *testing.T) {
 	streaming := modelStreamFunc(func(context.Context, model.Request, model.StreamHandler) (model.Response, error) {
 		return model.Response{}, model.ErrStreamingUnsupported
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: complete, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: &fakeTools{},
 		Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}, Assets: newMemoryAssets(),
 		Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,9 +237,9 @@ func TestPreDispatchToolRejectionsContinueButOtherErrorsStop(t *testing.T) {
 				}
 				return tool.Result{Content: content.FromText("ok-" + call.Name)}, nil
 			}}
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -282,9 +282,9 @@ func TestCancellationAfterDurableUserStopsBeforeModelDispatch(t *testing.T) {
 		return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
 	})
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: complete, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: cancelingPrompt{cancel: cancel},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,9 +302,9 @@ func TestCancellationAfterModelSuccessStopsBeforeAssistantPersistence(t *testing
 		return model.Response{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("known but not durable")}}, nil
 	})
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: complete, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,9 +337,9 @@ func TestCancellationAfterToolSuccessDoesNotPersistVolatileResultOrDispatchNext(
 		}
 		return tool.Result{Content: content.FromText("known but not durable")}, nil
 	}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Observation: consumer,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,9 +391,9 @@ func TestPersistenceErrorsStopAllDependentWork(t *testing.T) {
 			tools := &toolRuntimeFunc{call: func(context.Context, tool.Call) (tool.Result, error) {
 				return tool.Result{Content: content.FromText("ok")}, nil
 			}}
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -428,9 +428,9 @@ func TestRecoveryPersistenceErrorStopsBeforeNewTurnWork(t *testing.T) {
 	tools := &toolRuntimeFunc{call: func(context.Context, tool.Call) (tool.Result, error) {
 		return tool.Result{Content: content.FromText("must not run")}, nil
 	}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,9 +454,9 @@ func TestRecoveryUsesCommittedHistoryAfterAppendReturnedError(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("continued safely")}},
 	}}
 	tools := &fakeTools{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

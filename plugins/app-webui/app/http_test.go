@@ -201,7 +201,7 @@ func (s *testStore) Fork(ctx context.Context, id session.ID, request session.For
 
 func testDependencies(t *testing.T, runtime *testAgent, store *testStore) Dependencies {
 	t.Helper()
-	exports, _, err := hostcomponent.New(context.Background(), appbackend.Config{}, hostcomponent.Dependencies{})
+	exports, _, err := hostcomponent.New(context.Background(), hostcomponent.Dependencies{State: testStateScope{dir: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}

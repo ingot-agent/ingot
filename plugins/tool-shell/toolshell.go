@@ -21,8 +21,10 @@ import (
 	"os/exec"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/observation"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/ingot-agent/sdk/workspace"
 )
@@ -62,15 +64,21 @@ type Config struct {
 }
 
 // Dependencies contains the workspace capability that authoritatively resolves
-// the command working directory, plus optional passive execution observation.
-// Approval is supplied independently by a runtime interceptor.
+// the command working directory, optional passive execution observation, and
+// this Plugin's own persistent state scope. Approval is supplied independently
+// by a runtime interceptor.
 type Dependencies struct {
 	Workspace   workspace.Resolver
 	Observation ingotabi.Optional[observation.Consumer]
+	State       state.Scope
 }
 
-// Exports contains the shell_exec tool.
-type Exports struct{ Tools []tool.Tool }
+// Exports contains the shell_exec tool plus this Plugin's own configuration
+// Operation.
+type Exports struct {
+	Tools      []tool.Tool
+	Operations []operation.Operation
+}
 
 type normalizedConfig struct {
 	shell              string
@@ -86,16 +94,22 @@ type shellTool struct {
 	observation observation.Consumer
 }
 
-// New validates the fixed process boundary and creates shell_exec.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New validates the fixed process boundary, loads this Plugin's own
+// configuration from its state scope, and creates shell_exec. A missing
+// configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.shell: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Workspace) {
-		return Exports{}, nil, fmt.Errorf("workspace dependency is required: %w", ErrInvalidConfig)
+	if isNil(deps.Workspace) || isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("workspace and state dependencies are required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct tool.shell: %w: %w", err, ErrInvalidConfig)
 	}
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
@@ -108,7 +122,10 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if deps.Observation.Valid {
 		consumer = deps.Observation.Value
 	}
-	return Exports{Tools: []tool.Tool{&shellTool{config: normalized, workspace: deps.Workspace, observation: consumer}}}, nil, nil
+	return Exports{
+		Tools:      []tool.Tool{&shellTool{config: normalized, workspace: deps.Workspace, observation: consumer}},
+		Operations: []operation.Operation{&setupOperation{scope: deps.State}},
+	}, nil, nil
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {

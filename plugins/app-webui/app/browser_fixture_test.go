@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	appbackend "github.com/ingot-agent/app-webui"
 	hostcomponent "github.com/ingot-agent/app-webui/host"
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
@@ -254,7 +253,7 @@ func TestBrowserFixture(t *testing.T) {
 	a.config.MaxAssetBytes = 64 << 20
 	a.config.Heartbeat = time.Second
 	// Construct host once so request scope and observation share the same hub.
-	host, _, err := hostcomponent.New(ctx, appbackend.Config{}, hostcomponent.Dependencies{})
+	host, _, err := hostcomponent.New(ctx, hostcomponent.Dependencies{State: testStateScope{dir: t.TempDir()}})
 	if err != nil {
 		t.Fatal(err)
 	}

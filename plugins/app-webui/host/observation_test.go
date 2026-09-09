@@ -16,7 +16,7 @@ import (
 )
 
 func TestObservationProjectsEveryDetailAndPreservesCorrelation(t *testing.T) {
-	exports, _, err := New(context.Background(), appbackend.Config{}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, appbackend.Config{}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}

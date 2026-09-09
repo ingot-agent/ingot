@@ -66,7 +66,7 @@ func newAccountingRuntime(t *testing.T, models model.Runtime, tools tool.Runtime
 	for _, option := range options {
 		option(&deps)
 	}
-	exports, _, err := New(context.Background(), Config{}, deps)
+	exports, _, err := New(context.Background(), withState(t, Config{}, deps))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,8 @@ package appcomponent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -25,10 +27,18 @@ type registeredOperation struct {
 }
 
 type operationController struct {
+	// entries is keyed by the host-generated internal ID, never by Name:
+	// two Plugins may export the same display name without colliding.
 	entries     map[string]registeredOperation
 	definitions []appbackend.OperationDefinition
 }
 
+// operationGroupName validates the optional presentation group hint.
+var operationGroupName = regexp.MustCompile(`^[a-z][a-z0-9]*([._-][a-z0-9]+)*$`)
+
+// newOperationController snapshots every operation definition, assigning a
+// stable internal ID to each. Same-name operations coexist: identity is the
+// internal ID, and Name is display-only.
 func newOperationController(operations []operation.Operation) (*operationController, error) {
 	c := &operationController{entries: make(map[string]registeredOperation), definitions: make([]appbackend.OperationDefinition, 0, len(operations))}
 	for i, candidate := range operations {
@@ -39,22 +49,35 @@ func newOperationController(operations []operation.Operation) (*operationControl
 		if !operationName.MatchString(definition.Name) || definition.Description == "" || !utf8.ValidString(definition.Description) {
 			return nil, fmt.Errorf("operation %d has invalid name or description: %w", i, appbackend.ErrInvalidOperationDefinition)
 		}
-		if _, exists := c.entries[definition.Name]; exists {
-			return nil, fmt.Errorf("duplicate operation %q: %w", definition.Name, appbackend.ErrInvalidOperationDefinition)
+		if definition.Group != "" && (!operationGroupName.MatchString(definition.Group) || !utf8.ValidString(definition.Group)) {
+			return nil, fmt.Errorf("operation %q has invalid group %q: %w", definition.Name, definition.Group, appbackend.ErrInvalidOperationDefinition)
 		}
-		input, err := compileOperationSchema(definition.Name+":input", definition.InputSchema)
+		id := operationInternalID(definition.Name, i)
+		if _, exists := c.entries[id]; exists {
+			return nil, fmt.Errorf("duplicate operation internal id %q: %w", id, appbackend.ErrInvalidOperationDefinition)
+		}
+		input, err := compileOperationSchema(id+":input", definition.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("operation %q input schema: %w: %w", definition.Name, appbackend.ErrInvalidOperationDefinition, err)
 		}
-		output, err := compileOperationSchema(definition.Name+":output", definition.OutputSchema)
+		output, err := compileOperationSchema(id+":output", definition.OutputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("operation %q output schema: %w: %w", definition.Name, appbackend.ErrInvalidOperationDefinition, err)
 		}
-		c.entries[definition.Name] = registeredOperation{operation: candidate, input: input, output: output}
-		c.definitions = append(c.definitions, appbackend.OperationDefinition{Name: definition.Name, Description: definition.Description,
+		c.entries[id] = registeredOperation{operation: candidate, input: input, output: output}
+		c.definitions = append(c.definitions, appbackend.OperationDefinition{ID: id, Name: definition.Name, Description: definition.Description, Group: definition.Group,
 			InputSchema: bytes.Clone(definition.InputSchema), OutputSchema: bytes.Clone(definition.OutputSchema)})
 	}
 	return c, nil
+}
+
+// operationInternalID derives the stable internal identity of one operation.
+// The index makes the ID unique even when two Plugins export the same name,
+// while remaining deterministic for a fixed graph composition so a client can
+// address the same operation across restarts.
+func operationInternalID(name string, index int) string {
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", index, name)))
+	return name + "-" + hex.EncodeToString(digest[:8])
 }
 
 func decodeObject(raw json.RawMessage) (map[string]any, error) {
@@ -114,8 +137,18 @@ func (c *operationController) List() []appbackend.OperationDefinition {
 	return result
 }
 
-func (c *operationController) validateInput(name string, raw json.RawMessage) error {
-	entry, ok := c.entries[name]
+// definition returns the public definition of one operation by internal ID.
+func (c *operationController) definition(id string) (appbackend.OperationDefinition, bool) {
+	for _, item := range c.definitions {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return appbackend.OperationDefinition{}, false
+}
+
+func (c *operationController) validateInput(id string, raw json.RawMessage) error {
+	entry, ok := c.entries[id]
 	if !ok {
 		return appbackend.ErrOperationNotFound
 	}
@@ -124,25 +157,25 @@ func (c *operationController) validateInput(name string, raw json.RawMessage) er
 		err = entry.input.Validate(value)
 	}
 	if err != nil {
-		return fmt.Errorf("operation %q input: %w: %w", name, appbackend.ErrInvalidOperationInput, err)
+		return fmt.Errorf("operation %q input: %w: %w", id, appbackend.ErrInvalidOperationInput, err)
 	}
 	return nil
 }
 
-func (c *operationController) Invoke(ctx context.Context, name string, request operation.Request) (operation.Result, error) {
+func (c *operationController) Invoke(ctx context.Context, id string, request operation.Request) (operation.Result, error) {
 	if ctx == nil {
 		return operation.Result{}, fmt.Errorf("nil operation context")
 	}
 	if err := ctx.Err(); err != nil {
 		return operation.Result{}, err
 	}
-	if err := c.validateInput(name, request.Input); err != nil {
+	if err := c.validateInput(id, request.Input); err != nil {
 		return operation.Result{}, err
 	}
 	if isNil(request.Interaction) {
 		return operation.Result{}, fmt.Errorf("operation interaction channel is required")
 	}
-	entry := c.entries[name]
+	entry := c.entries[id]
 	request.Input = bytes.Clone(request.Input)
 	result, err := entry.operation.Invoke(ctx, request)
 	if err != nil {
@@ -153,7 +186,7 @@ func (c *operationController) Invoke(ctx context.Context, name string, request o
 		err = entry.output.Validate(value)
 	}
 	if err != nil {
-		return operation.Result{}, fmt.Errorf("operation %q output: %w: %w", name, appbackend.ErrInvalidOperationOutput, err)
+		return operation.Result{}, fmt.Errorf("operation %q output: %w: %w", id, appbackend.ErrInvalidOperationOutput, err)
 	}
 	result.Output = bytes.Clone(result.Output)
 	return result, nil
@@ -183,10 +216,17 @@ func newOperationRegistry(ctx context.Context, controller *operationController, 
 		entries: make(map[string]*operationInvocation), done: make(chan struct{})}
 }
 
-func (r *operationRegistry) Start(name string, sessionID session.ID, input json.RawMessage) (string, error) {
+// Start begins one invocation addressed by the operation's internal ID. The
+// snapshot carries the display Name separately so a same-name operation is
+// still distinguishable in the UI.
+func (r *operationRegistry) Start(operationID string, sessionID session.ID, input json.RawMessage) (string, error) {
 	input = bytes.Clone(input)
-	if err := r.controller.validateInput(name, input); err != nil {
+	if err := r.controller.validateInput(operationID, input); err != nil {
 		return "", err
+	}
+	definition, ok := r.controller.definition(operationID)
+	if !ok {
+		return "", appbackend.ErrOperationNotFound
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -196,7 +236,7 @@ func (r *operationRegistry) Start(name string, sessionID session.ID, input json.
 	r.nextID++
 	id := fmt.Sprintf("operation-inv-%d", r.nextID)
 	ctx, cancel := context.WithCancel(r.appCtx)
-	entry := &operationInvocation{snapshot: appbackend.OperationSnapshot{ID: id, Name: name, SessionID: string(sessionID), Status: "running"}, cancel: cancel}
+	entry := &operationInvocation{snapshot: appbackend.OperationSnapshot{ID: id, OperationID: operationID, Name: definition.Name, SessionID: string(sessionID), Status: "running"}, cancel: cancel}
 	scope := appbackend.Scope{Operation: &appbackend.OperationScope{InvocationID: id}}
 	if err := r.events.Publish(appbackend.Event{Type: "operation.started", Scope: &scope, Data: entry.snapshot}); err != nil {
 		cancel()
@@ -210,7 +250,7 @@ func (r *operationRegistry) Start(name string, sessionID session.ID, input json.
 }
 
 func (r *operationRegistry) run(ctx context.Context, entry *operationInvocation, request operation.Request) {
-	result, err := r.controller.Invoke(ctx, entry.snapshot.Name, request)
+	result, err := r.controller.Invoke(ctx, entry.snapshot.OperationID, request)
 	entry.cancel()
 	r.mu.Lock()
 	defer r.mu.Unlock()

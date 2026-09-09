@@ -12,7 +12,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/interaction"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -56,10 +58,15 @@ type Config struct {
 // channels to explicit dynamic execution scopes.
 type Dependencies struct {
 	Interaction ingotabi.Optional[interaction.ExecutionBinder]
+	State       state.Scope
 }
 
-// Exports contains the approval interceptor.
-type Exports struct{ Interceptors []tool.Interceptor }
+// Exports contains the approval interceptor plus this Plugin's own
+// configuration Operation.
+type Exports struct {
+	Interceptors []tool.Interceptor
+	Operations   []operation.Operation
+}
 
 type approvalInterceptor struct {
 	defaultAction string
@@ -69,14 +76,23 @@ type approvalInterceptor struct {
 	interaction   ingotabi.Optional[interaction.ExecutionBinder]
 }
 
-// New validates immutable configuration. A missing interaction channel is
-// allowed at startup so allow-only configurations remain usable; ask fails closed at call time.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope. A missing
+// interaction channel is allowed at startup so allow-only configurations
+// remain usable; ask fails closed at call time. A missing configuration file
+// is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct interceptor.approval: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct interceptor.approval: %w: %w", err, ErrInvalidConfig)
 	}
 	defaultAction := cfg.DefaultAction
 	if defaultAction == "" {
@@ -112,7 +128,10 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		}
 		rules[rule.Tool] = rule.Action
 	}
-	return Exports{Interceptors: []tool.Interceptor{&approvalInterceptor{defaultAction: defaultAction, display: display, maxDisplay: maxDisplay, rules: rules, interaction: deps.Interaction}}}, nil, nil
+	return Exports{
+		Interceptors: []tool.Interceptor{&approvalInterceptor{defaultAction: defaultAction, display: display, maxDisplay: maxDisplay, rules: rules, interaction: deps.Interaction}},
+		Operations:   []operation.Operation{&setupOperation{scope: deps.State}},
+	}, nil, nil
 }
 
 func validAction(action string) bool {

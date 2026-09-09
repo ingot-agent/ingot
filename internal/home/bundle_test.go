@@ -18,7 +18,7 @@ func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	configBefore, err := os.ReadFile(home.ConfigPath())
+	builderBefore, err := os.ReadFile(home.BuilderConfigPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,15 +59,15 @@ func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	configAfter, err := os.ReadFile(home.ConfigPath())
+	builderAfter, err := os.ReadFile(home.BuilderConfigPath())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(desiredAfter) != string(desiredBefore) {
 		t.Fatal("bundle update rewrote plugins.toml")
 	}
-	if string(configAfter) != string(configBefore) {
-		t.Fatal("bundle update rewrote config.toml")
+	if string(builderAfter) != string(builderBefore) {
+		t.Fatal("bundle update rewrote builder.toml")
 	}
 	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod")
 	updatedData, err := os.ReadFile(changedSource)

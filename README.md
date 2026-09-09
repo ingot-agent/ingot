@@ -107,18 +107,22 @@ Manual steps, equivalent to what the installer does:
 # 1. Build the CLI (or install with ./scripts/install.sh)
 go build -o ingot ./cmd/ingot
 
-# 2. Initialize a home with the official plugin set and config template
+# 2. Initialize a home with the official plugin set
 ./ingot init
 
-# 3. Set your model provider in ~/.ingot/config.toml, then compose an image
+# 3. Compose an image
 ./ingot apply
 
 # 4. Start the browser workspace
 ./ingot web        # then open http://127.0.0.1:7316/
 ```
 
+Plugins start Unconfigured and own their configuration. Set the model provider
+through the `app.backend.config` operation (or by editing the plugin's own
+`state/` file) once the runtime is running.
+
 `ingot init` materializes the official plugins under `bundled-plugins/` and
-writes `builder.toml`, `plugins.toml`, and a `config.toml` template. Pass
+writes `builder.toml` and `plugins.toml`. Pass
 `--profile minimal` for the smallest runnable graph (terminal CLI, no tools).
 See the [Usage Guide](./docs/USAGE.md) for installation options and the full
 workflow.
@@ -139,7 +143,6 @@ flowchart LR
     Lock --> Generate["Generate static wiring"]
     Generate --> Compile["Compile + startup check"]
     Compile --> Image["Immutable Runtime Image<br/>(native executable + provenance)"]
-    Config["config.toml<br/>(runtime values)"] --> Image
 ```
 
 The composition passes through three distinct states:
@@ -150,9 +153,9 @@ The composition passes through three distinct states:
 3. `images/<ImageID>/` contains the immutable native executable and its
    provenance manifest.
 
-Changing a runtime value only changes `config.toml`. Changing an implementation
-means changing the plugin set and building a new image; the old image remains
-available for rollback.
+Changing a runtime value only changes that Plugin's own state, never the image.
+Changing an implementation means changing the plugin set and building a new
+image; the old image remains available for rollback.
 
 ## Two dependency dimensions
 
@@ -264,7 +267,7 @@ location.
 | `builder.toml` | Builder configuration (no SDK list; the ingot ABI is fixed). |
 | `plugins.toml` | The desired plugin composition. |
 | `plugins.lock` | Exact resolution, source hashes, module graph, and build flags. |
-| `config.toml` | Runtime values, including provider configuration and secrets. |
+| `state/<plugin>/` | Plugin-owned persistent configuration and data. |
 | `bundled-plugins/` | Materialized sources for the official plugin set. |
 | `current` | Atomic pointer to the active image. |
 | `images/<ImageID>/` | Immutable runtime executable and `manifest.json`. |

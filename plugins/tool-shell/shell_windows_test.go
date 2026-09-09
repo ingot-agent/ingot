@@ -179,10 +179,10 @@ func TestWindowsShellChineseOutputIsUTF8(t *testing.T) {
 
 func TestWindowsShellChineseProgressIsText(t *testing.T) {
 	consumer := &recordingObservation{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Workspace:   staticResolver{binding: workspace.Binding{Root: t.TempDir()}},
 		Observation: ingotabi.Some[observation.Consumer](consumer),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

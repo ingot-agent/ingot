@@ -1,4 +1,6 @@
 github.com/ingot-agent/ingot-abi v0.1.0 h1:P5w/7whzw0H9Mjc8lE8cLxG7ok0ZBYYXUSfjV2U1ayU=
 github.com/ingot-agent/ingot-abi v0.1.0/go.mod h1:9Os7FNoCpTBXZz1D/Llkk80LbDWmFFpC7RtRzjT1vIc=
-github.com/ingot-agent/sdk v0.2.8 h1:iGHCGCYki/H9iHcmtAd7Voi47LoefQAepGGiTr0zYvM=
-github.com/ingot-agent/sdk v0.2.8/go.mod h1:na/8IQFNRbXR8odIKIZvFOfWR8nf1I735wGvYZ7zm2M=
+github.com/ingot-agent/sdk v0.2.9 h1:suazLMPY9unz9a+2ETjjavbl1v508/8B3U+x4LIJxs0=
+github.com/ingot-agent/sdk v0.2.9/go.mod h1:na/8IQFNRbXR8odIKIZvFOfWR8nf1I735wGvYZ7zm2M=
+github.com/pelletier/go-toml/v2 v2.2.4 h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4=
+github.com/pelletier/go-toml/v2 v2.2.4/go.mod h1:2gIqNv+qfxSVS7cM2xJQKtLSTLUE9V8t9Stt+h56mCY=

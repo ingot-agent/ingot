@@ -9,7 +9,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/ingot-agent/ingot/internal/builder"
-	"github.com/ingot-agent/ingot/internal/prompts"
 )
 
 func testBundleSource(t *testing.T) string {
@@ -37,8 +36,8 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.WrotePlugins || !result.WroteBuilderConfig || !result.WroteConfig {
-		t.Fatalf("init must write plugins, builder, and runtime config files: %#v", result)
+	if !result.WrotePlugins || !result.WroteBuilderConfig {
+		t.Fatalf("init must write plugins and builder config files: %#v", result)
 	}
 	if len(result.Plugins) != 11 {
 		t.Fatalf("default profile has %d plugins, want 11: %#v", len(result.Plugins), result.Plugins)
@@ -84,34 +83,10 @@ func TestInitWritesDefaultProfile(t *testing.T) {
 			t.Fatalf("result entry %d module %s does not match plugins.toml %s", index, entry.Module, plugin.Module)
 		}
 	}
-	assertEveryPluginHasConfigTable(t, home, result.Plugins)
-	configData, err := os.ReadFile(home.ConfigPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(configData), "streaming =") {
-		t.Fatalf("config.toml advertises the ignored agent streaming key:\n%s", configData)
-	}
-	if !strings.Contains(string(configData), "[plugins.\"tool.shell\"]") {
-		t.Fatalf("default config lacks tool.shell table:\n%s", configData)
-	}
-	if strings.Contains(string(configData), "\nshell =") {
-		t.Fatalf("default config must not persist a machine-specific shell path:\n%s", configData)
-	}
-	var document struct {
-		Plugins map[string]struct {
-			SystemPrompt string `toml:"system_prompt"`
-		} `toml:"plugins"`
-	}
-	if err := toml.Unmarshal(configData, &document); err != nil {
-		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
-	}
-	promptConfig, ok := document.Plugins["prompt.default"]
-	if !ok {
-		t.Fatal("default config lacks [plugins.\"prompt.default\"]")
-	}
-	if promptConfig.SystemPrompt != prompts.CodingAgent() {
-		t.Fatal("default config system_prompt does not match the official coding-agent prompt")
+	// init must not create any unified runtime configuration: plugins own
+	// their persistent configuration inside their Runtime state scope.
+	if _, err := os.Stat(filepath.Join(home.Root, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("init must not write a unified config.toml: %v", err)
 	}
 }
 
@@ -132,28 +107,16 @@ func TestInitIsIdempotentAndForceOverwrites(t *testing.T) {
 	}
 }
 
-func TestInitPreservesExistingConfig(t *testing.T) {
+func TestInitDoesNotCreateRuntimeConfig(t *testing.T) {
 	t.Parallel()
 	home := initHome(t)
-	custom := "# my custom config\n"
-	if err := os.WriteFile(home.ConfigPath(), []byte(custom), 0o600); err != nil {
+	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t)}); err != nil {
 		t.Fatal(err)
 	}
-	result, err := home.Init(InitOptions{BundlePath: testBundleSource(t)})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(filepath.Join(home.Root, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("init must not create a unified runtime config.toml: %v", err)
 	}
-	if result.WroteConfig {
-		t.Fatal("init must not overwrite an existing config.toml")
-	}
-	data, err := os.ReadFile(home.ConfigPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != custom {
-		t.Fatalf("config.toml was modified: %q", data)
-	}
-	// The plugin set is still initialized so apply is the only missing step.
+	// The plugin set is initialized so apply is the only missing step.
 	if _, err := builder.ParseDesired(home.DesiredPath()); err != nil {
 		t.Fatal(err)
 	}
@@ -169,44 +132,14 @@ func TestInitMinimalProfile(t *testing.T) {
 	if len(result.Plugins) != 9 {
 		t.Fatalf("minimal profile has %d plugins, want 9: %#v", len(result.Plugins), result.Plugins)
 	}
-	configData, err := os.ReadFile(home.ConfigPath())
+	desired, err := builder.ParseDesired(home.DesiredPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	var document struct {
-		Plugins map[string]map[string]any `toml:"plugins"`
-	}
-	if err := toml.Unmarshal(configData, &document); err != nil {
-		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
-	}
-	if _, ok := document.Plugins["filesystem.local"]; ok {
-		t.Fatal("minimal profile must not configure filesystem.local")
-	}
-	for _, entry := range result.Plugins {
-		if _, ok := document.Plugins[entry.Name]; !ok {
-			t.Fatalf("minimal config lacks table for %s (%s)", entry.Name, entry.Module)
+	for _, plugin := range desired.Plugins {
+		if plugin.Module == "github.com/ingot-agent/tool-shell" {
+			t.Fatal("minimal profile must not include tool.shell")
 		}
-	}
-	promptConfig := document.Plugins["prompt.default"]
-	if value, ok := promptConfig["system_prompt"]; ok {
-		prompt, isString := value.(string)
-		if !isString || prompt != "" {
-			t.Fatalf("minimal config must not contain a default system prompt: %#v", value)
-		}
-	}
-}
-
-func TestRenderTOMLMultilineStringRoundTrip(t *testing.T) {
-	original := "You are \"Ingot\".\n\nRun:\ngo test ./...\n\nWindows:\nC:\\workspace\\ingot\r\n中文测试。\ncontrol:\b\f\x01\x7f\t\ntail\\"
-	data := []byte("value = " + renderTOMLMultilineString(original) + "\n")
-	var document struct {
-		Value string `toml:"value"`
-	}
-	if err := toml.Unmarshal(data, &document); err != nil {
-		t.Fatalf("generated TOML does not parse: %v\n%s", err, data)
-	}
-	if document.Value != original {
-		t.Fatalf("TOML round-trip changed the value:\n got %q\nwant %q", document.Value, original)
 	}
 }
 
@@ -223,27 +156,5 @@ func TestInitRejectsBrokenBundle(t *testing.T) {
 	home := initHome(t)
 	if _, err := home.Init(InitOptions{BundlePath: t.TempDir()}); err == nil {
 		t.Fatal("init with a missing plugin bundle must fail")
-	}
-}
-
-// assertEveryPluginHasConfigTable verifies the strict runtime config
-// requirement: every locked plugin needs exactly one matching [plugins] table.
-func assertEveryPluginHasConfigTable(t *testing.T, home *Home, plugins []InitPlugin) {
-	t.Helper()
-	configData, err := os.ReadFile(home.ConfigPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var document struct {
-		Plugins map[string]map[string]any `toml:"plugins"`
-	}
-	if err := toml.Unmarshal(configData, &document); err != nil {
-		t.Fatalf("config.toml does not parse: %v\n%s", err, configData)
-	}
-	for _, entry := range plugins {
-		_, ok := document.Plugins[entry.Name]
-		if !ok {
-			t.Fatalf("config.toml lacks [plugins.%q] table for %s", entry.Name, entry.Module)
-		}
 	}
 }

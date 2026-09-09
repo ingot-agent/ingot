@@ -198,3 +198,37 @@ func writeImageFixture(t *testing.T, home *Home, buildManifest, binary string) s
 	}
 	return imageID
 }
+
+// TestRunCurrentInjectsRuntimeHomeAsTheHomeItself pins the managed dispatch
+// contract: INGOT_RUNTIME_HOME is the Runtime Home, not its state
+// subdirectory. The runtime appends "state/<plugin>", so passing
+// <ingot home>/state would nest a second state directory and hide every
+// plugin's persisted configuration from it.
+func TestRunCurrentInjectsRuntimeHomeAsTheHomeItself(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is POSIX-only")
+	}
+	t.Parallel()
+	home, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded := filepath.Join(t.TempDir(), "runtime-home")
+	// The fixture stands in for the runtime binary and reports the value it
+	// received, so the test observes exactly what ingot injects.
+	script := "#!/bin/sh\nprintf '%s' \"$INGOT_RUNTIME_HOME\" > " + recorded + "\n"
+	imageID := writeImageFixture(t, home, `{"generation":1}`, script)
+	if err := home.switchCurrent(imageID); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.RunCurrent(context.Background(), nil); err != nil {
+		t.Fatalf("run current: %v", err)
+	}
+	data, err := os.ReadFile(recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != home.Root {
+		t.Fatalf("INGOT_RUNTIME_HOME = %q, want the runtime home %q", got, home.Root)
+	}
+}

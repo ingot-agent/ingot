@@ -68,9 +68,6 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 			_, _ = fmt.Fprintf(cli.Stdout, "  sources: %s\n", result.BundledPath)
 			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.PluginsPath)
 		}
-		if result.WroteConfig {
-			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.ConfigPath)
-		}
 		if result.WroteBuilderConfig {
 			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.BuilderConfigPath)
 		}
@@ -85,9 +82,9 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 			return 0
 		}
 		_, _ = fmt.Fprintln(cli.Stdout, "\nNext steps:")
-		_, _ = fmt.Fprintf(cli.Stdout, "  1. Edit %s — set your model provider base_url and api_key.\n", result.ConfigPath)
-		_, _ = fmt.Fprintln(cli.Stdout, "  2. Run: ingot apply")
-		_, _ = fmt.Fprintln(cli.Stdout, "  3. Run: ingot web   (open the browser workspace)")
+		_, _ = fmt.Fprintln(cli.Stdout, "  1. Run: ingot apply")
+		_, _ = fmt.Fprintln(cli.Stdout, "  2. Run: ingot web   (open the browser workspace)")
+		_, _ = fmt.Fprintln(cli.Stdout, "  3. Configure the model provider through the app.backend Operations UI.")
 		return 0
 	case "resolve":
 		if len(rest) != 0 {

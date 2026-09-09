@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/execution"
 	"github.com/ingot-agent/sdk/session"
@@ -39,9 +41,45 @@ func (r scopeResolver) Resolve(_ context.Context, scope execution.Scope) (worksp
 	return workspace.Binding{Root: root}, nil
 }
 
+// testStateScope is a Plugin-owned state scope rooted at a temporary
+// directory. Tests write config.toml there to exercise persisted configuration.
+type testStateScope struct{ dir string }
+
+func (s testStateScope) Dir() string { return s.dir }
+
+// writeTestConfig persists cfg as this Plugin's own configuration file.
+func writeTestConfig(t *testing.T, dir string, cfg Config) {
+	t.Helper()
+	data, err := toml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// newTestTools constructs the Plugin with cfg persisted in a fresh state
+// scope, mirroring how a real runtime hands the Plugin its own state.
+func newTestTools(t *testing.T, root string, cfg Config) (Exports, error) {
+	t.Helper()
+	scope := filepath.Join(t.TempDir(), "state")
+	writeTestConfig(t, scope, cfg)
+	exports, _, err := New(context.Background(), Dependencies{
+		Workspace: staticResolver{binding: workspace.Binding{Root: root}},
+		State:     testStateScope{dir: scope},
+	})
+	return exports, err
+}
+
 func testTool(t *testing.T, root string, cfg Config) tool.Tool {
 	t.Helper()
-	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	scope := filepath.Join(t.TempDir(), "state")
+	writeTestConfig(t, scope, cfg)
+	exports, _, err := New(context.Background(), Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}, State: testStateScope{dir: scope}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,8 +263,51 @@ func TestEditRejectsNonUTF8File(t *testing.T) {
 }
 
 func TestEditNewRequiresWorkspaceResolver(t *testing.T) {
-	if _, _, err := New(context.Background(), Config{}, Dependencies{}); !errors.Is(err, ErrInvalidConfig) {
+	if _, _, err := New(context.Background(), Dependencies{}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("missing resolver error = %v", err)
+	}
+}
+
+func TestEditNewRequiresStateScope(t *testing.T) {
+	if _, _, err := New(context.Background(), Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("missing state scope error = %v", err)
+	}
+}
+
+// TestEditLoadsOwnConfigFromStateScope proves the Plugin, not the Host,
+// decodes its persisted configuration.
+func TestEditLoadsOwnConfigFromStateScope(t *testing.T) {
+	scope := filepath.Join(t.TempDir(), "state")
+	writeTestConfig(t, scope, Config{MaxFileBytes: 7, MaxScanBytes: 9})
+	exports, _, err := New(context.Background(), Dependencies{
+		Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}},
+		State:     testStateScope{dir: scope},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit, ok := exports.Tools[0].(*editTool)
+	if !ok {
+		t.Fatalf("unexpected tool type %T", exports.Tools[0])
+	}
+	if edit.config.maxFileBytes != 7 || edit.config.maxScanBytes != 9 {
+		t.Fatalf("loaded config = %#v", edit.config)
+	}
+}
+
+// TestEditStartsUnconfigured proves a missing config file is a legal
+// Unconfigured state and defaults apply.
+func TestEditStartsUnconfigured(t *testing.T) {
+	exports, _, err := New(context.Background(), Dependencies{
+		Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}},
+		State:     testStateScope{dir: filepath.Join(t.TempDir(), "missing")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := exports.Tools[0].(*editTool)
+	if edit.config.maxFileBytes != defaultMaxFileBytes || edit.config.maxScanBytes != defaultMaxScanBytes {
+		t.Fatalf("unconfigured defaults = %#v", edit.config)
 	}
 }
 
@@ -235,8 +316,9 @@ func TestEditResolvesWorkspaceFromInvocationScope(t *testing.T) {
 	rootB := t.TempDir()
 	write(t, rootA, "a.txt", "hello A\n")
 	write(t, rootB, "a.txt", "hello B\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), Dependencies{
 		Workspace: scopeResolver{roots: map[session.ID]string{"session-a": rootA, "session-b": rootB}},
+		State:     testStateScope{dir: filepath.Join(t.TempDir(), "state")},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -17,7 +17,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/ingot-agent/sdk/workspace"
 )
@@ -50,13 +52,20 @@ type Config struct {
 	MaxScanBytes int `toml:"max_scan_bytes"`
 }
 
-// Dependencies resolves the session workspace that owns edited files.
+// Dependencies resolves the session workspace that owns edited files, plus
+// this Plugin's own persistent state scope.
 type Dependencies struct {
 	Workspace workspace.Resolver
+	State     state.Scope
 }
 
-// Exports contains the workspace file tools.
-type Exports struct{ Tools []tool.Tool }
+// Exports contains the workspace file tools plus this Plugin's own
+// configuration Operation. Exporting it through the ordinary capability graph
+// keeps the Host free of any plugin-specific knowledge.
+type Exports struct {
+	Tools      []tool.Tool
+	Operations []operation.Operation
+}
 
 type normalizedConfig struct {
 	maxFileBytes int
@@ -75,37 +84,35 @@ type editArguments struct {
 	ReplaceAll bool    `json:"replace_all"`
 }
 
-// New validates configuration and creates the tool set.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New validates dependencies, loads this Plugin's own configuration from its
+// Runtime state scope, and creates the tool set. A missing configuration file
+// is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.edit: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Workspace) {
-		return Exports{}, nil, fmt.Errorf("workspace dependency is required: %w", ErrInvalidConfig)
+	if isNil(deps.Workspace) || isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("workspace and state dependencies are required: %w", ErrInvalidConfig)
 	}
-	maxFileBytes := cfg.MaxFileBytes
-	if maxFileBytes == 0 {
-		maxFileBytes = defaultMaxFileBytes
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct tool.edit: %w: %w", err, ErrInvalidConfig)
 	}
-	if maxFileBytes < 1 {
-		return Exports{}, nil, fmt.Errorf("max_file_bytes must be positive: %w", ErrInvalidConfig)
+	config, err := normalizeConfig(cfg)
+	if err != nil {
+		return Exports{}, nil, err
 	}
-	maxScanBytes := cfg.MaxScanBytes
-	if maxScanBytes == 0 {
-		maxScanBytes = defaultMaxScanBytes
-	}
-	if maxScanBytes < 1 {
-		return Exports{}, nil, fmt.Errorf("max_scan_bytes must be positive: %w", ErrInvalidConfig)
-	}
-	config := normalizedConfig{maxFileBytes: maxFileBytes, maxScanBytes: maxScanBytes}
-	return Exports{Tools: []tool.Tool{
-		&editTool{config: config, workspace: deps.Workspace},
-		&readTool{config: config, workspace: deps.Workspace},
-		&searchTool{config: config, workspace: deps.Workspace},
-	}}, nil, nil
+	return Exports{
+		Tools: []tool.Tool{
+			&editTool{config: config, workspace: deps.Workspace},
+			&readTool{config: config, workspace: deps.Workspace},
+			&searchTool{config: config, workspace: deps.Workspace},
+		},
+		Operations: []operation.Operation{&setupOperation{scope: deps.State}},
+	}, nil, nil
 }
 
 func (t *editTool) Definition() tool.Definition {

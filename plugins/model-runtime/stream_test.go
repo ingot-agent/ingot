@@ -46,7 +46,7 @@ func TestReasoningStreamValidation(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := &eventStreamingProvider{events: tc.events, response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: tc.final}}}
-			exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}})
+			exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}}))
 			if err != nil {
 				t.Fatal(err)
 			}

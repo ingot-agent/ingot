@@ -53,7 +53,7 @@ func terminal(counter *int) pipeline.Next[tool.Invocation, tool.Result] {
 
 func TestApprovalActionsAndRules(t *testing.T) {
 	channel := &queueChannel{responses: []string{"maybe", actionAllow}}
-	exports, _, err := New(context.Background(), Config{DefaultAction: "deny", Rules: []Rule{{Tool: "safe", Action: "allow"}, {Tool: "danger", Action: "ask"}}}, Dependencies{Interaction: ingotabi.Some[interaction.ExecutionBinder](channel)})
+	exports, _, err := New(context.Background(), withState(t, Config{DefaultAction: "deny", Rules: []Rule{{Tool: "safe", Action: "allow"}, {Tool: "danger", Action: "ask"}}}, Dependencies{Interaction: ingotabi.Some[interaction.ExecutionBinder](channel)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestApprovalActionsAndRules(t *testing.T) {
 }
 
 func TestApprovalFailsClosedAndRetries(t *testing.T) {
-	exports, _, err := New(context.Background(), Config{}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestApprovalFailsClosedAndRetries(t *testing.T) {
 		t.Fatalf("missing channel error=%v", err)
 	}
 	channel := &queueChannel{responses: []string{"what", "still", "unknown"}}
-	exports, _, err = New(context.Background(), Config{MaxDisplayBytes: 14}, Dependencies{Interaction: ingotabi.Some[interaction.ExecutionBinder](channel)})
+	exports, _, err = New(context.Background(), withState(t, Config{MaxDisplayBytes: 14}, Dependencies{Interaction: ingotabi.Some[interaction.ExecutionBinder](channel)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,9 +115,9 @@ func TestApprovalFailsClosedAndRetries(t *testing.T) {
 func TestApprovalFailsClosedOnExecutionBindingError(t *testing.T) {
 	bindErr := errors.New("scope routing unavailable")
 	channel := &queueChannel{bindErr: bindErr}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Interaction: ingotabi.Some[interaction.ExecutionBinder](channel),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestApprovalFailsClosedOnExecutionBindingError(t *testing.T) {
 }
 
 func TestApprovalPreservesCanceledContext(t *testing.T) {
-	exports, _, err := New(context.Background(), Config{DefaultAction: "allow"}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{DefaultAction: "allow"}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}

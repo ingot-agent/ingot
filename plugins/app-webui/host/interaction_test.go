@@ -369,3 +369,103 @@ func waitForPending(t *testing.T, host *interactionHost) appbackend.PendingInter
 		}
 	}
 }
+
+// TestNestedInteractionFieldsRoundTrip proves the ADR 0003 extension: a
+// request may describe nested objects and repeated structures, and the host
+// validates and collects them recursively rather than requiring a flat form.
+func TestNestedInteractionFieldsRoundTrip(t *testing.T) {
+	host := newInteractionHost(newEventHub(8, 2))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	provider := interaction.Field{Name: "provider", Kind: interaction.FieldObject, Required: true, Fields: []interaction.Field{
+		{Name: "name", Kind: interaction.FieldString, Required: true},
+		{Name: "models", Kind: interaction.FieldList, Element: &interaction.Field{Name: "model", Kind: interaction.FieldString}},
+		{Name: "auth", Kind: interaction.FieldObject, Fields: []interaction.Field{
+			{Name: "token", Kind: interaction.FieldString, Sensitive: true},
+		}},
+	}}
+	done := make(chan interaction.Response, 1)
+	go func() {
+		response, err := host.Request(ctx, interaction.Request{Name: "setup", Fields: []interaction.Field{
+			{Name: "providers", Kind: interaction.FieldList, Element: &provider},
+		}})
+		if err != nil {
+			t.Errorf("request: %v", err)
+		}
+		done <- response
+	}()
+
+	pending := waitForPending(t, host)
+	if len(pending.Fields) != 1 || pending.Fields[0].Kind != "list" || pending.Fields[0].Element == nil {
+		t.Fatalf("projected field = %#v", pending.Fields)
+	}
+	if element := pending.Fields[0].Element; element.Kind != "object" || len(element.Fields) != 3 || element.Fields[1].Element == nil {
+		t.Fatalf("projected element = %#v", element)
+	}
+
+	// A malformed member must be rejected without consuming the pending request.
+	if err := host.Respond(pending.ID, appbackend.InteractionSubmission{Values: map[string]json.RawMessage{
+		"providers": json.RawMessage(`[{"name":"openai","models":"not-a-list"}]`),
+	}}); !errors.Is(err, appbackend.ErrInvalidInteractionResponse) {
+		t.Fatalf("malformed nested member = %v", err)
+	}
+	if len(host.Pending()) != 1 {
+		t.Fatal("rejected submission consumed the pending request")
+	}
+	// Unknown nested members are rejected too.
+	if err := host.Respond(pending.ID, appbackend.InteractionSubmission{Values: map[string]json.RawMessage{
+		"providers": json.RawMessage(`[{"name":"openai","unknown":1}]`),
+	}}); !errors.Is(err, appbackend.ErrInvalidInteractionResponse) {
+		t.Fatalf("unknown nested member = %v", err)
+	}
+
+	if err := host.Respond(pending.ID, appbackend.InteractionSubmission{Values: map[string]json.RawMessage{
+		"providers": json.RawMessage(`[{"name":"openai","models":["gpt-4o-mini"],"auth":{"token":"secret"}}]`),
+	}}); err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	response := <-done
+	if len(response.Values) != 1 || response.Values[0].Name != "providers" {
+		t.Fatalf("response = %#v", response)
+	}
+	list := response.Values[0].Value
+	if list.Kind != interaction.ValueList || len(list.Items) != 1 || list.Items[0].Kind != interaction.ValueObject {
+		t.Fatalf("nested value = %#v", list)
+	}
+	entries := map[string]interaction.Value{}
+	for _, entry := range list.Items[0].Entries {
+		entries[entry.Name] = entry.Value
+	}
+	if entries["name"].String != "openai" || len(entries["models"].Items) != 1 || entries["models"].Items[0].String != "gpt-4o-mini" {
+		t.Fatalf("collected entries = %#v", entries)
+	}
+	if auth := entries["auth"]; auth.Kind != interaction.ValueObject || len(auth.Entries) != 1 || auth.Entries[0].Value.String != "secret" {
+		t.Fatalf("collected auth = %#v", auth)
+	}
+}
+
+// TestNestedFieldValidationRejectsMalformedDescriptors proves the host
+// rejects structurally invalid nested descriptors instead of rendering them.
+func TestNestedFieldValidationRejectsMalformedDescriptors(t *testing.T) {
+	tests := []struct {
+		name  string
+		field interaction.Field
+	}{
+		{name: "object without members", field: interaction.Field{Name: "a", Kind: interaction.FieldObject}},
+		{name: "list without element", field: interaction.Field{Name: "a", Kind: interaction.FieldList}},
+		{name: "leaf with members", field: interaction.Field{Name: "a", Kind: interaction.FieldString, Fields: []interaction.Field{{Name: "b", Kind: interaction.FieldString}}}},
+		{name: "leaf with element", field: interaction.Field{Name: "a", Kind: interaction.FieldString, Element: &interaction.Field{Name: "b", Kind: interaction.FieldString}}},
+		{name: "duplicate nested member", field: interaction.Field{Name: "a", Kind: interaction.FieldObject, Fields: []interaction.Field{
+			{Name: "b", Kind: interaction.FieldString}, {Name: "b", Kind: interaction.FieldString},
+		}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host := newInteractionHost(newEventHub(8, 2))
+			if _, err := host.Request(context.Background(), interaction.Request{Name: "setup", Fields: []interaction.Field{test.field}}); err == nil {
+				t.Fatal("malformed nested descriptor was accepted")
+			}
+		})
+	}
+}

@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	agentdefault "github.com/ingot-agent/agent-default"
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
@@ -51,7 +50,7 @@ type hub struct {
 
 // New snapshots the Observer collection and starts ordered asynchronous
 // delivery. A plugin without observers receives a zero-cost discard Consumer.
-func New(ctx context.Context, _ agentdefault.Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct agent.default observation: nil context")
 	}

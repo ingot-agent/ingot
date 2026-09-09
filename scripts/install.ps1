@@ -177,10 +177,16 @@ try {
     }
 
     # --- model provider configuration -----------------------------------------
-    $Config = Join-Path $HomeDir 'config.toml'
-    $Configured = $true
-    if ((Test-Path $Config) -and (Select-String -Path $Config -Pattern 'api_key = ""' -Quiet)) {
-        $Configured = $false
+    # Plugins own their persistent configuration inside the Runtime Home; there
+    # is no shared runtime config.toml. The model provider is configured by
+    # writing the provider plugin's own state file before the first run.
+    $ProviderDir = Join-Path $HomeDir 'state/model.openai-compatible'
+    $RuntimeDir = Join-Path $HomeDir 'state/model.runtime'
+    $Config = Join-Path $ProviderDir 'config.toml'
+    $Defaults = Join-Path $RuntimeDir 'config.toml'
+    $Configured = $false
+    if ((Test-Path $Config) -and -not (Select-String -Path $Config -Pattern 'api_key = ""' -Quiet)) {
+        $Configured = $true
     }
     if (-not $NoConfigure -and -not $Configured) {
         Write-Host '==> model provider configuration'
@@ -195,18 +201,16 @@ try {
         if ($ApiKey) {
             # Escape for a TOML basic string: \ and " only.
             $esc = { param($s) $s.Replace('\', '\\').Replace('"', '\"') }
-            $content = Get-Content -Raw -Path $Config
-            $content = $content.Replace('name = "openai"',       "name = `"$(& $esc $ProviderName)`"")
-            $content = $content.Replace('base_url = "https://api.example.com/v1"', "base_url = `"$(& $esc $BaseUrl)`"")
-            $content = $content.Replace('api_key = ""',          "api_key = `"$(& $esc $ApiKey)`"")
-            $content = $content.Replace('models = ["gpt-4o-mini"]', "models = [`"$(& $esc $Model)`"]")
-            $content = $content.Replace('default_provider = "openai"', "default_provider = `"$(& $esc $ProviderName)`"")
-            $content = $content.Replace('default_model = "gpt-4o-mini"', "default_model = `"$(& $esc $Model)`"")
-            [IO.File]::WriteAllText($Config, $content)
+            New-Item -ItemType Directory -Force -Path $ProviderDir | Out-Null
+            New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+            $providerToml = "providers = [`n  { name = `"$(& $esc $ProviderName)`", base_url = `"$(& $esc $BaseUrl)`", api_key = `"$(& $esc $ApiKey)`", models = [`"$(& $esc $Model)`"] },`n]`n"
+            $defaultsToml = "default_provider = `"$(& $esc $ProviderName)`"`ndefault_model = `"$(& $esc $Model)`"`n"
+            [IO.File]::WriteAllText($Config, $providerToml)
+            [IO.File]::WriteAllText($Defaults, $defaultsToml)
             Write-Host "==> wrote provider $ProviderName ($Model) to $Config"
         } else {
             Write-Warning 'no API key provided; skipping configuration'
-            Write-Warning "edit $Config manually, then run: $Ingot --home `"$HomeDir`" apply"
+            Write-Warning "write $Config manually, then run: $Ingot --home `"$HomeDir`" apply"
         }
     }
 

@@ -114,7 +114,7 @@ func (home *Home) UpdateBundle(ctx context.Context, options BundleUpdateOptions)
 			return BundleUpdateResult{}, rollback(resolveErr)
 		}
 		built, buildErr := builder.Build(ctx, desired, candidateLock, builder.BuildOptions{
-			Home: home.Root, ConfigPath: home.ConfigPath(), GOMODCACHE: filepath.Join(home.Root, "cache", "gomod"),
+			Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod"),
 		})
 		if buildErr != nil {
 			return BundleUpdateResult{}, rollback(buildErr)

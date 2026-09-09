@@ -45,7 +45,6 @@ func TestResolveAndBuildRemoteVerticalSlice(t *testing.T) {
 module = "example.com/ingot-test-plugin"
 version = "v1.0.0"
 `)
-	writeTestFile(t, filepath.Join(home, "config.toml"), "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
@@ -65,7 +64,7 @@ version = "v1.0.0"
 	if len(lock.Modules) != 3 {
 		t.Fatalf("resolved module graph has %d nodes: %#v", len(lock.Modules), lock.Modules)
 	}
-	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache})
+	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,16 +77,20 @@ version = "v1.0.0"
 	if result.ComponentCreationOrder[0] != "example.com/ingot-test-plugin/default" {
 		t.Fatalf("creation order = %#v", result.ComponentCreationOrder)
 	}
-	second, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache})
+	second, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if second.ImageID != result.ImageID || second.ArtifactDigest != result.ArtifactDigest {
 		t.Fatal("identical locked build did not reuse the immutable image")
 	}
-	writeTestFile(t, filepath.Join(home, "config.toml"), "fail\n")
-	if _, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache}); err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-CHECK") {
-		t.Fatalf("pre-switch check failure = %v", err)
+	// The pre-switch check now runs against a throwaway Runtime Home. Making
+	// that location unusable must surface as an explicit check failure
+	// instead of silently falling back.
+	blocked := filepath.Join(t.TempDir(), "blocked-runtime-home")
+	writeTestFile(t, blocked, "not a directory\n")
+	if err := runRuntimeCheck(context.Background(), result.BinaryPath, replaceEnvironment(os.Environ(), map[string]string{"INGOT_RUNTIME_HOME": blocked})); err == nil || !strings.Contains(err.Error(), "Set INGOT_RUNTIME_HOME to use another location") {
+		t.Fatalf("unusable runtime home check failure = %v", err)
 	}
 	manifest, _ := lock.CanonicalBuildManifest()
 	if _, err := VerifyImage(result.ImageDirectory, result.ImageID, manifest); err != nil {
@@ -111,8 +114,6 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	makeModuleCacheRemovable(t, home)
 	desiredPath := filepath.Join(home, "plugins.toml")
 	writeTestFile(t, desiredPath, fmt.Sprintf("plugins_version=1\n[[plugins]]\nmodule=%q\npath=%q\n", "example.com/ingot-test-plugin", filepath.ToSlash(pluginSource)))
-	configPath := filepath.Join(home, "config.toml")
-	writeTestFile(t, configPath, "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
@@ -126,7 +127,7 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 1 || lock.Runtime.Sum == "" {
 		t.Fatalf("local lock materialization = %#v / %#v / %#v", lock.Plugins[0], lock.Replacements, lock.Runtime)
 	}
-	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +136,7 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	}
 	pluginDriftPath := filepath.Join(pluginSource, "changed.txt")
 	writeTestFile(t, pluginDriftPath, "drift")
-	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+	_, err = Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-DEV-DIGEST") {
 		t.Fatalf("source drift error = %v", err)
 	}
@@ -184,10 +185,9 @@ import (
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"example.com/secondary-sdk/capability"
 )
-type Config struct{}
 type Dependencies struct{}
 type Exports struct { Value capability.Value }
-func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) {
 	return Exports{Value: capability.Value{Name: "provided"}}, nil, nil
 }
 `)
@@ -215,10 +215,9 @@ import (
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"example.com/secondary-sdk/capability"
 )
-type Config struct{}
 type Dependencies struct { Value ingotabi.Optional[capability.Value] }
 type Exports struct{}
-func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) {
 	return Exports{}, nil, nil
 }
 `)
@@ -234,8 +233,6 @@ path=%q
 module="example.com/consumer"
 path=%q
 `, filepath.ToSlash(providerSource), filepath.ToSlash(consumerSource)))
-	configPath := filepath.Join(home, "config.toml")
-	writeTestFile(t, configPath, "[plugins.\"example.com/provider\"]\n[plugins.\"example.com/consumer\"]\n")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
 		t.Fatal(err)
@@ -252,7 +249,7 @@ path=%q
 	if len(lock.Replacements) != 2 {
 		t.Fatalf("replacements = %#v", lock.Replacements)
 	}
-	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,10 +293,9 @@ import (
 	"context"
 	ingotabi "github.com/ingot-agent/ingot-abi"
 )
-type Config struct{}
 type Dependencies struct{}
 type Exports struct{}
-func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
+func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
 `)
 	writeModuleProxyVersion(t, proxy, "example.com/ingot-test-plugin", "v1.0.0", pluginSource)
 	home := t.TempDir()
@@ -356,7 +352,6 @@ func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
 	makeModuleCacheRemovable(t, home)
 	desiredPath := filepath.Join(home, "plugins.toml")
 	writeTestFile(t, desiredPath, "plugins_version = 1\n\n[[plugins]]\nmodule = \"example.com/ingot-test-plugin\"\nversion = \"v1.0.0\"\n")
-	writeTestFile(t, filepath.Join(home, "config.toml"), "[plugins.\"example.com/ingot-test-plugin\"]\n")
 	t.Setenv("GOSUMDB", "off")
 	desired, err := ParseDesired(desiredPath)
 	if err != nil {
@@ -379,7 +374,7 @@ func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
 	}
 	// The offline build must succeed with no network: every module of the
 	// committed graph is already in the module cache.
-	if _, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: filepath.Join(home, "config.toml"), GOMODCACHE: moduleCache}); err != nil {
+	if _, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -410,8 +405,6 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 		makeModuleCacheRemovable(t, home)
 		desiredPath := filepath.Join(home, "plugins.toml")
 		writeTestFile(t, desiredPath, fmt.Sprintf("plugins_version=1\n[[plugins]]\nmodule=%q\npath=%q\n", "example.com/ingot-test-plugin", filepath.ToSlash(pluginSource)))
-		configPath := filepath.Join(home, "config.toml")
-		writeTestFile(t, configPath, "[plugins.\"example.com/ingot-test-plugin\"]\n")
 		t.Setenv("GOSUMDB", "off")
 		desired, err := ParseDesired(desiredPath)
 		if err != nil {
@@ -422,7 +415,7 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, ConfigPath: configPath, GOMODCACHE: moduleCache})
+		result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -504,10 +497,9 @@ import (
 	"context"
 	ingotabi "github.com/ingot-agent/ingot-abi"
 )
-type Config struct{}
 type Dependencies struct{}
 type Exports struct{}
-func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
+func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) { return Exports{}, nil, nil }
 `)
 }
 

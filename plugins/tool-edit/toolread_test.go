@@ -7,14 +7,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ingot-agent/sdk/workspace"
 )
 
 func TestReadReturnsFileContent(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "hello read\nsecond line\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +28,7 @@ func TestReadReturnsFileContent(t *testing.T) {
 
 func TestReadMissingFileIsBusinessResult(t *testing.T) {
 	root := t.TempDir()
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +45,7 @@ func TestReadMissingFileIsBusinessResult(t *testing.T) {
 func TestReadRejectsAbsoluteAndTraversalPaths(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "x\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +64,7 @@ func TestReadRejectsAbsoluteAndTraversalPaths(t *testing.T) {
 func TestReadRejectsInvalidArguments(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "x\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +80,7 @@ func TestReadRejectsInvalidArguments(t *testing.T) {
 func TestReadRejectsOversizedAndNonUTF8(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "big.txt", strings.Repeat("a", 20))
-	exports, _, err := New(context.Background(), Config{MaxFileBytes: 10}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{MaxFileBytes: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +108,7 @@ func TestReadRejectsOversizedAndNonUTF8(t *testing.T) {
 
 func TestReadDefinitionIsStable(t *testing.T) {
 	root := t.TempDir()
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +130,7 @@ func TestReadLineRange(t *testing.T) {
 	root := t.TempDir()
 	// Five logical lines, no trailing newline.
 	write(t, root, "a.txt", "line1\nline2\nline3\nline4\nline5")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +165,7 @@ func TestReadLineRangePreservesTrailingNewline(t *testing.T) {
 	// Two logical lines with a trailing newline; the final "" fragment must
 	// not be counted as a third line.
 	write(t, root, "a.txt", "line1\nline2\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +182,7 @@ func TestReadLineRangePreservesTrailingNewline(t *testing.T) {
 func TestReadLineRangeInvalidIsBusinessResult(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "line1\nline2\nline3")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

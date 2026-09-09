@@ -113,6 +113,9 @@ type PendingInteraction struct {
 }
 
 // InteractionField is the browser representation of an SDK request field.
+// Object fields carry their members in Fields; list fields carry one element
+// descriptor in Element. Both nest arbitrarily deep, so a renderer must
+// recurse instead of assuming a flat form.
 type InteractionField struct {
 	Name        string              `json:"name"`
 	Label       string              `json:"label,omitempty"`
@@ -123,6 +126,8 @@ type InteractionField struct {
 	HasDefault  bool                `json:"hasDefault"`
 	Default     any                 `json:"default,omitempty"`
 	Options     []InteractionOption `json:"options,omitempty"`
+	Fields      []InteractionField  `json:"fields,omitempty"`
+	Element     *InteractionField   `json:"element,omitempty"`
 }
 
 // InteractionOption is one ordered choice.
@@ -160,22 +165,29 @@ type InteractionHost interface {
 	Scoped(Scope) interaction.Channel
 }
 
-// OperationDefinition is an immutable operation's public JSON contract.
+// OperationDefinition is an immutable operation's public JSON contract. ID is
+// the host-generated internal identity used for invocation; Name is the
+// Plugin-chosen display identity and may be duplicated across Plugins. Group is
+// a Plugin-chosen presentation hint that may be empty ("ungrouped").
 type OperationDefinition struct {
+	ID           string          `json:"id"`
 	Name         string          `json:"name"`
 	Description  string          `json:"description"`
+	Group        string          `json:"group,omitempty"`
 	InputSchema  json.RawMessage `json:"inputSchema"`
 	OutputSchema json.RawMessage `json:"outputSchema"`
 }
 
 // OperationSnapshot preserves running calls and a bounded set of final results.
+// OperationID addresses the invoked operation; Name is its display identity.
 type OperationSnapshot struct {
-	ID        string           `json:"id"`
-	Name      string           `json:"name"`
-	SessionID string           `json:"sessionId,omitempty"`
-	Status    string           `json:"status"`
-	Result    *OperationResult `json:"result,omitempty"`
-	Error     *ErrorDetail     `json:"error,omitempty"`
+	ID          string           `json:"id"`
+	OperationID string           `json:"operationId"`
+	Name        string           `json:"name"`
+	SessionID   string           `json:"sessionId,omitempty"`
+	Status      string           `json:"status"`
+	Result      *OperationResult `json:"result,omitempty"`
+	Error       *ErrorDetail     `json:"error,omitempty"`
 }
 
 // OperationResult is the validated machine-readable output of an operation.

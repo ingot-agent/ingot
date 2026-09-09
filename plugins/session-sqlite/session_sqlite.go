@@ -24,8 +24,8 @@ var (
 	ErrUnsupportedSchema = errors.New("unsupported session.sqlite schema")
 )
 
-// Config is reserved for future persistence policy. M5 has no configurable
-// behavior.
+// Config is reserved for future persistence policy. It has no configurable
+// behavior yet, so the Plugin starts fully functional while Unconfigured.
 type Config struct{}
 
 // Dependencies contains the plugin-scoped persistent state location.
@@ -49,7 +49,7 @@ type Exports struct {
 
 // New opens or creates the plugin-scoped session database. The returned
 // cleanup closes the database and prevents new operations.
-func New(ctx context.Context, _ Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil || isNil(deps.State) {
 		return Exports{}, nil, fmt.Errorf("construct session.sqlite: %w", ErrInvalidDependencies)
 	}

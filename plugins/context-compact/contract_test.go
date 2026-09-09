@@ -27,11 +27,7 @@ func (contractStore) Load(context.Context, session.ID) ([]session.Entry, error) 
 
 func TestPublicComponentContract(t *testing.T) {
 	t.Parallel()
-	exports, cleanup, err := contextcompact.New(
-		context.Background(),
-		contextcompact.Config{TriggerRequestBytes: 1024, TargetRequestBytes: 512},
-		contextcompact.Dependencies{Model: contractModel{}, Store: contractStore{}},
-	)
+	exports, cleanup, err := contextcompact.New(context.Background(), withState(t, contextcompact.Config{TriggerRequestBytes: 1024, TargetRequestBytes: 512}, contextcompact.Dependencies{Model: contractModel{}, Store: contractStore{}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,4 +37,4 @@ func TestPublicComponentContract(t *testing.T) {
 	var _ contextwindow.Compactor = exports.Compactor
 }
 
-var _ func(context.Context, contextcompact.Config, contextcompact.Dependencies) (contextcompact.Exports, ingotabi.Cleanup, error) = contextcompact.New
+var _ func(context.Context, contextcompact.Dependencies) (contextcompact.Exports, ingotabi.Cleanup, error) = contextcompact.New

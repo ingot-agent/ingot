@@ -13,7 +13,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/usage"
 )
 
@@ -51,11 +53,13 @@ type Route struct {
 // runtime defaults.
 type Dependencies struct {
 	Resolver model.RequestResolver
+	State    state.Scope
 }
 
 // Exports contains the model input counter.
 type Exports struct {
-	Counter usage.Counter
+	Counter    usage.Counter
+	Operations []operation.Operation
 }
 
 type compiledRoute struct {
@@ -87,24 +91,36 @@ type counter struct {
 	inflight map[string]*flight
 }
 
-// New validates all routes and constructs an independent counter instance.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope, validates
+// all routes, and constructs an independent counter instance. A missing
+// configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct usage.default: nil context: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Resolver) {
-		return Exports{}, nil, fmt.Errorf("resolver dependency is required: %w", ErrInvalidConfig)
+	if isNil(deps.Resolver) || isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("resolver and state dependencies are required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct usage.default: %w: %w", err, ErrInvalidConfig)
 	}
 	profiles, err := builtInProfiles()
 	if err != nil {
 		return Exports{}, nil, fmt.Errorf("initialize built-in profiles: %w: %w", ErrInvalidConfig, err)
 	}
-	routes, err := compileRoutes(cfg.Routes, profiles)
-	if err != nil {
-		return Exports{}, nil, err
+	// An Unconfigured Plugin has no routes yet. It still constructs so the user
+	// can add routes through the setup Operation; a count then fails with
+	// ErrUnsupportedModel until a route matches.
+	var routes []compiledRoute
+	if len(cfg.Routes) > 0 {
+		routes, err = compileRoutes(cfg.Routes, profiles)
+		if err != nil {
+			return Exports{}, nil, err
+		}
 	}
 	capacity := cfg.CacheEntries
 	if capacity < 0 {
@@ -124,7 +140,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		instance.close()
 		return nil
 	})
-	return Exports{Counter: instance}, cleanup, nil
+	return Exports{Counter: instance, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, cleanup, nil
 }
 
 func newCounter(resolver model.RequestResolver, routes []compiledRoute, capacity int) *counter {

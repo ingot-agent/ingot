@@ -90,7 +90,7 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if len(hostDependencies[0].Providers) != 0 || len(hostDependencies[1].Providers) != 0 || len(hostDependencies[2].Providers) != 0 {
 		t.Fatalf("host dependencies must not participate in provider selection: %#v", hostDependencies)
 	}
-	if _, _, inspectedHost := inspectGraph(graph); len(inspectedHost) != 1 || len(inspectedHost["example.com/consumer/default"]) != 3 {
+	if _, _, inspectedHost := inspectGraph(graph); len(inspectedHost) != 3 || len(inspectedHost["example.com/consumer/default"]) != 3 {
 		t.Fatalf("inspection host dependencies = %#v", inspectedHost)
 	}
 	if err := Generate(root, lock, graph); err != nil {
@@ -100,8 +100,23 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if count := strings.Count(string(wiringData), "os.MkdirAll(stateDir"); count != 1 {
-		t.Fatalf("generated state directory creation count = %d, want only the state-consuming Component", count)
+	if count := strings.Count(string(wiringData), "os.MkdirAll(stateDir"); count != 3 {
+		t.Fatalf("generated state directory creation count = %d, want one per state-consuming Component", count)
+	}
+	if count := strings.Count(string(wiringData), "stateDir0 := filepath.Join(home, \"state\", \"provider-b\")"); count != 1 {
+		t.Fatalf("generated state scope must use the Plugin manifest short name, count = %d\n%s", count, wiringData)
+	}
+	mainData, err := os.ReadFile(filepath.Join(root, "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"INGOT_HOME", "INGOT_CONFIG", "INGOT_STATE_ROOT"} {
+		if strings.Contains(string(mainData), forbidden) {
+			t.Fatalf("generated runtime still reads %s:\n%s", forbidden, mainData)
+		}
+	}
+	if !strings.Contains(string(mainData), "INGOT_RUNTIME_HOME") {
+		t.Fatal("generated runtime must resolve its home from INGOT_RUNTIME_HOME")
 	}
 	runtimePath := filepath.Join(root, layout.RuntimeExecutableName(runtime.GOOS))
 	command := exec.Command("go", "build", "-mod=readonly", "-o", runtimePath, ".")
@@ -115,11 +130,19 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 		diff, _ := tidy.CombinedOutput()
 		t.Fatalf("generated runtime does not compile: %v\n%s\ngo mod tidy -diff:\n%s", err, output, diff)
 	}
-	configPath := filepath.Join(root, "config.toml")
+	// Each Plugin now owns its persisted configuration under its own state
+	// scope. The runtime only creates the scope; it never decodes config.
 	cleanupLog := filepath.Join(root, "cleanup.log")
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\n", cleanupLog, cleanupLog, cleanupLog))
+	stateHome := filepath.Join(root, "runtime-home")
+	for name, body := range map[string]string{
+		"provider-b": fmt.Sprintf("log=%q\n", cleanupLog),
+		"provider-a": fmt.Sprintf("log=%q\n", cleanupLog),
+		"consumer":   fmt.Sprintf("log=%q\n", cleanupLog),
+	} {
+		writeTestFile(t, filepath.Join(stateHome, "state", name, "config.toml"), body)
+	}
 	check := exec.Command(runtimePath, "--ingot-check")
-	check.Env = append(os.Environ(), "INGOT_CONFIG="+configPath, "INGOT_STATE_ROOT="+filepath.Join(root, "state"))
+	check.Env = append(os.Environ(), "INGOT_RUNTIME_HOME="+stateHome)
 	if output, err := check.CombinedOutput(); err != nil {
 		t.Fatalf("generated runtime check failed: %v\n%s", err, output)
 	}
@@ -130,16 +153,26 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if string(cleanupBytes) != "consumer\nprovider_a\nprovider_b\n" {
 		t.Fatalf("cleanup order = %q", cleanupBytes)
 	}
+	// A relative override must still resolve to an absolute Runtime Home
+	// under the process working directory.
+	relativeHome := filepath.Join(root, "relative-runtime-home")
+	relativeLog := filepath.Join(root, "relative-cleanup.log")
+	for _, name := range []string{"provider-b", "provider-a", "consumer"} {
+		writeTestFile(t, filepath.Join(relativeHome, "state", name, "config.toml"), fmt.Sprintf("log=%q\n", relativeLog))
+	}
 	relativeCheck := exec.Command(runtimePath, "--ingot-check")
 	relativeCheck.Dir = root
-	relativeCheck.Env = replaceEnvironment(os.Environ(), map[string]string{"INGOT_CONFIG": configPath, "INGOT_STATE_ROOT": "relative-state"})
+	relativeCheck.Env = replaceEnvironment(os.Environ(), map[string]string{"INGOT_RUNTIME_HOME": "relative-runtime-home"})
 	if output, err := relativeCheck.CombinedOutput(); err != nil {
-		t.Fatalf("relative state root was not normalized: %v\n%s", err, output)
+		t.Fatalf("relative runtime home was not normalized: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(relativeLog); err != nil {
+		t.Fatalf("relative runtime home state scope was not used: %v", err)
 	}
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nfail=true\n", cleanupLog, cleanupLog, cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "consumer", "config.toml"), fmt.Sprintf("log=%q\nfail=true\n", cleanupLog))
 	failingCheck := exec.Command(runtimePath, "--ingot-check")
 	failingCheck.Env = check.Env
 	if err := failingCheck.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
@@ -155,7 +188,8 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\nnull=true\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\n", cleanupLog, cleanupLog, cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "consumer", "config.toml"), fmt.Sprintf("log=%q\n", cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "provider-b", "config.toml"), fmt.Sprintf("log=%q\nnull=true\n", cleanupLog))
 	nilCheck := exec.Command(runtimePath, "--ingot-check")
 	nilCheck.Env = check.Env
 	if err := nilCheck.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
@@ -179,7 +213,8 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"ok\"\n", cleanupLog, cleanupLog, cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "provider-b", "config.toml"), fmt.Sprintf("log=%q\n", cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "consumer", "config.toml"), fmt.Sprintf("log=%q\nshutdown=\"ok\"\n", cleanupLog))
 	okRun := exec.Command(runtimePath)
 	okRun.Env = check.Env
 	if err := okRun.Run(); err != nil {
@@ -195,7 +230,7 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"fatal\"\n", cleanupLog, cleanupLog, cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "consumer", "config.toml"), fmt.Sprintf("log=%q\nshutdown=\"fatal\"\n", cleanupLog))
 	fatalRun := exec.Command(runtimePath)
 	fatalRun.Env = check.Env
 	if err := fatalRun.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
@@ -211,7 +246,7 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if err := os.WriteFile(cleanupLog, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, configPath, fmt.Sprintf("[plugins.provider-b]\nlog=%q\n[plugins.provider-a]\nlog=%q\n[plugins.consumer]\nlog=%q\nshutdown=\"late-fatal\"\n", cleanupLog, cleanupLog, cleanupLog))
+	writeTestFile(t, filepath.Join(stateHome, "state", "consumer", "config.toml"), fmt.Sprintf("log=%q\nshutdown=\"late-fatal\"\n", cleanupLog))
 	lateFatalRun := exec.Command(runtimePath)
 	lateFatalRun.Env = check.Env
 	if err := lateFatalRun.Run(); err == nil || err.(*exec.ExitError).ExitCode() != 1 {
@@ -280,7 +315,7 @@ func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
 		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
 		pluginModules[plugin.module] = struct{}{}
 	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.8\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
+	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.9\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
 	indirectRequirements := make(map[string]string)
 	for _, plugin := range plugins {
 		path := filepath.Join(repositoryRoot, "plugins", plugin.directory, "go.mod")
@@ -426,14 +461,13 @@ import (
 	"github.com/ingot-agent/ingot-abi/invocation"
 )
 
-type Config struct{}
 type Dependencies struct {
 	`+dependencies+`
 }
 type Exports struct {
 	`+exports+`
 }
-func New(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) {
 	return Exports{}, nil, nil
 }
 `)
@@ -468,23 +502,40 @@ func writeProviderFixture(t *testing.T, root, modulePath, packageName string) {
 	writeTestFile(t, filepath.Join(root, "component.go"), `package `+packageName+`
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	ingotabi "github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/httpx"
+	"github.com/pelletier/go-toml/v2"
 )
 
+// Config is this Plugin's own persisted configuration. No host injects it.
 type Config struct {
 	Log string `+"`toml:\"log\"`"+`
 	Null bool `+"`toml:\"null\"`"+`
 }
-type Dependencies struct{}
+type Dependencies struct{ State state.Scope }
 type Exports struct { Clients []httpx.Client }
 type client struct{}
 func (*client) Do(context.Context, *http.Request) (*http.Response, error) { return nil, nil }
-func New(_ context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
+func loadConfig(dir string) (Config, error) {
+	var cfg Config
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if errors.Is(err, os.ErrNotExist) { return cfg, nil }
+	if err != nil { return cfg, err }
+	decoder := toml.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return cfg, decoder.Decode(&cfg)
+}
+func New(_ context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil { return Exports{}, nil, err }
 	cleanup := func(context.Context) error { file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "`+packageName+`"); return err }
 	if cfg.Null { var value *client; return Exports{Clients: []httpx.Client{value}}, cleanup, nil }
 	return Exports{Clients: []httpx.Client{&client{}}}, cleanup, nil
@@ -498,6 +549,7 @@ func writeConsumerFixture(t *testing.T, root string) {
 	writeTestFile(t, filepath.Join(root, "component.go"), `package consumer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -509,8 +561,10 @@ import (
 	"github.com/ingot-agent/ingot-abi/lifecycle"
 	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/httpx"
+	"github.com/pelletier/go-toml/v2"
 )
 
+// Config is this Plugin's own persisted configuration. No host injects it.
 type Config struct {
 	Log string `+"`toml:\"log\"`"+`
 	Fail bool `+"`toml:\"fail\"`"+`
@@ -523,8 +577,19 @@ type Dependencies struct {
 	State state.Scope
 }
 type Exports struct{}
-func New(_ context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+func loadConfig(dir string) (Config, error) {
+	var cfg Config
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if errors.Is(err, os.ErrNotExist) { return cfg, nil }
+	if err != nil { return cfg, err }
+	decoder := toml.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	return cfg, decoder.Decode(&cfg)
+}
+func New(_ context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if !filepath.IsAbs(deps.State.Dir()) { return Exports{}, nil, errors.New("state scope is not absolute") }
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil { return Exports{}, nil, err }
 	cleanup := func(context.Context) error { if cfg.Shutdown == "late-fatal" { time.Sleep(100 * time.Millisecond) }; file, err := os.OpenFile(cfg.Log, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); if err != nil { return err }; defer func() { _ = file.Close() }(); _, err = fmt.Fprintln(file, "consumer"); return err }
 	if cfg.Shutdown != "" {
 		go func() {

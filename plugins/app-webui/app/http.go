@@ -44,7 +44,7 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("GET /api/assets/{id}", a.handleReadAsset)
 	mux.HandleFunc("GET /api/workspace/browse", a.handleBrowseWorkspace)
 	mux.HandleFunc("GET /api/operations", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, http.StatusOK, a.operations.List()) })
-	mux.HandleFunc("POST /api/operations/{name}", a.handleInvokeOperation)
+	mux.HandleFunc("POST /api/operations/{id}", a.handleInvokeOperation)
 	mux.HandleFunc("DELETE /api/operation-invocations/{id}", a.handleCancelOperation)
 	mux.HandleFunc("DELETE /api/sessions/{id}", a.handleDeleteSession)
 	mux.HandleFunc("POST /api/sessions/{id}/archive", a.handleSessionLifecycle("session.archived", a.sessions.Archive))
@@ -381,7 +381,9 @@ func (a *application) handleInvokeOperation(w http.ResponseWriter, r *http.Reque
 	if err := decodeJSON(w, r, &request); err != nil {
 		return
 	}
-	id, err := a.operationInvocations.Start(r.PathValue("name"), session.ID(request.SessionID), request.Input)
+	// The path parameter is the operation's internal ID, so same-name
+	// operations from different Plugins remain independently addressable.
+	id, err := a.operationInvocations.Start(r.PathValue("id"), session.ID(request.SessionID), request.Input)
 	if err != nil {
 		writeError(w, err)
 		return

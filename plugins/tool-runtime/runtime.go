@@ -12,7 +12,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -50,15 +52,18 @@ type Config struct {
 	MaxInlineBytes     int `toml:"max_inline_bytes"`
 }
 
-// Dependencies are the tools and interceptors assembled by the host.
+// Dependencies are the tools and interceptors assembled by the host, plus
+// this Plugin's own persistent state scope.
 type Dependencies struct {
 	Tools        []tool.Tool
 	Interceptors []tool.Interceptor
+	State        state.Scope
 }
 
 // Exports contains the runtime capability.
 type Exports struct {
-	Runtime tool.Runtime
+	Runtime    tool.Runtime
+	Operations []operation.Operation
 }
 
 type runtime struct {
@@ -76,13 +81,22 @@ type registeredTool struct {
 	schema *jsonschema.Schema
 }
 
-// New snapshots and validates all tool definitions, then composes the immutable runtime.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope, snapshots
+// and validates all tool definitions, then composes the immutable runtime. A
+// missing configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.runtime: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct tool.runtime: %w: %w", err, ErrInvalidConfig)
 	}
 	maxArguments := cfg.MaxArgumentsBytes
 	if maxArguments == 0 {
@@ -154,6 +168,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 			maxInlinePart: maxInlinePart,
 			maxInline:     maxInline,
 		},
+		Operations: []operation.Operation{&setupOperation{scope: deps.State}},
 	}, nil, nil
 }
 

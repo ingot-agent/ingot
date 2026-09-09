@@ -78,9 +78,9 @@ func TestCountResolvesCompleteRequestAndPreservesOwnership(t *testing.T) {
 		received.Tools[0].InputSchema[0] = 'X'
 		return requestWithDefaults(request, "deepseek", "deepseek-chat"), nil
 	})
-	exports, cleanup, err := New(context.Background(), Config{Routes: []Route{{
+	exports, cleanup, err := New(context.Background(), withState(t, Config{Routes: []Route{{
 		Provider: "deepseek", ModelPattern: `deepseek-.*`, Profile: unicodeEstimateSource,
-	}}}, Dependencies{Resolver: resolver})
+	}}}, Dependencies{Resolver: resolver}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +136,24 @@ func TestRoutesUseProviderExactModelFullMatchAndFirstMatch(t *testing.T) {
 	}
 }
 
+// TestNewAllowsUnconfiguredRoutes proves ADR 0003 §2: a Plugin with no routes
+// yet still constructs so the user can add them through the setup Operation.
+func TestNewAllowsUnconfiguredRoutes(t *testing.T) {
+	t.Parallel()
+	exports, cleanup, err := New(context.Background(), withState(t, Config{}, Dependencies{Resolver: resolverFunc(passthroughResolver)}))
+	if err != nil {
+		t.Fatalf("unconfigured construction failed: %v", err)
+	}
+	defer cleanup(context.Background())
+	if exports.Counter == nil || len(exports.Operations) != 1 {
+		t.Fatalf("exports = %#v", exports)
+	}
+	// Counting still fails closed until a route matches.
+	if _, err := exports.Counter.CountInput(context.Background(), usage.CountRequest{Invocation: model.Request{Provider: "p", Model: "m"}}); !errors.Is(err, usage.ErrUnsupportedModel) {
+		t.Fatalf("unconfigured counter error = %v", err)
+	}
+}
+
 func TestNewRejectsInvalidConfigAndDependencies(t *testing.T) {
 	t.Parallel()
 	validResolver := resolverFunc(passthroughResolver)
@@ -147,7 +165,6 @@ func TestNewRejectsInvalidConfigAndDependencies(t *testing.T) {
 	}{
 		{name: "nil resolver", cfg: validConfig()},
 		{name: "typed nil resolver", cfg: validConfig(), deps: Dependencies{Resolver: typedNil}},
-		{name: "no routes", deps: Dependencies{Resolver: validResolver}},
 		{name: "empty route", cfg: Config{Routes: []Route{{}}}, deps: Dependencies{Resolver: validResolver}},
 		{name: "invalid regexp", cfg: Config{Routes: []Route{{Provider: "p", ModelPattern: "(", Profile: unicodeEstimateSource}}}, deps: Dependencies{Resolver: validResolver}},
 		{name: "unknown profile", cfg: Config{Routes: []Route{{Provider: "p", ModelPattern: ".*", Profile: "missing"}}}, deps: Dependencies{Resolver: validResolver}},
@@ -155,7 +172,7 @@ func TestNewRejectsInvalidConfigAndDependencies(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := New(context.Background(), test.cfg, test.deps)
+			_, _, err := New(context.Background(), withState(t, test.cfg, test.deps))
 			if !errors.Is(err, ErrInvalidConfig) {
 				t.Fatalf("error=%v", err)
 			}
@@ -166,9 +183,9 @@ func TestNewRejectsInvalidConfigAndDependencies(t *testing.T) {
 func TestUnsupportedModelAndResolverErrorsRemainClassified(t *testing.T) {
 	t.Parallel()
 	resolverErr := errors.New("resolver failed")
-	exports, cleanup, err := New(context.Background(), validConfig(), Dependencies{Resolver: resolverFunc(func(context.Context, model.Request) (model.Request, error) {
+	exports, cleanup, err := New(context.Background(), withState(t, validConfig(), Dependencies{Resolver: resolverFunc(func(context.Context, model.Request) (model.Request, error) {
 		return model.Request{}, resolverErr
-	})})
+	})}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,9 +194,9 @@ func TestUnsupportedModelAndResolverErrorsRemainClassified(t *testing.T) {
 		t.Fatalf("resolver error=%v", err)
 	}
 
-	exports, cleanup, err = New(context.Background(), validConfig(), Dependencies{Resolver: resolverFunc(func(_ context.Context, request model.Request) (model.Request, error) {
+	exports, cleanup, err = New(context.Background(), withState(t, validConfig(), Dependencies{Resolver: resolverFunc(func(_ context.Context, request model.Request) (model.Request, error) {
 		return requestWithDefaults(request, "p", "other"), nil
-	})})
+	})}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +248,7 @@ func TestInvalidRequestsAreRejectedWithoutLeakingContent(t *testing.T) {
 		{MaxTokens: &zero},
 	}
 	for i, request := range tests {
-		exports, cleanup, err := New(context.Background(), validConfig(), Dependencies{Resolver: resolverFunc(passthroughResolver)})
+		exports, cleanup, err := New(context.Background(), withState(t, validConfig(), Dependencies{Resolver: resolverFunc(passthroughResolver)}))
 		if err != nil {
 			t.Fatal(err)
 		}

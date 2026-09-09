@@ -104,7 +104,7 @@ func TestExportsAllTypedTargets(t *testing.T) {
 		hooks[i].Name = target
 		hooks[i].Target = target
 	}
-	exports, _, err := New(context.Background(), Config{Hooks: hooks}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: hooks}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +235,7 @@ func TestMultimodalProjectionIsReadableAndCallerOwned(t *testing.T) {
 func TestToolHookProjectsBeforeAfterAndIsolatesEnvironment(t *testing.T) {
 	t.Setenv("INGOT_SCRIPT_PARENT_SECRET", "must-not-leak")
 	trace := t.TempDir() + string(os.PathSeparator) + "trace.jsonl"
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{helperHook(t, "record", trace)}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, "record", trace)}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 		trace := tracePath(t)
 		hook := helperHook(t, "record", trace)
 		hook.Target = "model"
-		exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+		exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +294,7 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 		trace := tracePath(t)
 		hook := helperHook(t, "record", trace)
 		hook.Target = "model-stream"
-		exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+		exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -316,7 +316,7 @@ func TestModelStreamAndAgentProjectionGolden(t *testing.T) {
 		trace := tracePath(t)
 		hook := helperHook(t, "record", trace)
 		hook.Target = "agent"
-		exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+		exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -363,7 +363,7 @@ func assertTraceJSON(t *testing.T, path string, expected []string) {
 }
 
 func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{helperHook(t, "reject")}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, "reject")}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +376,7 @@ func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
 		t.Fatalf("reject error=%v called=%v", err, called)
 	}
 
-	exports, _, err = New(context.Background(), Config{Hooks: []Hook{helperHook(t, "fail-after")}}, Dependencies{})
+	exports, _, err = New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, "fail-after")}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,7 +391,7 @@ func TestRejectShortCircuitsAndAfterFailureMarksUnknown(t *testing.T) {
 func TestHookTimeoutAndOutputLimitFailClosed(t *testing.T) {
 	hook := helperHook(t, "sleep")
 	hook.TimeoutSeconds = 1
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestHookTimeoutAndOutputLimitFailClosed(t *testing.T) {
 
 	hook = helperHook(t, "oversize")
 	hook.MaxOutputBytes = 8
-	exports, _, err = New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+	exports, _, err = New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +418,7 @@ func TestHookTimeoutAndOutputLimitFailClosed(t *testing.T) {
 
 func TestCancellationAfterDownstreamIsNotSwallowed(t *testing.T) {
 	trace := tracePath(t)
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{helperHook(t, "record", trace)}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, "record", trace)}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +443,7 @@ func TestResponseProjectionFailureIsAfterFailure(t *testing.T) {
 	trace := tracePath(t)
 	hook := helperHook(t, "record", trace)
 	hook.Target = "model"
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 	// one second to start. Keep the timeout below the helper's five-second sleep
 	// while leaving enough headroom for the before phase to complete.
 	hook.TimeoutSeconds = 3
-	exports, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+	exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 	}
 
 	downstreamErr := errors.New("downstream failed")
-	exports, _, err = New(context.Background(), Config{Hooks: []Hook{helperHook(t, "fail-after")}}, Dependencies{})
+	exports, _, err = New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, "fail-after")}}, Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestAfterFailurePreservesTimeoutAndDownstreamErrors(t *testing.T) {
 func TestSuccessfulStderrAndNonzeroExitFailClosed(t *testing.T) {
 	for _, mode := range []string{"stderr", "nonzero"} {
 		t.Run(mode, func(t *testing.T) {
-			exports, _, err := New(context.Background(), Config{Hooks: []Hook{helperHook(t, mode)}}, Dependencies{})
+			exports, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{helperHook(t, mode)}}, Dependencies{}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -517,7 +517,7 @@ func TestTimeoutSecondsOverflowIsRejected(t *testing.T) {
 	hook := helperHook(t, "reject")
 	maximum := int64((1<<63 - 1) / int64(time.Second))
 	hook.TimeoutSeconds = int(maximum + 1)
-	_, _, err := New(context.Background(), Config{Hooks: []Hook{hook}}, Dependencies{})
+	_, _, err := New(context.Background(), withState(t, Config{Hooks: []Hook{hook}}, Dependencies{}))
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("error=%v", err)
 	}

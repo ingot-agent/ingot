@@ -58,10 +58,10 @@ func TestRoundInterceptorOrderIncludesToolAndFinalRounds(t *testing.T) {
 		trace = append(trace, "round-after")
 		return result, err
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &tracedTools{trace: &trace}, Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}},
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,10 +103,10 @@ func TestRoundInterceptorInspectsActualInvocationAndModifiesCanonicalDecision(t 
 		}
 		return next(ctx, round)
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 		Compactor: ingotabi.Some[contextwindow.Compactor](compactor), RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,10 +153,10 @@ func TestRoundInterceptorRejectsIllegalIdentityMutation(t *testing.T) {
 				tc.mutate(&round)
 				return next(ctx, round)
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 				RoundInterceptors: []agent.RoundInterceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -201,10 +201,10 @@ func TestRoundInterceptorRejectsIllegalDecisionMutation(t *testing.T) {
 				tc.mutate(&round.Decision)
 				return next(ctx, round)
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 				RoundInterceptors: []agent.RoundInterceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -225,9 +225,9 @@ func TestRoundRejectAndShortCircuitHaveDistinctPersistence(t *testing.T) {
 		interceptor := roundInterceptorFunc(func(context.Context, agent.Round, pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error) {
 			return agent.RoundResult{}, policyErr
 		})
-		exports, _, err := New(context.Background(), Config{}, Dependencies{
+		exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 			Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,9 +244,9 @@ func TestRoundRejectAndShortCircuitHaveDistinctPersistence(t *testing.T) {
 		interceptor := roundInterceptorFunc(func(context.Context, agent.Round, pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error) {
 			return agent.RoundResult{Decision: model.Message{Role: model.RoleAssistant, Content: content.FromText("blocked")}}, nil
 		})
-		exports, _, err := New(context.Background(), Config{}, Dependencies{
+		exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 			Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -272,9 +272,9 @@ func TestRoundRejectsInvalidShortCircuitResults(t *testing.T) {
 			interceptor := roundInterceptorFunc(func(context.Context, agent.Round, pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error) {
 				return cloneRoundResult(tc.result), nil
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -295,9 +295,9 @@ func TestRoundRejectsPostCommitResultMutation(t *testing.T) {
 		result.Decision.Content = content.FromText("rewritten after commit")
 		return result, err
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,9 +316,9 @@ func TestRoundTerminalCannotExecuteTwice(t *testing.T) {
 		_, _ = next(ctx, round)
 		return first, firstErr
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,9 +351,9 @@ func TestMaxRoundsCountsEveryModelInvocationAndChecksBeforeTools(t *testing.T) {
 			store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 			models := &sequenceModel{responses: append([]model.Response(nil), tc.responses...)}
 			tools := &fakeTools{}
-			exports, _, err := New(context.Background(), Config{MaxRounds: tc.maxRounds}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{MaxRounds: tc.maxRounds}, Dependencies{
 				Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -373,9 +373,9 @@ func TestMaxRoundsCountsEveryModelInvocationAndChecksBeforeTools(t *testing.T) {
 			round.Decision.ToolCalls = nil
 			return next(ctx, round)
 		})
-		exports, _, err := New(context.Background(), Config{MaxRounds: 1}, Dependencies{
+		exports, _, err := New(context.Background(), withState(t, Config{MaxRounds: 1}, Dependencies{
 			Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -399,10 +399,10 @@ func TestRoundInterceptorStreamingRunsAfterProvisionalDeltas(t *testing.T) {
 	interceptor := roundInterceptorFunc(func(context.Context, agent.Round, pipeline.Next[agent.Round, agent.RoundResult]) (agent.RoundResult, error) {
 		return agent.RoundResult{}, policyErr
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{}, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: tools,
 		Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,10 +419,10 @@ func TestRoundInterceptorStreamingRunsAfterProvisionalDeltas(t *testing.T) {
 
 func TestRoundInterceptorDependenciesAreValidatedAndSnapshotted(t *testing.T) {
 	var nilInterceptor roundInterceptorFunc
-	_, _, err := New(context.Background(), Config{}, Dependencies{
+	_, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{}},
 		Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: []agent.RoundInterceptor{nilInterceptor},
-	})
+	}))
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("typed nil error=%v", err)
 	}
@@ -438,10 +438,10 @@ func TestRoundInterceptorDependenciesAreValidatedAndSnapshotted(t *testing.T) {
 	})
 	interceptors := []agent.RoundInterceptor{first}
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}}}},
 		Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, RoundInterceptors: interceptors,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

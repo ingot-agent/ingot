@@ -30,7 +30,7 @@ func TestRendererFormatsInStableOrderAndIsolatesContributors(t *testing.T) {
 		}
 		return []prompt.Block{{Name: "second", Content: content.FromText("two")}}, nil
 	})
-	exports, _, err := promptdefault.New(context.Background(), promptdefault.Config{SystemPrompt: "base"}, promptdefault.Dependencies{Contributors: []prompt.Contributor{first, second}})
+	exports, _, err := promptdefault.New(context.Background(), withState(t, promptdefault.Config{SystemPrompt: "base"}, promptdefault.Dependencies{Contributors: []prompt.Contributor{first, second}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRendererCountsFormattingInTotalLimit(t *testing.T) {
 	contributor := contributorFunc(func(context.Context, prompt.Request) ([]prompt.Block, error) {
 		return []prompt.Block{{Name: "x", Content: content.FromText("y")}}, nil
 	})
-	exports, _, err := promptdefault.New(context.Background(), promptdefault.Config{SystemPrompt: "a", MaxSystemBytes: 8}, promptdefault.Dependencies{Contributors: []prompt.Contributor{contributor}})
+	exports, _, err := promptdefault.New(context.Background(), withState(t, promptdefault.Config{SystemPrompt: "a", MaxSystemBytes: 8}, promptdefault.Dependencies{Contributors: []prompt.Contributor{contributor}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestRendererCountsFormattingInTotalLimit(t *testing.T) {
 	if !errors.Is(err, promptdefault.ErrSystemLimit) {
 		t.Fatalf("limit error=%v", err)
 	}
-	_, _, err = promptdefault.New(context.Background(), promptdefault.Config{SystemPrompt: "abcd", MaxSystemBytes: 3}, promptdefault.Dependencies{})
+	_, _, err = promptdefault.New(context.Background(), withState(t, promptdefault.Config{SystemPrompt: "abcd", MaxSystemBytes: 3}, promptdefault.Dependencies{}))
 	if !errors.Is(err, promptdefault.ErrSystemLimit) || !errors.Is(err, promptdefault.ErrInvalidConfig) {
 		t.Fatalf("config limit error=%v", err)
 	}
@@ -80,7 +80,7 @@ func TestRendererPreservesMultimodalBlockAndInputOrder(t *testing.T) {
 			content.Text("after"),
 		}}}, nil
 	})
-	exports, _, err := promptdefault.New(context.Background(), promptdefault.Config{}, promptdefault.Dependencies{Contributors: []prompt.Contributor{contributor}})
+	exports, _, err := promptdefault.New(context.Background(), withState(t, promptdefault.Config{}, promptdefault.Dependencies{Contributors: []prompt.Contributor{contributor}}))
 	if err != nil {
 		t.Fatal(err)
 	}

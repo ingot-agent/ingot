@@ -47,7 +47,7 @@ func resultText(result tool.Result) string {
 
 func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {
 	channel := &fakeChannel{response: "approved"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestAskUserPassesPromptAndReturnsResponse(t *testing.T) {
 
 func TestAskUserPassesOptionsAndEnablesFreeText(t *testing.T) {
 	channel := &fakeChannel{response: "a custom answer"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestAskUserPassesOptionsAndEnablesFreeText(t *testing.T) {
 
 func TestAskUserLimitsAndUnavailable(t *testing.T) {
 	channel := &fakeChannel{response: "ok"}
-	exports, _, err := New(context.Background(), Config{MaxPromptBytes: 3}, Dependencies{Interaction: channel})
+	exports, _, err := New(context.Background(), withState(t, Config{MaxPromptBytes: 3}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestAskUserLimitsAndUnavailable(t *testing.T) {
 		t.Fatalf("prompt limit result = %q", resultText(result))
 	}
 	channel.err = interaction.ErrUnavailable
-	exports, _, err = New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	exports, _, err = New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestAskUserLimitsAndUnavailable(t *testing.T) {
 func TestAskUserPreservesExecutionBindingError(t *testing.T) {
 	bindErr := errors.New("scope routing unavailable")
 	channel := &fakeChannel{bindErr: bindErr}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestAskUserPreservesExecutionBindingError(t *testing.T) {
 
 func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 	channel := &fakeChannel{response: "ok"}
-	exports, _, err := New(context.Background(), Config{MaxOptions: 1, MaxOptionsBytes: 4}, Dependencies{Interaction: channel})
+	exports, _, err := New(context.Background(), withState(t, Config{MaxOptions: 1, MaxOptionsBytes: 4}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestAskUserRejectsInvalidAndOversizedOptions(t *testing.T) {
 		})
 	}
 
-	exports, _, err = New(context.Background(), Config{}, Dependencies{Interaction: channel})
+	exports, _, err = New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestAskUserRejectsMalformedInteractionResponse(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response := test.response
 			channel := &fakeChannel{customResponse: &response}
-			exports, _, err := New(context.Background(), Config{}, Dependencies{Interaction: channel})
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Interaction: channel}))
 			if err != nil {
 				t.Fatal(err)
 			}

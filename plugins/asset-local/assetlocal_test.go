@@ -22,7 +22,7 @@ var _ state.Scope = testScope("")
 
 func newStore(t *testing.T, root string, cfg Config) *store {
 	t.Helper()
-	exports, _, err := New(context.Background(), cfg, Dependencies{State: testScope(root)})
+	exports, _, err := New(context.Background(), withState(t, cfg, Dependencies{State: testScope(root)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestInvalidAndMissingReferences(t *testing.T) {
 
 func TestNewRejectsInvalidStateDirectory(t *testing.T) {
 	for _, directory := range []string{"", "relative"} {
-		if _, _, err := New(context.Background(), Config{}, Dependencies{State: testScope(directory)}); !errors.Is(err, ErrInvalidConfig) {
+		if _, _, err := New(context.Background(), withState(t, Config{}, Dependencies{State: testScope(directory)})); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("directory %q error=%v", directory, err)
 		}
 	}

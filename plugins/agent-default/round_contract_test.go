@@ -20,10 +20,10 @@ func (roundInterceptor) Invoke(
 }
 
 func TestComponentContractIncludesRoundInterceptors(t *testing.T) {
-	exports, _, err := agentdefault.New(context.Background(), agentdefault.Config{MaxRounds: 1}, agentdefault.Dependencies{
+	exports, _, err := agentdefault.New(context.Background(), withState(t, agentdefault.Config{MaxRounds: 1}, agentdefault.Dependencies{
 		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Assets: assetStore{}, Prompt: promptRenderer{},
 		RoundInterceptors: []agent.RoundInterceptor{roundInterceptor{}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -118,10 +118,10 @@ func TestCompleteMapsRequestHeadersAndResponse(t *testing.T) {
 		return response(http.StatusOK, `{"model":"actual-model","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":1,"total_tokens":3}}`), nil
 	})
 	headers := map[string]string{"X-Tenant": "one"}
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
 		Name: "primary", BaseURL: "https://example.test/v1/", APIKey: "secret", Organization: "org", Project: "project",
 		Models: []string{"requested-model"}, DefaultHeaders: headers,
-	}}}, dependencies(httpx.Client(client)))
+	}}}, dependencies(httpx.Client(client))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,9 +201,9 @@ func TestCompleteMapsInlineURIAndAssetImages(t *testing.T) {
 		requestBody, _ = io.ReadAll(request.Body)
 		return response(http.StatusOK, `{"model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"seen"},"finish_reason":"stop"}]}`), nil
 	})
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
 		Name: "p", BaseURL: "https://example.test", MaxAssetBytes: 1024,
-	}}}, openaicompat.Dependencies{HTTP: client, Assets: resolver})
+	}}}, openaicompat.Dependencies{HTTP: client, Assets: resolver}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,11 +290,11 @@ func TestCompleteRejectsUnsupportedMediaAndLocalURIs(t *testing.T) {
 
 func TestCompleteRejectsOversizedAssetBeforeOpen(t *testing.T) {
 	resolver := &observedResolver{data: map[string][]byte{"large": []byte("four")}}
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
 		Name: "p", BaseURL: "https://example.test", MaxAssetBytes: 3,
 	}}}, openaicompat.Dependencies{HTTP: clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
 		return nil, errors.New("must not be called")
-	}), Assets: resolver})
+	}), Assets: resolver}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,14 +315,14 @@ func TestCompleteRejectsOversizedAssetBeforeOpen(t *testing.T) {
 
 func TestCompleteCancellationClosesBlockedAssetReader(t *testing.T) {
 	body := newBlockingBody()
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
 		Name: "p", BaseURL: "https://example.test",
 	}}}, openaicompat.Dependencies{
 		HTTP: clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
 			return nil, errors.New("must not be called")
 		}),
 		Assets: blockingResolver{body: body},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestStreamingDeliversOrderedTextAndRequiresDone(t *testing.T) {
 	client := clientFunc(func(_ context.Context, _ *http.Request) (*http.Response, error) {
 		return response(http.StatusOK, sse), nil
 	})
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test"}}}, dependencies(client))
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test"}}}, dependencies(client)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestStreamingDeliversOrderedTextAndRequiresDone(t *testing.T) {
 	client = clientFunc(func(_ context.Context, _ *http.Request) (*http.Response, error) {
 		return response(http.StatusOK, "data: {\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":\"stop\"}]}\n\n"), nil
 	})
-	exports, _, _ = openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test"}}}, dependencies(client))
+	exports, _, _ = openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test"}}}, dependencies(client)))
 	_, err = exports.Providers[0].Value.(model.StreamingProvider).Stream(context.Background(), model.Request{Model: "m"}, func(model.StreamEvent) error { return nil })
 	if !errors.Is(err, openaicompat.ErrProtocol) {
 		t.Fatalf("missing DONE error=%v", err)
@@ -424,11 +424,11 @@ func TestConfigRejectsOwnedHeadersAndResponseLimit(t *testing.T) {
 	client := clientFunc(func(_ context.Context, _ *http.Request) (*http.Response, error) {
 		return response(http.StatusOK, strings.Repeat("x", 20)), nil
 	})
-	_, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test", DefaultHeaders: map[string]string{"authorization": "bad"}}}}, dependencies(client))
+	_, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test", DefaultHeaders: map[string]string{"authorization": "bad"}}}}, dependencies(client)))
 	if !errors.Is(err, openaicompat.ErrInvalidConfig) {
 		t.Fatalf("owned header error=%v", err)
 	}
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test", MaxResponseBytes: 5}}}, dependencies(client))
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{Name: "p", BaseURL: "https://example.test", MaxResponseBytes: 5}}}, dependencies(client)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,9 +442,9 @@ func TestNewRequiresAssetResolver(t *testing.T) {
 	client := clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
 		return nil, errors.New("must not be called")
 	})
-	_, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
+	_, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{{
 		Name: "p", BaseURL: "https://example.test",
-	}}}, openaicompat.Dependencies{HTTP: client})
+	}}}, openaicompat.Dependencies{HTTP: client}))
 	if !errors.Is(err, openaicompat.ErrInvalidConfig) {
 		t.Fatalf("error=%v", err)
 	}
@@ -481,7 +481,7 @@ func TestConfigRejectsUnsafeProviderIdentityURLAndHeaders(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{test.cfg}}, dependencies(client))
+			_, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{test.cfg}}, dependencies(client)))
 			if !errors.Is(err, openaicompat.ErrInvalidConfig) {
 				t.Fatalf("error=%v", err)
 			}
@@ -493,20 +493,20 @@ func TestNewPreservesProviderOrderAndRejectsDuplicateNames(t *testing.T) {
 	client := clientFunc(func(context.Context, *http.Request) (*http.Response, error) {
 		return nil, errors.New("must not be called")
 	})
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{
 		{Name: "primary", BaseURL: "https://one.example"},
 		{Name: "fallback", BaseURL: "https://two.example"},
-	}}, dependencies(client))
+	}}, dependencies(client)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(exports.Providers) != 2 || exports.Providers[0].Name != "primary" || exports.Providers[1].Name != "fallback" {
 		t.Fatalf("providers=%#v", exports.Providers)
 	}
-	_, _, err = openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{
+	_, _, err = openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{
 		{Name: "same", BaseURL: "https://one.example"},
 		{Name: "same", BaseURL: "https://two.example"},
-	}}, dependencies(client))
+	}}, dependencies(client)))
 	if !errors.Is(err, openaicompat.ErrInvalidConfig) {
 		t.Fatalf("duplicate error=%v", err)
 	}
@@ -713,7 +713,7 @@ func TestProviderSupportsConcurrentCompleteAndStream(t *testing.T) {
 
 func newProvider(t *testing.T, cfg openaicompat.ProviderConfig, client httpx.Client) model.Provider {
 	t.Helper()
-	exports, _, err := openaicompat.New(context.Background(), openaicompat.Config{Providers: []openaicompat.ProviderConfig{cfg}}, dependencies(client))
+	exports, _, err := openaicompat.New(context.Background(), withState(t, openaicompat.Config{Providers: []openaicompat.ProviderConfig{cfg}}, dependencies(client)))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -232,9 +232,11 @@ export const useRuntime = defineStore('runtime', () => {
       throw error
     }
   }
-  async function invoke(name: string, input: string, sessionId: string) {
+  async function invoke(operationId: string, input: string, sessionId: string) {
+    // The path parameter is the operation's internal ID; same-name operations
+    // from different Plugins stay independently addressable.
     // Preserve the original JSON text, including integers outside JS precision.
-    return request<{ id: string }>('/operations/' + segment(name), {
+    return request<{ id: string }>('/operations/' + segment(operationId), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: '{"sessionId":' + JSON.stringify(sessionId) + ',"input":' + input + '}',
     })

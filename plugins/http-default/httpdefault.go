@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/httpx"
+	"github.com/ingot-agent/sdk/operation"
 )
 
 const (
@@ -38,12 +40,15 @@ type Config struct {
 	TLSHandshakeTimeoutSeconds int    `toml:"tls_handshake_timeout_seconds"`
 }
 
-// Dependencies contains the component's consumed capabilities.
-type Dependencies struct{}
+// Dependencies contains this Plugin's own persistent state scope.
+type Dependencies struct {
+	State state.Scope
+}
 
 // Exports contains the component's provided capabilities.
 type Exports struct {
-	Client httpx.Client
+	Client     httpx.Client
+	Operations []operation.Operation
 }
 
 type normalizedConfig struct {
@@ -54,17 +59,22 @@ type normalizedConfig struct {
 	tlsHandshakeTimeout time.Duration
 }
 
-// New constructs an independent HTTP client and connection pool.
-func New(
-	ctx context.Context,
-	cfg Config,
-	_ Dependencies,
-) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope and
+// constructs an independent HTTP client and connection pool. A missing
+// configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct http.default: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct http.default: %w: %w", err, ErrInvalidConfig)
 	}
 
 	normalized, err := normalizeConfig(cfg)
@@ -88,7 +98,7 @@ func New(
 		transport.CloseIdleConnections()
 		return nil
 	})
-	return Exports{Client: client}, cleanup, nil
+	return Exports{Client: client, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, cleanup, nil
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {

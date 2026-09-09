@@ -16,10 +16,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/httpx"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 )
 
 const (
@@ -110,11 +112,13 @@ type ProviderConfig struct {
 type Dependencies struct {
 	HTTP   httpx.Client
 	Assets asset.Resolver
+	State  state.Scope
 }
 
 // Exports contains named model providers in declaration order.
 type Exports struct {
-	Providers []ingotabi.Named[model.Provider]
+	Providers  []ingotabi.Named[model.Provider]
+	Operations []operation.Operation
 }
 
 type provider struct {
@@ -133,16 +137,26 @@ type provider struct {
 	assets           asset.Resolver
 }
 
-// New validates and snapshots all provider configuration.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
-	if ctx == nil || isNil(deps.HTTP) || isNil(deps.Assets) {
+// New loads this Plugin's own provider configuration from its state scope,
+// validates it, and snapshots all provider configuration. A missing
+// configuration file is the normal Unconfigured state: no providers are
+// exported, and the runtime still starts so setup can happen through an
+// Operation.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+	if ctx == nil || isNil(deps.HTTP) || isNil(deps.Assets) || isNil(deps.State) {
 		return Exports{}, nil, fmt.Errorf("construct model.openai-compatible: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct model.openai-compatible: %w: %w", err, ErrInvalidConfig)
+	}
 	if len(cfg.Providers) == 0 {
-		return Exports{}, nil, configError("providers", "must contain at least one provider")
+		// Unconfigured: export only the setup Operation so the user can add a
+		// provider without editing state by hand.
+		return Exports{Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 	}
 
 	items := make([]ingotabi.Named[model.Provider], 0, len(cfg.Providers))
@@ -156,7 +170,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if err := ingotabi.CheckUniqueNames(items); err != nil {
 		return Exports{}, nil, fmt.Errorf("providers: %w: %w", ErrInvalidConfig, err)
 	}
-	return Exports{Providers: items}, nil, nil
+	return Exports{Providers: items, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 }
 
 func newProvider(cfg ProviderConfig, client httpx.Client, assets asset.Resolver) (*provider, error) {

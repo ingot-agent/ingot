@@ -231,34 +231,68 @@ func validateRequest(request interaction.Request) error {
 	if err := validateLevel(request.Level); err != nil {
 		return err
 	}
-	seen := make(map[string]struct{}, len(request.Fields))
-	for _, field := range request.Fields {
+	return validateFields(request.Fields, "")
+}
+
+// validateFields checks one field group. Nested object and list fields are
+// validated recursively so an arbitrarily deep structure is either entirely
+// well-formed or rejected as a whole.
+func validateFields(fields []interaction.Field, path string) error {
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		fieldPath := path + field.Name
 		if field.Name == "" {
 			return errors.New("interaction field name is required")
 		}
 		if _, ok := seen[field.Name]; ok {
-			return fmt.Errorf("duplicate interaction field %q", field.Name)
+			return fmt.Errorf("duplicate interaction field %q", fieldPath)
 		}
 		seen[field.Name] = struct{}{}
 		if _, err := fieldKindName(field.Kind); err != nil {
 			return err
 		}
 		if (field.Kind == interaction.FieldChoice || field.Kind == interaction.FieldMultiChoice) && len(field.Options) == 0 {
-			return fmt.Errorf("field %q requires choices", field.Name)
+			return fmt.Errorf("field %q requires choices", fieldPath)
 		}
 		if len(field.Options) > 0 && field.Kind != interaction.FieldString && field.Kind != interaction.FieldChoice && field.Kind != interaction.FieldMultiChoice {
-			return fmt.Errorf("field %q does not support options", field.Name)
+			return fmt.Errorf("field %q does not support options", fieldPath)
 		}
 		options := make(map[string]struct{}, len(field.Options))
 		for _, option := range field.Options {
 			if _, exists := options[option.Value]; exists {
-				return fmt.Errorf("field %q has duplicate option %q", field.Name, option.Value)
+				return fmt.Errorf("field %q has duplicate option %q", fieldPath, option.Value)
 			}
 			options[option.Value] = struct{}{}
 		}
+		switch field.Kind {
+		case interaction.FieldObject:
+			if field.Element != nil || len(field.Options) > 0 {
+				return fmt.Errorf("field %q is an object and must not declare element or options", fieldPath)
+			}
+			if len(field.Fields) == 0 {
+				return fmt.Errorf("field %q requires member fields", fieldPath)
+			}
+			if err := validateFields(field.Fields, fieldPath+"."); err != nil {
+				return err
+			}
+		case interaction.FieldList:
+			if len(field.Fields) > 0 || len(field.Options) > 0 {
+				return fmt.Errorf("field %q is a list and must not declare fields or options", fieldPath)
+			}
+			if field.Element == nil {
+				return fmt.Errorf("field %q requires an element descriptor", fieldPath)
+			}
+			if err := validateFields([]interaction.Field{*field.Element}, fieldPath+"[]."); err != nil {
+				return err
+			}
+		default:
+			if len(field.Fields) > 0 || field.Element != nil {
+				return fmt.Errorf("field %q must not declare fields or element", fieldPath)
+			}
+		}
 		if field.Default != nil {
 			if err := validateDefault(field); err != nil {
-				return fmt.Errorf("field %q default: %w", field.Name, err)
+				return fmt.Errorf("field %q default: %w", fieldPath, err)
 			}
 		}
 	}
@@ -282,6 +316,10 @@ func validateDefault(field interaction.Field) error {
 		kind = interaction.ValueBoolean
 	case interaction.FieldMultiChoice:
 		kind = interaction.ValueStrings
+	case interaction.FieldObject:
+		kind = interaction.ValueObject
+	case interaction.FieldList:
+		kind = interaction.ValueList
 	}
 	if value.Kind != kind {
 		return errors.New("value kind does not match field kind")
@@ -310,6 +348,28 @@ func validateValue(value interaction.Value) error {
 			return nil
 		}
 		return errors.New("number must be finite")
+	case interaction.ValueObject:
+		seen := make(map[string]struct{}, len(value.Entries))
+		for _, entry := range value.Entries {
+			if entry.Name == "" {
+				return errors.New("object entry name is required")
+			}
+			if _, exists := seen[entry.Name]; exists {
+				return fmt.Errorf("duplicate object entry %q", entry.Name)
+			}
+			seen[entry.Name] = struct{}{}
+			if err := validateValue(entry.Value); err != nil {
+				return fmt.Errorf("object entry %q: %w", entry.Name, err)
+			}
+		}
+		return nil
+	case interaction.ValueList:
+		for i, item := range value.Items {
+			if err := validateValue(item); err != nil {
+				return fmt.Errorf("list item %d: %w", i, err)
+			}
+		}
+		return nil
 	default:
 		return fmt.Errorf("unsupported interaction value kind %d", value.Kind)
 	}
@@ -397,9 +457,65 @@ func decodeField(field interaction.Field, raw json.RawMessage) (interaction.Valu
 			values[i] = *value
 		}
 		return interaction.StringsValue(values), nil
+	case interaction.FieldObject:
+		var members objectJSON
+		if err := json.Unmarshal(raw, &members); err != nil || members == nil {
+			return interaction.Value{}, errors.New("must be an object")
+		}
+		return decodeObjectField(field, members)
+	case interaction.FieldList:
+		var items []json.RawMessage
+		if err := json.Unmarshal(raw, &items); err != nil {
+			return interaction.Value{}, errors.New("must be an array")
+		}
+		values := make([]interaction.Value, len(items))
+		for i, item := range items {
+			value, err := decodeField(*field.Element, item)
+			if err != nil {
+				return interaction.Value{}, fmt.Errorf("item %d: %w", i, err)
+			}
+			values[i] = value
+		}
+		return interaction.ListValue(values), nil
 	default:
 		return interaction.Value{}, fmt.Errorf("unsupported field kind %d", field.Kind)
 	}
+}
+
+// objectJSON decodes an object member map while preserving raw member bytes so
+// each member can be validated by its own descriptor.
+type objectJSON map[string]json.RawMessage
+
+// decodeObjectField validates every declared member of a nested object and
+// rejects unknown members, mirroring the strictness of the top-level form.
+func decodeObjectField(field interaction.Field, raw objectJSON) (interaction.Value, error) {
+	known := make(map[string]struct{}, len(field.Fields))
+	entries := make([]interaction.Entry, 0, len(field.Fields))
+	for _, member := range field.Fields {
+		known[member.Name] = struct{}{}
+		memberRaw, present := raw[member.Name]
+		if !present {
+			if member.Default != nil {
+				entries = append(entries, interaction.Entry{Name: member.Name, Label: member.Label, Description: member.Description, Value: cloneValue(*member.Default)})
+				continue
+			}
+			if member.Required {
+				return interaction.Value{}, fmt.Errorf("member %q is required", member.Name)
+			}
+			continue
+		}
+		value, err := decodeField(member, memberRaw)
+		if err != nil {
+			return interaction.Value{}, fmt.Errorf("member %q: %w", member.Name, err)
+		}
+		entries = append(entries, interaction.Entry{Name: member.Name, Label: member.Label, Description: member.Description, Value: value})
+	}
+	for name := range raw {
+		if _, ok := known[name]; !ok {
+			return interaction.Value{}, fmt.Errorf("unknown member %q", name)
+		}
+	}
+	return interaction.ObjectValue(entries), nil
 }
 
 func containsOption(options []interaction.Option, value string) bool {
@@ -418,22 +534,35 @@ func projectPending(pending *pendingRequest) appbackend.PendingInteraction {
 		ID:    pending.id, Name: request.Name, Level: levelName(request.Level), Message: request.Description,
 		Fields: make([]appbackend.InteractionField, 0, len(request.Fields)),
 	}
-	for _, field := range request.Fields {
+	result.Fields = projectFields(request.Fields)
+	return result
+}
+
+// projectFields recursively projects a field tree into the browser
+// representation, preserving nesting order for objects and lists.
+func projectFields(fields []interaction.Field) []appbackend.InteractionField {
+	projected := make([]appbackend.InteractionField, 0, len(fields))
+	for _, field := range fields {
 		kind, _ := fieldKindName(field.Kind)
-		projected := appbackend.InteractionField{
+		item := appbackend.InteractionField{
 			Name: field.Name, Label: field.Label, Description: field.Description,
 			Kind: kind, Required: field.Required, Sensitive: field.Sensitive, HasDefault: field.Default != nil,
 			Options: make([]appbackend.InteractionOption, len(field.Options)),
+			Fields:  projectFields(field.Fields),
 		}
 		if field.Default != nil && !field.Sensitive {
-			projected.Default = projectValue(*field.Default)
+			item.Default = projectValue(*field.Default)
 		}
 		for i, option := range field.Options {
-			projected.Options[i] = appbackend.InteractionOption{Value: option.Value, Label: option.Label, Description: option.Description}
+			item.Options[i] = appbackend.InteractionOption{Value: option.Value, Label: option.Label, Description: option.Description}
 		}
-		result.Fields = append(result.Fields, projected)
+		if field.Element != nil {
+			element := projectFields([]interaction.Field{*field.Element})[0]
+			item.Element = &element
+		}
+		projected = append(projected, item)
 	}
-	return result
+	return projected
 }
 
 func projectState(state interaction.State) (appbackend.InteractionState, error) {
@@ -493,6 +622,10 @@ func fieldKindName(kind interaction.FieldKind) (string, error) {
 		return "choice", nil
 	case interaction.FieldMultiChoice:
 		return "multichoice", nil
+	case interaction.FieldObject:
+		return "object", nil
+	case interaction.FieldList:
+		return "list", nil
 	default:
 		return "", fmt.Errorf("unsupported interaction field kind %d", kind)
 	}
@@ -510,6 +643,18 @@ func projectValue(value interaction.Value) any {
 		return value.Boolean
 	case interaction.ValueStrings:
 		return append([]string{}, value.Strings...)
+	case interaction.ValueObject:
+		projected := make(map[string]any, len(value.Entries))
+		for _, entry := range value.Entries {
+			projected[entry.Name] = projectValue(entry.Value)
+		}
+		return projected
+	case interaction.ValueList:
+		projected := make([]any, len(value.Items))
+		for i, item := range value.Items {
+			projected[i] = projectValue(item)
+		}
+		return projected
 	default:
 		return nil
 	}
@@ -517,13 +662,25 @@ func projectValue(value interaction.Value) any {
 
 func cloneRequest(request interaction.Request) interaction.Request {
 	result := request
-	result.Fields = make([]interaction.Field, len(request.Fields))
-	for i, field := range request.Fields {
-		result.Fields[i] = field
-		result.Fields[i].Options = append([]interaction.Option(nil), field.Options...)
+	result.Fields = cloneFields(request.Fields)
+	return result
+}
+
+// cloneFields deep-copies a field tree so a request snapshot cannot be mutated
+// through the caller's nested slices or default values.
+func cloneFields(fields []interaction.Field) []interaction.Field {
+	result := make([]interaction.Field, len(fields))
+	for i, field := range fields {
+		result[i] = field
+		result[i].Options = append([]interaction.Option(nil), field.Options...)
+		result[i].Fields = cloneFields(field.Fields)
+		if field.Element != nil {
+			element := cloneFields([]interaction.Field{*field.Element})[0]
+			result[i].Element = &element
+		}
 		if field.Default != nil {
 			value := cloneValue(*field.Default)
-			result.Fields[i].Default = &value
+			result[i].Default = &value
 		}
 	}
 	return result
@@ -531,6 +688,21 @@ func cloneRequest(request interaction.Request) interaction.Request {
 
 func cloneValue(value interaction.Value) interaction.Value {
 	value.Strings = append([]string(nil), value.Strings...)
+	if value.Entries != nil {
+		entries := make([]interaction.Entry, len(value.Entries))
+		for i, entry := range value.Entries {
+			entries[i] = entry
+			entries[i].Value = cloneValue(entry.Value)
+		}
+		value.Entries = entries
+	}
+	if value.Items != nil {
+		items := make([]interaction.Value, len(value.Items))
+		for i, item := range value.Items {
+			items[i] = cloneValue(item)
+		}
+		value.Items = items
+	}
 	return value
 }
 
