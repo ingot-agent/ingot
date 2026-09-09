@@ -13,3 +13,5 @@ web/app-webui/playwright-report/
 # Local Windows build outputs.
 /ingot.exe
 /ingot.exe~
+
+go.work.sum
