@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
+
+	"golang.org/x/mod/modfile"
 )
 
 func writeTestFile(t *testing.T, path, content string) {
@@ -310,5 +313,58 @@ func TestLockRejectsUnpinnedRuntimeABI(t *testing.T) {
 	lock.Runtime.Version = "v0.2.0"
 	if _, err := lock.MarshalTOML(); err == nil || !strings.Contains(err.Error(), "INGOT-LOCK-RUNTIME-VERSION") {
 		t.Fatalf("unpinned Runtime version error = %v", err)
+	}
+}
+
+// TestRestoreRootModuleRequiresWorkspaceContractReplacements covers a
+// replacement for a module that is neither a plugin nor a locked module, which
+// is what a developer workspace produces when go.work replaces a contract
+// module such as the Agent SDK with a local checkout. Go rejects a replace
+// directive without a matching require under -mod=readonly, so the restored
+// root module must require it as well.
+func TestRestoreRootModuleRequiresWorkspaceContractReplacements(t *testing.T) {
+	t.Parallel()
+	const contractModule = "github.com/ingot-agent/sdk"
+	const contractVersion = "v0.2.8"
+	lock := fixtureGraphLock("/machine/provider-a", "/machine/provider-b", "/machine/consumer")
+	lock.Replacements = append(append([]Replacement(nil), lock.Replacements...), Replacement{
+		ModulePath: contractModule, SyntheticVersion: contractVersion, DevPath: "/machine/sdk", ContentSHA256: "sha256:" + strings.Repeat("0", 64),
+	})
+	sort.Slice(lock.Replacements, func(i, j int) bool { return lock.Replacements[i].ModulePath < lock.Replacements[j].ModulePath })
+	if err := lock.Validate(); err != nil {
+		t.Fatalf("lock with a workspace contract replacement was rejected: %v", err)
+	}
+	root := t.TempDir()
+	if err := lock.RestoreRootModule(root, nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	required := false
+	for _, requirement := range parsed.Require {
+		if requirement.Mod.Path == contractModule {
+			required = true
+			if requirement.Mod.Version != contractVersion {
+				t.Fatalf("required %s %s, want %s", contractModule, requirement.Mod.Version, contractVersion)
+			}
+		}
+	}
+	if !required {
+		t.Fatalf("restored go.mod replaces %s without requiring it:\n%s", contractModule, data)
+	}
+	replaced := false
+	for _, replacement := range parsed.Replace {
+		if replacement.Old.Path == contractModule {
+			replaced = true
+		}
+	}
+	if !replaced {
+		t.Fatalf("restored go.mod lost the %s replacement:\n%s", contractModule, data)
 	}
 }
