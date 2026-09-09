@@ -508,8 +508,8 @@ func (l *Lock) validatePluginsAndGraph() error {
 			// Generic workspace contract module: the locked replacement uses
 			// the Go-selected version of the module path. It must be a
 			// canonical version for the path but cannot be derived from the
-			// path alone.
-			err = nil
+			// path alone, so the locked value is authoritative.
+			expected, err = replacement.SyntheticVersion, nil
 			if module.CanonicalVersion(replacement.SyntheticVersion) != replacement.SyntheticVersion || module.Check(replacement.ModulePath, replacement.SyntheticVersion) != nil {
 				return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Actual: replacement.SyntheticVersion, Want: "canonical version matching " + replacement.ModulePath}
 			}
@@ -672,6 +672,23 @@ func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string)
 		}
 		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", RuntimeSupportTOMLModule, selectedVersion)
 		seen[RuntimeSupportTOMLModule] = true
+	}
+	// Every replacement must also be required, because Go rejects a replace
+	// directive without a matching require under -mod=readonly ("updates to
+	// go.mod needed"). The loop above only covers plugins, the runtime ABI,
+	// the TOML support module, and ordinary locked modules; a replacement for
+	// a workspace contract module such as the Agent SDK matches none of them.
+	// That case is reached whenever a developer adds
+	// "replace github.com/ingot-agent/sdk => ../sdk" to go.work: the module is
+	// then no longer resolved from the proxy, so it never appears in
+	// l.Modules and would otherwise end up with a replace but no require.
+	// seen deduplicates, so plugins and the ABI keep their existing entries.
+	for _, replacement := range l.Replacements {
+		if seen[replacement.ModulePath] {
+			continue
+		}
+		_, _ = fmt.Fprintf(&goMod, "\t%s %s\n", replacement.ModulePath, replacement.SyntheticVersion)
+		seen[replacement.ModulePath] = true
 	}
 	// Go's pruned module graph requires the root to retain selected transitive
 	// modules explicitly. Materializing every immutable locked node also makes
