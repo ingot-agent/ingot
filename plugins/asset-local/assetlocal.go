@@ -19,6 +19,7 @@ import (
 	"github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/asset"
+	"github.com/ingot-agent/sdk/operation"
 )
 
 const (
@@ -60,7 +61,8 @@ type Dependencies struct {
 // asset.Resolver, the same export satisfies both capability targets without
 // creating two ambiguous providers in an ingot component graph.
 type Exports struct {
-	Store asset.Store
+	Store      asset.Store
+	Operations []operation.Operation
 }
 
 type store struct {
@@ -75,14 +77,20 @@ type store struct {
 	total uint64
 }
 
-// New validates state, removes incomplete staging files, and indexes durable
-// blobs without reading their contents.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope, validates
+// state, removes incomplete staging files, and indexes durable blobs without
+// reading their contents. A missing configuration file is the normal
+// Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil || isNil(deps.State) {
 		return Exports{}, nil, fmt.Errorf("construct asset.local: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct asset.local: %w: %w", err, ErrInvalidConfig)
 	}
 	maxObject, err := positiveDefault(cfg.MaxObjectBytes, defaultMaxObjectBytes, "max_object_bytes")
 	if err != nil {
@@ -114,7 +122,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if err := instance.initialize(ctx); err != nil {
 		return Exports{}, nil, err
 	}
-	return Exports{Store: instance}, nil, nil
+	return Exports{Store: instance, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 }
 
 func positiveDefault(value, fallback int64, field string) (int64, error) {

@@ -17,10 +17,10 @@ import (
 func TestComponentContract(t *testing.T) {
 	t.Parallel()
 
-	var constructor func(context.Context, httpdefault.Config, httpdefault.Dependencies) (httpdefault.Exports, ingotabi.Cleanup, error) = httpdefault.New
+	var constructor func(context.Context, httpdefault.Dependencies) (httpdefault.Exports, ingotabi.Cleanup, error) = httpdefault.New
 	_ = constructor
 
-	exports, cleanup, err := httpdefault.New(context.Background(), httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{})
+	exports, cleanup, err := httpdefault.New(context.Background(), withState(t, httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestDoUsesExplicitContextWithoutMutatingRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exports, cleanup, err := httpdefault.New(context.Background(), httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{})
+	exports, cleanup, err := httpdefault.New(context.Background(), withState(t, httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestDoRoundTrip(t *testing.T) {
 	}))
 	defer server.Close()
 
-	exports, cleanup, err := httpdefault.New(context.Background(), httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{})
+	exports, cleanup, err := httpdefault.New(context.Background(), withState(t, httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestInvalidConfig(t *testing.T) {
 		{ProxyMode: "direct", MaxIdleConns: -1},
 	}
 	for _, cfg := range tests {
-		_, _, err := httpdefault.New(context.Background(), cfg, httpdefault.Dependencies{})
+		_, _, err := httpdefault.New(context.Background(), withState(t, cfg, httpdefault.Dependencies{}))
 		if !errors.Is(err, httpdefault.ErrInvalidConfig) {
 			t.Fatalf("config %#v error = %v, want ErrInvalidConfig", cfg, err)
 		}
@@ -143,7 +143,7 @@ func TestInvalidConfig(t *testing.T) {
 func TestNilRequest(t *testing.T) {
 	t.Parallel()
 
-	exports, cleanup, err := httpdefault.New(context.Background(), httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{})
+	exports, cleanup, err := httpdefault.New(context.Background(), withState(t, httpdefault.Config{ProxyMode: "direct"}, httpdefault.Dependencies{}))
 	if err != nil {
 		t.Fatal(err)
 	}

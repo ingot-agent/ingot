@@ -14,8 +14,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/pipeline"
 	"github.com/ingot-agent/sdk/tool"
 )
@@ -56,8 +58,10 @@ type Hook struct {
 	Environment    map[string]string `toml:"environment"`
 }
 
-// Dependencies contains no consumed capabilities.
-type Dependencies struct{}
+// Dependencies contains this Plugin's own persistent state scope.
+type Dependencies struct {
+	State state.Scope
+}
 
 // Exports contains independent interceptor collections for each target.
 type Exports struct {
@@ -65,6 +69,7 @@ type Exports struct {
 	ModelInterceptors  []model.Interceptor
 	StreamInterceptors []model.StreamInterceptor
 	AgentInterceptors  []agent.Interceptor
+	Operations         []operation.Operation
 }
 
 type normalizedHook struct {
@@ -78,13 +83,22 @@ type normalizedHook struct {
 	maxOutput   int
 }
 
-// New validates hook declarations and exports target-specific wrappers in declaration order.
-func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own hook declarations from its state scope and
+// exports target-specific wrappers in declaration order. A missing
+// configuration file is the normal Unconfigured state: no hooks are active.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct interceptor.script: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
+	}
+	if isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("state dependency is required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct interceptor.script: %w: %w", err, ErrInvalidConfig)
 	}
 	seen := make(map[string]struct{}, len(cfg.Hooks))
 	var exports Exports
@@ -108,6 +122,7 @@ func New(ctx context.Context, cfg Config, _ Dependencies) (Exports, ingotabi.Cle
 			exports.AgentInterceptors = append(exports.AgentInterceptors, &agentHook{hook: hook})
 		}
 	}
+	exports.Operations = []operation.Operation{&setupOperation{scope: deps.State}}
 	return exports, nil, nil
 }
 

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	agentdefault "github.com/ingot-agent/agent-default"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/model"
@@ -54,7 +53,7 @@ func TestHubSequencesClonesAndIsolatesObservers(t *testing.T) {
 		second = append(second, event)
 		mu.Unlock()
 	})
-	exports, cleanup, err := New(context.Background(), agentdefault.Config{}, Dependencies{Observers: []observation.Observer{mutating, recording}})
+	exports, cleanup, err := New(context.Background(), Dependencies{Observers: []observation.Observer{mutating, recording}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,9 +81,9 @@ func TestHubSequencesClonesAndIsolatesObservers(t *testing.T) {
 	exports.Consumer.Emit(ctx, observation.TurnFinished{
 		Status: observation.StatusSucceeded, Result: &agent.Result{Output: content.FromText("ok")},
 		Outcome: agent.Outcome{
-			Status: agent.OutcomeSucceeded,
+			Status:     agent.OutcomeSucceeded,
 			Accounting: agent.Accounting{Models: []agent.ModelAccounting{{Provider: "p", Model: "m"}}},
-			Failure: &agent.Failure{Stage: agent.FailureModel, RoundIndex: &roundIndex},
+			Failure:    &agent.Failure{Stage: agent.FailureModel, RoundIndex: &roundIndex},
 		},
 	})
 	if err := cleanup(context.Background()); err != nil {
@@ -129,7 +128,7 @@ func TestHubDoesNotGateEmitOnObserver(t *testing.T) {
 		}
 		<-release
 	})
-	exports, cleanup, err := New(context.Background(), agentdefault.Config{}, Dependencies{Observers: []observation.Observer{observer}})
+	exports, cleanup, err := New(context.Background(), Dependencies{Observers: []observation.Observer{observer}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +163,7 @@ func TestHubSequencesAreIndependentPerTurn(t *testing.T) {
 		events = append(events, event)
 		mu.Unlock()
 	})
-	exports, cleanup, err := New(context.Background(), agentdefault.Config{}, Dependencies{Observers: []observation.Observer{recording}})
+	exports, cleanup, err := New(context.Background(), Dependencies{Observers: []observation.Observer{recording}})
 	if err != nil {
 		t.Fatal(err)
 	}

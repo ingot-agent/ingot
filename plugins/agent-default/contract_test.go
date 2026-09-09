@@ -68,11 +68,11 @@ type observationConsumer struct{}
 func (observationConsumer) Emit(context.Context, observation.Detail) {}
 
 func TestComponentContractIncludesOptionalCompactor(t *testing.T) {
-	exports, cleanup, err := agentdefault.New(context.Background(), agentdefault.Config{}, agentdefault.Dependencies{
+	exports, cleanup, err := agentdefault.New(context.Background(), withState(t, agentdefault.Config{}, agentdefault.Dependencies{
 		Model: modelRuntime{}, Tools: toolRuntime{}, Store: sessionStore{}, Assets: assetStore{}, Prompt: promptRenderer{},
 		Compactor:   ingotabi.Some[contextwindow.Compactor](contextCompactor{}),
 		Observation: observationConsumer{}, RoundInterceptors: []agent.RoundInterceptor{roundInterceptor{}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,8 +12,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/interaction"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/tool"
 )
 
@@ -53,10 +55,14 @@ type Config struct {
 // explicit dynamic execution scopes.
 type Dependencies struct {
 	Interaction interaction.ExecutionBinder
+	State       state.Scope
 }
 
 // Exports contains the ask_user tool.
-type Exports struct{ Tools []tool.Tool }
+type Exports struct {
+	Tools      []tool.Tool
+	Operations []operation.Operation
+}
 
 type askTool struct {
 	interactions                     interaction.ExecutionBinder
@@ -112,16 +118,22 @@ func (o *askOptionArguments) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// New validates dependencies and creates the ask_user tool.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New validates dependencies, loads this Plugin's own configuration from its
+// state scope, and creates the ask_user tool. A missing configuration file is
+// the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct tool.ask: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Interaction) {
-		return Exports{}, nil, fmt.Errorf("interaction dependency is required: %w", ErrInvalidConfig)
+	if isNil(deps.Interaction) || isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("interaction and state dependencies are required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct tool.ask: %w: %w", err, ErrInvalidConfig)
 	}
 	maxPrompt := cfg.MaxPromptBytes
 	if maxPrompt == 0 {
@@ -151,10 +163,13 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 	if maxOptionsBytes < 1 {
 		return Exports{}, nil, fmt.Errorf("max_options_bytes must be positive: %w", ErrInvalidConfig)
 	}
-	return Exports{Tools: []tool.Tool{&askTool{
-		interactions: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse,
-		maxOptions: maxOptions, maxOptionsBytes: maxOptionsBytes,
-	}}}, nil, nil
+	return Exports{
+		Tools: []tool.Tool{&askTool{
+			interactions: deps.Interaction, maxPromptBytes: maxPrompt, maxResponseBytes: maxResponse,
+			maxOptions: maxOptions, maxOptionsBytes: maxOptionsBytes,
+		}},
+		Operations: []operation.Operation{&setupOperation{scope: deps.State}},
+	}, nil, nil
 }
 
 func (t *askTool) Definition() tool.Definition {

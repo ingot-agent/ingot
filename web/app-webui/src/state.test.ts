@@ -31,8 +31,8 @@ describe('authoritative turn projections', () => {
     expect(turns.web.result?.output[0].kind).toBe('image')
   })
   it('does not regress terminal operations during overlapping replay', () => {
-    const operations: Record<string, OperationInvocation> = { op: { id: 'op', name: 'test', status: 'succeeded', result: { output: {} } } }
-    reduceOperation(operations, event('operation.started', { id: 'op', name: 'test', status: 'running' }))
+    const operations: Record<string, OperationInvocation> = { op: { id: 'op', operationId: 'test-1', name: 'test', status: 'succeeded', result: { output: {} } } }
+    reduceOperation(operations, event('operation.started', { id: 'op', operationId: 'test-1', name: 'test', status: 'running' }))
     expect(operations.op.status).toBe('succeeded')
   })
 

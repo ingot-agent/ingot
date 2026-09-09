@@ -12,12 +12,14 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/content"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
 	"github.com/ingot-agent/sdk/observation"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/prompt"
 	"github.com/ingot-agent/sdk/session"
 	"github.com/ingot-agent/sdk/tool"
@@ -60,6 +62,7 @@ type Config struct {
 
 // Dependencies contains the runtime chokepoints used by an agent turn.
 type Dependencies struct {
+	State             state.Scope
 	Model             model.Runtime
 	Streaming         ingotabi.Optional[model.StreamingRuntime]
 	Tools             tool.Runtime
@@ -74,9 +77,10 @@ type Dependencies struct {
 
 // Exports contains independent turn, output streaming, and history capabilities.
 type Exports struct {
-	Runtime   agent.Runtime
-	Streaming agent.StreamingRuntime
-	History   agent.History
+	Runtime    agent.Runtime
+	Streaming  agent.StreamingRuntime
+	History    agent.History
+	Operations []operation.Operation
 }
 
 type runtime struct {
@@ -98,16 +102,22 @@ type runtime struct {
 	maxRounds         int
 }
 
-// New validates immutable dependencies and creates an independent runtime.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+// New loads this Plugin's own configuration from its state scope, validates
+// immutable dependencies, and creates an independent runtime. A missing
+// configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct agent.default: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Model) || isNil(deps.Tools) || isNil(deps.Store) || isNil(deps.Assets) || isNil(deps.Prompt) {
+	if isNil(deps.Model) || isNil(deps.Tools) || isNil(deps.Store) || isNil(deps.Assets) || isNil(deps.Prompt) || isNil(deps.State) {
 		return Exports{}, nil, fmt.Errorf("required dependency is nil: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct agent.default: %w: %w", err, ErrInvalidConfig)
 	}
 	if deps.Streaming.Valid && isNil(deps.Streaming.Value) {
 		return Exports{}, nil, fmt.Errorf("streaming dependency is typed nil: %w", ErrInvalidConfig)
@@ -154,7 +164,7 @@ func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.
 		temperature: copyFloat(cfg.Temperature), maxTokens: copyInt(cfg.MaxTokens),
 		maxRounds: maxRounds,
 	}
-	return Exports{Runtime: instance, Streaming: instance, History: instance}, nil, nil
+	return Exports{Runtime: instance, Streaming: instance, History: instance, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 }
 
 // Load returns a validated, caller-owned snapshot of one session's persisted

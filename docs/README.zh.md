@@ -57,17 +57,20 @@ ingot 把变化放在构建期，把生产运行时固定下来：
 # 1. 构建 CLI（也可使用 ./scripts/install.sh 安装）
 go build -o ingot ./cmd/ingot
 
-# 2. 使用官方插件集和配置模板初始化 ingot home
+# 2. 使用官方插件集初始化 ingot home
 ./ingot init
 
-# 3. 在 ~/.ingot/config.toml 中设置模型 Provider，然后组合镜像
+# 3. 组合镜像
 ./ingot apply
 
 # 4. 启动浏览器工作区（默认 profile 为 app.backend）
 ./ingot web
 ```
 
-`ingot init` 会把官方插件物化到 `bundled-plugins/`，并写入 `builder.toml`、`plugins.toml` 和 `config.toml` 模板。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
+插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
+`app.backend.config` Operation（或直接编辑插件自己的 `state/` 文件）设置模型 Provider。
+
+`ingot init` 会把官方插件物化到 `bundled-plugins/`，并写入 `builder.toml` 和 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
 
 ## 构建期组合如何工作
 
@@ -80,7 +83,6 @@ flowchart LR
     Lock --> Generate["生成静态 wiring"]
     Generate --> Compile["编译 + 启动校验"]
     Compile --> Image["不可变 Runtime Image<br/>(原生可执行文件 + 来源证明)"]
-    Config["config.toml<br/>(运行时值)"] --> Image
 ```
 
 一次组合会经过三个清晰的状态：
@@ -89,7 +91,7 @@ flowchart LR
 2. `plugins.lock` 记录精确解析结果，包括完整 Go Module 图、源码摘要、固定的 Runtime ABI 和构建参数。
 3. `images/<ImageID>/` 保存不可变的原生可执行文件和来源 Manifest。
 
-修改运行参数只需修改 `config.toml`。替换实现则意味着修改插件集合并构建新镜像；旧镜像仍然保留，可随时回滚。
+修改运行参数只需修改插件自己的状态，不会改变镜像。替换实现则意味着修改插件集合并构建新镜像；旧镜像仍然保留，可随时回滚。
 
 ## 插件模型
 
@@ -149,7 +151,7 @@ ingot apply
 | `builder.toml` | Builder 配置（无 SDK 列表；ingot ABI 固定）。 |
 | `plugins.toml` | 期望的插件组合。 |
 | `plugins.lock` | 精确解析结果、源码哈希、Module 图和构建参数。 |
-| `config.toml` | 运行时值，包括 Provider 配置和密钥。 |
+| `state/<plugin>/` | 插件自有的持久化配置与数据。 |
 | `bundled-plugins/` | 物化后的官方插件源码。 |
 | `current` | 指向当前激活镜像的原子指针。 |
 | `images/<ImageID>/` | 不可变的运行时可执行文件和 `manifest.json`。 |

@@ -96,11 +96,11 @@ func TestRunStreamEquivalentAcrossToolRounds(t *testing.T) {
 			}
 			return response, nil
 		})
-		exports, cleanup, err := New(context.Background(), Config{Streaming: legacyConfig}, Dependencies{
+		exports, cleanup, err := New(context.Background(), withState(t, Config{Streaming: legacyConfig}, Dependencies{
 			Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: tools,
 			Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 			Compactor: ingotabi.Some[contextwindow.Compactor](compactor), Interceptors: []agent.Interceptor{interceptor},
-		})
+		}))
 		if err != nil || cleanup != nil || exports.Runtime != exports.Streaming.(agent.Runtime) {
 			t.Fatalf("exports=%v cleanup=%v err=%v", exports, cleanup != nil, err)
 		}
@@ -174,7 +174,7 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 				_ = handler(model.StreamEvent{Kind: model.StreamPartDelta, TextDelta: "too late"})
 				return model.Response{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "c", Name: "echo", Arguments: json.RawMessage(`{}`)}}}}, nil
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -210,7 +210,7 @@ func TestStreamingErrorsStopTurnAndReleaseSession(t *testing.T) {
 func TestStreamUsesCompleteWhenStreamingDependencyIsMissing(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("ok")}}}}
-	exports, _, err := New(context.Background(), Config{Streaming: true}, Dependencies{Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
+	exports, _, err := New(context.Background(), withState(t, Config{Streaming: true}, Dependencies{Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestStreamSharesSessionGateWithRunAndHistory(t *testing.T) {
 		<-ctx.Done()
 		return model.Response{}, ctx.Err()
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Model: models, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,10 +299,10 @@ func TestAgentInterceptorCannotSwallowConsumerFailure(t *testing.T) {
 		return agent.Result{Output: content.FromText("masked error")}, nil
 	})
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{}, Streaming: ingotabi.Some[model.StreamingRuntime](streaming), Tools: &fakeTools{},
 		Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Interceptors: []agent.Interceptor{interceptor},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

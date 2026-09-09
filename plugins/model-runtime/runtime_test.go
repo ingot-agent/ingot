@@ -109,9 +109,9 @@ func TestRuntimeAppliesDefaultsOrdersInterceptorsAndNormalizesTerminal(t *testin
 		events = append(events, "inner-after")
 		return response, err
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}, Interceptors: []model.Interceptor{outer, inner},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +133,25 @@ func TestRuntimeAppliesDefaultsOrdersInterceptorsAndNormalizesTerminal(t *testin
 	}
 }
 
+// TestNewAllowsUnconfiguredProviders proves that a Plugin with no configured
+// providers still constructs, which is what makes Operation-based first-time
+// setup possible.
+func TestNewAllowsUnconfiguredProviders(t *testing.T) {
+	exports, cleanup, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{}, modelruntime.Dependencies{}))
+	if err != nil {
+		t.Fatalf("unconfigured construction failed: %v", err)
+	}
+	if cleanup != nil {
+		t.Fatal("unexpected cleanup")
+	}
+	if exports.Runtime == nil || exports.Streaming == nil || exports.Resolver == nil {
+		t.Fatalf("exports = %#v", exports)
+	}
+	if _, err := exports.Runtime.Complete(context.Background(), model.Request{Provider: "p", Model: "m"}); err == nil {
+		t.Fatal("calling an unconfigured runtime must fail")
+	}
+}
+
 func TestNewRejectsInvalidDependenciesAndDefaults(t *testing.T) {
 	validProvider := &fakeProvider{}
 	var typedNilProvider *fakeProvider
@@ -144,7 +163,6 @@ func TestNewRejectsInvalidDependenciesAndDefaults(t *testing.T) {
 		cfg  modelruntime.Config
 		deps modelruntime.Dependencies
 	}{
-		{name: "no providers"},
 		{name: "duplicate provider names", deps: modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{
 			{Name: "p", Value: validProvider}, {Name: "p", Value: validProvider},
 		}}},
@@ -165,7 +183,7 @@ func TestNewRejectsInvalidDependenciesAndDefaults(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := modelruntime.New(context.Background(), test.cfg, test.deps)
+			_, _, err := modelruntime.New(context.Background(), withState(t, test.cfg, test.deps))
 			if !errors.Is(err, modelruntime.ErrInvalidConfig) {
 				t.Fatalf("New() error = %v, want ErrInvalidConfig", err)
 			}
@@ -189,9 +207,9 @@ func TestDefaultsAreAppliedOnlyBeforeInterceptors(t *testing.T) {
 				test.mutate(&request)
 				return next(ctx, request)
 			})
-			exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+			exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 				Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}, Interceptors: []model.Interceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -208,9 +226,9 @@ func TestDefaultsAreAppliedOnlyBeforeInterceptors(t *testing.T) {
 
 func TestDefaultModelMayBeSuppliedPerRequest(t *testing.T) {
 	provider := &fakeProvider{}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,9 +242,9 @@ func TestDefaultModelMayBeSuppliedPerRequest(t *testing.T) {
 
 func TestResolverMaterializesDefaultsWithoutInvocation(t *testing.T) {
 	provider := &fakeProvider{}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "default-model"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "default-model"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "provider", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,9 +272,9 @@ func TestResolverMaterializesDefaultsWithoutInvocation(t *testing.T) {
 	if _, err := exports.Resolver.ResolveRequest(context.Background(), model.Request{Provider: "missing", Model: "m"}); !errors.Is(err, model.ErrProviderNotFound) {
 		t.Fatalf("unknown provider error = %v", err)
 	}
-	withoutDefault, _, err := modelruntime.New(context.Background(), modelruntime.Config{}, modelruntime.Dependencies{
+	withoutDefault, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "provider", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,9 +289,9 @@ func TestShortCircuitIsNotSourceNormalizedAndCallerIsOwned(t *testing.T) {
 	short := interceptorFunc(func(context.Context, model.Request, pipeline.Next[model.Request, model.Response]) (model.Response, error) {
 		return model.Response{Provider: "cache", Model: "cache", Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("cached"), ToolCalls: []tool.Call{{ID: "cached", Name: "cached", Arguments: shortArguments}}}}, nil
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}, Interceptors: []model.Interceptor{short},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +308,7 @@ func TestShortCircuitIsNotSourceNormalizedAndCallerIsOwned(t *testing.T) {
 	}
 
 	mutating := &fakeProvider{}
-	exports, _, err = modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: mutating}}})
+	exports, _, err = modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: mutating}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,9 +351,9 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 		*received.MaxTokens = 1
 		return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +370,9 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 		}
 		return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
 	})
-	exports, _, err = modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err = modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: presenceProvider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,9 +388,9 @@ func TestRequestClonePreservesPresenceAndOwnership(t *testing.T) {
 		}
 		return model.Response{Message: model.Message{Role: model.RoleAssistant}}, nil
 	})
-	exports, _, err = modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err = modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: emptyRawProvider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,9 +412,9 @@ func TestResponseClonePreservesOwnershipAndPresence(t *testing.T) {
 			ToolCalls: []tool.Call{{ID: "call", Name: "tool", Arguments: arguments}},
 		}}, nil
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,9 +431,9 @@ func TestResponseClonePreservesOwnershipAndPresence(t *testing.T) {
 	emptyCallsProvider := providerFunc(func(context.Context, model.Request) (model.Response, error) {
 		return model.Response{Message: model.Message{Role: model.RoleAssistant, ToolCalls: make([]tool.Call, 0)}}, nil
 	})
-	exports, _, err = modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err = modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: emptyCallsProvider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,9 +452,9 @@ func TestProviderErrorReturnsOwnedPartialResponse(t *testing.T) {
 	provider := providerFunc(func(context.Context, model.Request) (model.Response, error) {
 		return model.Response{Message: model.Message{ToolCalls: []tool.Call{{Arguments: arguments}}}}, wantErr
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,9 +500,9 @@ func TestTerminalRejectsInvalidResponses(t *testing.T) {
 				test.mutate(&response)
 				return response, nil
 			})
-			exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+			exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 				Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -497,7 +515,7 @@ func TestTerminalRejectsInvalidResponses(t *testing.T) {
 
 func TestStreamingUnsupportedAndProviderErrors(t *testing.T) {
 	provider := &fakeProvider{}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}})
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -526,9 +544,9 @@ func TestStreamingChainIsIndependentAndOrdered(t *testing.T) {
 		events = append(events, "inner-after")
 		return response, err
 	})
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}}, StreamInterceptors: []model.StreamInterceptor{outer, inner},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -571,9 +589,9 @@ func TestStreamingValidatesMultipleTextAndMediaParts(t *testing.T) {
 			content.Text("hello"), content.Inline(content.KindImage, "image/png", "x.png", []byte{1, 2, 3, 4}),
 		}}},
 	}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,9 +627,9 @@ func TestStreamingRejectsInvalidLifecycleAndFinalMismatch(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			provider := &eventStreamingProvider{events: test.events, response: model.Response{Message: model.Message{Role: model.RoleAssistant, Content: test.content}}}
-			exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+			exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 				Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -624,9 +642,9 @@ func TestStreamingRejectsInvalidLifecycleAndFinalMismatch(t *testing.T) {
 
 func TestStreamPropagatesHandlerError(t *testing.T) {
 	provider := &streamingProvider{}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultModel: "m"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "p", Value: provider}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,9 +658,9 @@ func TestStreamPropagatesHandlerError(t *testing.T) {
 func TestConcurrentProviderSelection(t *testing.T) {
 	first := &countingProvider{}
 	second := &countingProvider{}
-	exports, _, err := modelruntime.New(context.Background(), modelruntime.Config{DefaultProvider: "first"}, modelruntime.Dependencies{
+	exports, _, err := modelruntime.New(context.Background(), withState(t, modelruntime.Config{DefaultProvider: "first"}, modelruntime.Dependencies{
 		Providers: []ingotabi.Named[model.Provider]{{Name: "first", Value: first}, {Name: "second", Value: second}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

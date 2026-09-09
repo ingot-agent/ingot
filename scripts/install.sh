@@ -177,11 +177,15 @@ fi
 # ---------------------------------------------------------------------------
 # 2. model provider configuration
 # ---------------------------------------------------------------------------
-config="$home/config.toml"
+# Plugins own their persistent configuration inside the Runtime Home; there is
+# no shared runtime config.toml. The model provider is configured by writing
+# the provider plugin's own state file before the first run.
+provider_dir="$home/state/model.openai-compatible"
+runtime_dir="$home/state/model.runtime"
+config="$provider_dir/config.toml"
+defaults="$runtime_dir/config.toml"
 configured=false
-if [ -f "$config" ] && grep -q 'api_key = ""' "$config"; then
-	configured=false
-else
+if [ -f "$config" ] && ! grep -q 'api_key = ""' "$config"; then
 	configured=true
 fi
 
@@ -215,38 +219,35 @@ else
 
 	if [ -z "$api_key" ]; then
 		echo "install.sh: no API key provided; skipping configuration" >&2
-		echo "  (set INGOT_API_KEY and re-run, or edit $home/config.toml manually)" >&2
+		echo "  (set INGOT_API_KEY and re-run, or write $config manually)" >&2
 	elif command -v python3 >/dev/null 2>&1; then
 		# Preferred path: python3 renders TOML values correctly (\ and " escaping).
-		python3 - "$config" "$provider_name" "$base_url" "$api_key" "$model" <<'PY'
-import json, sys
-config, provider, base_url, api_key, model = sys.argv[1:6]
-s = open(config, encoding='utf-8').read()
+		python3 - "$config" "$defaults" "$provider_name" "$base_url" "$api_key" "$model" <<'PY'
+import json, os, sys
+config, defaults, provider, base_url, api_key, model = sys.argv[1:7]
 t = lambda v: json.dumps(v, ensure_ascii=False)  # JSON string escaping is TOML-compatible
-s = s.replace('name = "openai"',                 'name = ' + t(provider), 1)
-s = s.replace('base_url = "https://api.example.com/v1"', 'base_url = ' + t(base_url), 1)
-s = s.replace('api_key = ""',                    'api_key = ' + t(api_key), 1)
-s = s.replace('models = ["gpt-4o-mini"]',       'models = [' + t(model) + ']', 1)
-s = s.replace('default_provider = "openai"',    'default_provider = ' + t(provider), 1)
-s = s.replace('default_model = "gpt-4o-mini"',   'default_model = ' + t(model), 1)
-open(config, 'w', encoding='utf-8').write(s)
+for path in (config, defaults):
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+with open(config, 'w', encoding='utf-8') as handle:
+    handle.write('providers = [\n  { name = ' + t(provider) + ', base_url = ' + t(base_url) + ', api_key = ' + t(api_key) + ', models = [' + t(model) + '] },\n]\n')
+with open(defaults, 'w', encoding='utf-8') as handle:
+    handle.write('default_provider = ' + t(provider) + '\ndefault_model = ' + t(model) + '\n')
 PY
 		echo "==> wrote provider ${provider_name} (${model}) to $config"
 	else
-		# Fallback: plain sed works for values without \ " & | characters.
+		# Fallback: plain printf works for values without \ " & | characters.
 		case "$provider_name$base_url$api_key$model" in
 			*'\\'*|*'"'*|*'&'*|*'|'*)
-				echo "install.sh: value contains characters the fallback writer cannot handle; edit $config manually" >&2
+				echo "install.sh: value contains characters the fallback writer cannot handle; write $config manually" >&2
 				;;
 			*)
-				sed -i \
-					-e "s|name = \"openai\"|name = \"$provider_name\"|" \
-					-e "s|base_url = \"https://api.example.com/v1\"|base_url = \"$base_url\"|" \
-					-e "s|api_key = \"\"|api_key = \"$api_key\"|" \
-					-e "s|models = \[\"gpt-4o-mini\"\]|models = [\"$model\"]|" \
-					-e "s|default_provider = \"openai\"|default_provider = \"$provider_name\"|" \
-					-e "s|default_model = \"gpt-4o-mini\"|default_model = \"$model\"|" \
-					"$config"
+				mkdir -p "$provider_dir" "$runtime_dir"
+				printf 'providers = [\n  { name = "%s", base_url = "%s", api_key = "%s", models = ["%s"] },\n]\n' \
+					"$provider_name" "$base_url" "$api_key" "$model" >"$config"
+				printf 'default_provider = "%s"\ndefault_model = "%s"\n' \
+					"$provider_name" "$model" >"$defaults"
 				echo "==> wrote provider ${provider_name} (${model}) to $config"
 				;;
 		esac

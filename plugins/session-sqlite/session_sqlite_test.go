@@ -17,7 +17,7 @@ type stateScope string
 func (scope stateScope) Dir() string { return string(scope) }
 
 func TestPublicComponentContract(t *testing.T) {
-	exports, cleanup, err := sessionsqlite.New(context.Background(), sessionsqlite.Config{}, sessionsqlite.Dependencies{
+	exports, cleanup, err := sessionsqlite.New(context.Background(), sessionsqlite.Dependencies{
 		State: stateScope(filepath.Join(t.TempDir(), "state")),
 	})
 	if err != nil {
@@ -41,7 +41,7 @@ func TestPublicComponentContract(t *testing.T) {
 func TestNewRejectsInvalidDependencies(t *testing.T) {
 	var typedNil *scope
 	for _, dependency := range []state.Scope{nil, typedNil, stateScope("relative")} {
-		if _, _, err := sessionsqlite.New(context.Background(), sessionsqlite.Config{}, sessionsqlite.Dependencies{State: dependency}); !errors.Is(err, sessionsqlite.ErrInvalidDependencies) {
+		if _, _, err := sessionsqlite.New(context.Background(), sessionsqlite.Dependencies{State: dependency}); !errors.Is(err, sessionsqlite.ErrInvalidDependencies) {
 			t.Fatalf("State=%#v error=%v", dependency, err)
 		}
 	}

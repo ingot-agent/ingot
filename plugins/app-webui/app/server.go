@@ -17,6 +17,7 @@ import (
 	ingotabi "github.com/ingot-agent/ingot-abi"
 	"github.com/ingot-agent/ingot-abi/invocation"
 	"github.com/ingot-agent/ingot-abi/lifecycle"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/agent"
 	"github.com/ingot-agent/sdk/asset"
 	"github.com/ingot-agent/sdk/operation"
@@ -39,6 +40,7 @@ type Dependencies struct {
 	Operations        []operation.Operation
 	Invocation        invocation.Invocation
 	Lifecycle         lifecycle.Controller
+	State             state.Scope
 }
 
 // Exports is empty because the HTTP application is a graph leaf.
@@ -60,9 +62,11 @@ type application struct {
 	sessionMu            sync.Mutex
 }
 
-// New validates dependencies, starts the HTTP server, and returns promptly.
-func New(ctx context.Context, cfg appbackend.Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
-	if ctx == nil || isNil(deps.Backend) || isNil(deps.Invocation) || isNil(deps.Lifecycle) {
+// New loads this Plugin's own configuration from its state scope, validates
+// dependencies, starts the HTTP server, and returns promptly. A missing
+// configuration file is the normal Unconfigured state; defaults apply.
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+	if ctx == nil || isNil(deps.Backend) || isNil(deps.Invocation) || isNil(deps.Lifecycle) || isNil(deps.State) {
 		return Exports{}, nil, fmt.Errorf("construct app.backend app: %w", appbackend.ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
@@ -70,6 +74,10 @@ func New(ctx context.Context, cfg appbackend.Config, deps Dependencies) (Exports
 	}
 	if deps.Invocation.Mode() != invocation.ModeRun && deps.Invocation.Mode() != invocation.ModeCheck {
 		return Exports{}, nil, fmt.Errorf("invalid invocation mode: %w", appbackend.ErrInvalidConfig)
+	}
+	cfg, err := appbackend.LoadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct app.backend app: %w: %w", err, appbackend.ErrInvalidConfig)
 	}
 	normalized, err := cfg.Normalize()
 	if err != nil {
@@ -86,7 +94,7 @@ func New(ctx context.Context, cfg appbackend.Config, deps Dependencies) (Exports
 	if isNil(deps.Backend.Events()) || isNil(deps.Backend.Interactions()) {
 		return Exports{}, nil, fmt.Errorf("backend events and interactions are required: %w", appbackend.ErrInvalidConfig)
 	}
-	operations, err := newOperationController(deps.Operations)
+	operations, err := newOperationController(append(append([]operation.Operation(nil), deps.Operations...), newConfigOperations(deps.State)...))
 	if err != nil {
 		return Exports{}, nil, err
 	}

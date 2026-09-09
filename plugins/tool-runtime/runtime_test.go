@@ -80,7 +80,7 @@ func validDefinition(name string) tool.Definition {
 
 func TestRuntimeValidatesAndSnapshotsDefinitions(t *testing.T) {
 	fake := &fakeTool{definition: validDefinition("echo"), content: "ok"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Tools: []tool.Tool{fake}})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Tools: []tool.Tool{fake}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestRuntimeValidatesAndSnapshotsDefinitions(t *testing.T) {
 func TestRuntimeInterceptorOrderAndLimits(t *testing.T) {
 	fake := &fakeTool{definition: validDefinition("echo"), content: "0123456789"}
 	events := []string{}
-	exports, _, err := New(context.Background(), Config{MaxTextBytes: 5}, Dependencies{Tools: []tool.Tool{fake}, Interceptors: []tool.Interceptor{recordingInterceptor{name: "outer", events: &events}, recordingInterceptor{name: "inner", events: &events}}})
+	exports, _, err := New(context.Background(), withState(t, Config{MaxTextBytes: 5}, Dependencies{Tools: []tool.Tool{fake}, Interceptors: []tool.Interceptor{recordingInterceptor{name: "outer", events: &events}, recordingInterceptor{name: "inner", events: &events}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestRuntimeValidatesLimitsAndOwnsMultimodalResult(t *testing.T) {
 		content.Text("ok"),
 		content.Inline(content.KindImage, "image/png", "image.png", data),
 	}}}
-	exports, _, err := New(context.Background(), Config{MaxTextBytes: 2, MaxInlinePartBytes: 3, MaxInlineBytes: 3}, Dependencies{Tools: []tool.Tool{implementation}})
+	exports, _, err := New(context.Background(), withState(t, Config{MaxTextBytes: 2, MaxInlinePartBytes: 3, MaxInlineBytes: 3}, Dependencies{Tools: []tool.Tool{implementation}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +165,10 @@ func TestRuntimeValidatesLimitsAndOwnsMultimodalResult(t *testing.T) {
 
 func TestRuntimeCopiesArgumentsAndRejectsCallMutation(t *testing.T) {
 	fake := &fakeTool{definition: validDefinition("echo"), content: "ok"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Tools:        []tool.Tool{fake},
 		Interceptors: []tool.Interceptor{mutatingInterceptor{}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestRuntimeRejectsInvalidDefinitions(t *testing.T) {
 		{Name: "good", Description: "x", InputSchema: []byte("[]")},
 		{Name: "good", Description: "x", InputSchema: []byte("{\"$schema\":\"http://json-schema.org/draft-07/schema#\"}")},
 	} {
-		_, _, err := New(context.Background(), Config{}, Dependencies{Tools: []tool.Tool{&fakeTool{definition: definition}}})
+		_, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Tools: []tool.Tool{&fakeTool{definition: definition}}}))
 		if !errors.Is(err, ErrInvalidDefinition) {
 			t.Fatalf("definition %#v error=%v", definition, err)
 		}
@@ -203,7 +203,7 @@ func TestRuntimeExposesReservedRejectionsOnlyBeforeDispatch(t *testing.T) {
 	for _, rejection := range []error{tool.ErrNotFound, tool.ErrInvalidArguments} {
 		t.Run(rejection.Error()+" from tool", func(t *testing.T) {
 			implementation := &errorTool{err: rejection}
-			exports, _, err := New(context.Background(), Config{}, Dependencies{Tools: []tool.Tool{implementation}})
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Tools: []tool.Tool{implementation}}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -219,9 +219,9 @@ func TestRuntimeExposesReservedRejectionsOnlyBeforeDispatch(t *testing.T) {
 				_, _ = next(ctx, invocation)
 				return tool.Result{}, rejection
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Tools: []tool.Tool{implementation}, Interceptors: []tool.Interceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,9 +236,9 @@ func TestRuntimeExposesReservedRejectionsOnlyBeforeDispatch(t *testing.T) {
 			interceptor := interceptorFunc(func(context.Context, tool.Invocation, pipeline.Next[tool.Invocation, tool.Result]) (tool.Result, error) {
 				return tool.Result{}, rejection
 			})
-			exports, _, err := New(context.Background(), Config{}, Dependencies{
+			exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 				Tools: []tool.Tool{implementation}, Interceptors: []tool.Interceptor{interceptor},
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -264,7 +264,7 @@ func (scopeInterceptor) Invoke(ctx context.Context, invocation tool.Invocation, 
 // execution Scope unchanged to the tool implementation.
 func TestRuntimePropagatesScopeToTool(t *testing.T) {
 	fake := &fakeTool{definition: validDefinition("echo"), content: "ok"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Tools: []tool.Tool{fake}})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Tools: []tool.Tool{fake}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,10 +282,10 @@ func TestRuntimePropagatesScopeToTool(t *testing.T) {
 // immutable execution identity of an invocation.
 func TestRuntimeRejectsScopeMutation(t *testing.T) {
 	fake := &fakeTool{definition: validDefinition("echo"), content: "ok"}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Tools:        []tool.Tool{fake},
 		Interceptors: []tool.Interceptor{scopeInterceptor{}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

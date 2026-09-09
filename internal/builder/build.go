@@ -20,7 +20,6 @@ import (
 
 type BuildOptions struct {
 	Home         string
-	ConfigPath   string
 	GOMODCACHE   string
 	CheckTimeout time.Duration
 }
@@ -59,9 +58,6 @@ func (options BuildOptions) defaults() (BuildOptions, error) {
 		return options, err
 	}
 	options.Home = filepath.Clean(absolute)
-	if options.ConfigPath == "" {
-		options.ConfigPath = filepath.Join(options.Home, "config.toml")
-	}
 	if options.GOMODCACHE == "" {
 		options.GOMODCACHE = filepath.Join(options.Home, "cache", "gomod")
 	}
@@ -214,7 +210,7 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	}
 	checkContext, cancel := context.WithTimeout(ctx, options.CheckTimeout)
 	defer cancel()
-	checkEnvironment := replaceEnvironment(os.Environ(), map[string]string{"INGOT_HOME": options.Home, "INGOT_CONFIG": options.ConfigPath, "INGOT_STATE_ROOT": stateRoot})
+	checkEnvironment := replaceEnvironment(os.Environ(), map[string]string{"INGOT_RUNTIME_HOME": stateRoot})
 	if err := runRuntimeCheck(checkContext, binaryPath, checkEnvironment); err != nil {
 		return nil, err
 	}

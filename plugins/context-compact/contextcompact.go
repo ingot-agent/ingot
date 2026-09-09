@@ -10,19 +10,23 @@ import (
 	"unicode/utf8"
 
 	"github.com/ingot-agent/ingot-abi"
+	"github.com/ingot-agent/ingot-abi/state"
 	"github.com/ingot-agent/sdk/contextwindow"
 	"github.com/ingot-agent/sdk/model"
+	"github.com/ingot-agent/sdk/operation"
 	"github.com/ingot-agent/sdk/session"
 )
 
 const (
-	defaultAnchorTurns       = 2
-	defaultRecentTurns       = 4
-	defaultSummaryChunkBytes = 64 * 1024
-	defaultSummaryMaxTokens  = 1024
-	defaultSummaryMaxBytes   = 64 * 1024
-	defaultMaxSummaryChunks  = 8
-	defaultMaxSummaryPasses  = 8
+	defaultTriggerRequestBytes = 512 * 1024
+	defaultTargetRequestBytes  = 256 * 1024
+	defaultAnchorTurns         = 2
+	defaultRecentTurns         = 4
+	defaultSummaryChunkBytes   = 64 * 1024
+	defaultSummaryMaxTokens    = 1024
+	defaultSummaryMaxBytes     = 64 * 1024
+	defaultMaxSummaryChunks    = 8
+	defaultMaxSummaryPasses    = 8
 )
 
 var (
@@ -61,11 +65,13 @@ type Config struct {
 type Dependencies struct {
 	Model model.Runtime
 	Store session.Store
+	State state.Scope
 }
 
 // Exports contains the context compactor capability.
 type Exports struct {
-	Compactor contextwindow.Compactor
+	Compactor  contextwindow.Compactor
+	Operations []operation.Operation
 }
 
 type normalizedConfig struct {
@@ -90,29 +96,43 @@ type compactor struct {
 }
 
 // New validates configuration and creates an independent compactor instance.
-func New(ctx context.Context, cfg Config, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
+func New(ctx context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error) {
 	if ctx == nil {
 		return Exports{}, nil, fmt.Errorf("construct context.compact: nil context: %w", ErrInvalidConfig)
 	}
 	if err := ctx.Err(); err != nil {
 		return Exports{}, nil, err
 	}
-	if isNil(deps.Model) || isNil(deps.Store) {
-		return Exports{}, nil, fmt.Errorf("model and store dependencies are required: %w", ErrInvalidConfig)
+	if isNil(deps.Model) || isNil(deps.Store) || isNil(deps.State) {
+		return Exports{}, nil, fmt.Errorf("model, store, and state dependencies are required: %w", ErrInvalidConfig)
+	}
+	cfg, err := loadConfig(deps.State.Dir())
+	if err != nil {
+		return Exports{}, nil, fmt.Errorf("construct context.compact: %w: %w", err, ErrInvalidConfig)
 	}
 	normalized, err := normalizeConfig(cfg)
 	if err != nil {
 		return Exports{}, nil, err
 	}
 	instance := &compactor{model: deps.Model, store: deps.Store, cfg: normalized, gates: newGateManager()}
-	return Exports{Compactor: instance}, nil, nil
+	return Exports{Compactor: instance, Operations: []operation.Operation{&setupOperation{scope: deps.State}}}, nil, nil
 }
 
 func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	if !utf8.ValidString(cfg.Provider) || !utf8.ValidString(cfg.Model) {
 		return normalizedConfig{}, fmt.Errorf("provider or model is invalid UTF-8: %w", ErrInvalidConfig)
 	}
-	if cfg.TriggerRequestBytes <= 0 || cfg.TargetRequestBytes <= 0 || cfg.TargetRequestBytes >= cfg.TriggerRequestBytes {
+	// Both bounds have defaults so an Unconfigured Plugin still constructs;
+	// compaction only becomes active once a caller configures it.
+	triggerRequestBytes := cfg.TriggerRequestBytes
+	if triggerRequestBytes == 0 {
+		triggerRequestBytes = defaultTriggerRequestBytes
+	}
+	targetRequestBytes := cfg.TargetRequestBytes
+	if targetRequestBytes == 0 {
+		targetRequestBytes = defaultTargetRequestBytes
+	}
+	if triggerRequestBytes < 0 || targetRequestBytes < 0 || targetRequestBytes >= triggerRequestBytes {
 		return normalizedConfig{}, fmt.Errorf("target_request_bytes must be positive and less than trigger_request_bytes: %w", ErrInvalidConfig)
 	}
 	anchor, err := nonnegativeDefault(cfg.AnchorTurns, defaultAnchorTurns, "anchor_turns")
@@ -145,7 +165,7 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	}
 	return normalizedConfig{
 		provider: cfg.Provider, model: cfg.Model,
-		triggerRequestBytes: cfg.TriggerRequestBytes, targetRequestBytes: cfg.TargetRequestBytes,
+		triggerRequestBytes: triggerRequestBytes, targetRequestBytes: targetRequestBytes,
 		anchorTurns: anchor, recentTurns: recent, summaryChunkBytes: chunk,
 		summaryMaxTokens: maxTokens, summaryMaxBytes: maxBytes,
 		maxSummaryChunks: maxChunks, maxSummaryPasses: maxPasses,

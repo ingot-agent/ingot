@@ -4,9 +4,11 @@ go 1.24.0
 
 require (
 	github.com/dlclark/regexp2 v1.12.0
-	github.com/ingot-agent/sdk v0.2.0
+	github.com/ingot-agent/sdk v0.2.9
 	github.com/sugarme/tokenizer v0.3.0
 )
+
+require github.com/pelletier/go-toml/v2 v2.2.4
 
 require (
 	github.com/emirpasic/gods v1.18.1 // indirect

@@ -62,7 +62,7 @@ func testShell(t *testing.T, cfg Config) tool.Tool {
 
 func testShellRoot(t *testing.T, cfg Config, root string) tool.Tool {
 	t.Helper()
-	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, _, err := New(context.Background(), withState(t, cfg, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,12 +102,12 @@ func TestShellExecReturnsDeterministicEnvelope(t *testing.T) {
 func TestShellEmitsStdoutAndStderrProgressOnly(t *testing.T) {
 	workingDirectory, _ := os.Getwd()
 	consumer := &recordingObservation{}
-	exports, _, err := New(context.Background(), Config{
+	exports, _, err := New(context.Background(), withState(t, Config{
 		Shell: testShellPath(),
 	}, Dependencies{
 		Workspace:   staticResolver{binding: workspace.Binding{Root: workingDirectory}},
 		Observation: ingotabi.Some[observation.Consumer](consumer),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,10 +330,10 @@ func TestEnvironmentKeysAreCaseInsensitiveOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows environment names are case-insensitive")
 	}
-	_, _, err := New(context.Background(), Config{
+	_, _, err := New(context.Background(), withState(t, Config{
 		Shell:       testShellPath(),
 		Environment: map[string]string{"PATH": "one", "Path": "two"},
-	}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}})
+	}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}))
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("case-insensitive duplicate error = %v", err)
 	}
@@ -380,10 +380,10 @@ func TestShellExplicitConfigErrorsDoNotFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		missing += ".exe"
 	}
-	if _, _, err := New(context.Background(), Config{Shell: missing}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}); !errors.Is(err, ErrInvalidConfig) {
+	if _, _, err := New(context.Background(), withState(t, Config{Shell: missing}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}})); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("missing explicit shell error = %v", err)
 	}
-	if _, _, err := New(context.Background(), Config{Shell: "sh"}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}}); !errors.Is(err, ErrInvalidConfig) {
+	if _, _, err := New(context.Background(), withState(t, Config{Shell: "sh"}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: t.TempDir()}}})); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("relative explicit shell error = %v", err)
 	}
 }
@@ -440,7 +440,7 @@ func TestShellResolvesWorkspaceFromInvocationScope(t *testing.T) {
 		"session-b": rootB,
 	}}
 	cfg := Config{Shell: testShellPath()}
-	exports, _, err := New(context.Background(), cfg, Dependencies{Workspace: resolver})
+	exports, _, err := New(context.Background(), withState(t, cfg, Dependencies{Workspace: resolver}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,9 +461,9 @@ func TestShellResolvesWorkspaceFromInvocationScope(t *testing.T) {
 }
 
 func TestShellRejectsUnboundAndUnknownSessionScope(t *testing.T) {
-	exports, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{Shell: testShellPath()}, Dependencies{
 		Workspace: scopeResolver{roots: map[session.ID]string{"session-a": t.TempDir()}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +485,7 @@ func TestShellRejectsUnboundAndUnknownSessionScope(t *testing.T) {
 }
 
 func TestShellNewRejectsMissingWorkspaceResolver(t *testing.T) {
-	if _, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{}); !errors.Is(err, ErrInvalidConfig) {
+	if _, _, err := New(context.Background(), withState(t, Config{Shell: testShellPath()}, Dependencies{})); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("missing resolver error = %v", err)
 	}
 }
@@ -498,9 +498,9 @@ func TestShellNewRejectsMissingWorkspaceResolver(t *testing.T) {
 func TestConcurrentSessionsResolveIndependentWorkspaces(t *testing.T) {
 	rootA := t.TempDir()
 	rootB := t.TempDir()
-	exports, _, err := New(context.Background(), Config{Shell: testShellPath()}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{Shell: testShellPath()}, Dependencies{
 		Workspace: scopeResolver{roots: map[session.ID]string{"session-a": rootA, "session-b": rootB}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,20 +15,20 @@ defineEmits<{ navigation: []; pending: [] }>()
 const runtime = useRuntime()
 const route = useRoute()
 const { t } = useI18n()
-const name = ref('')
+const selectedId = ref('')
 const sessionId = ref('')
 const mode = ref<'form' | 'json'>('form')
 const json = ref('{}')
 const values = ref<Record<string, unknown>>({})
 const busy = ref(false)
 const error = ref('')
-const selected = computed(() => runtime.operations.find(item => item.name === name.value))
+const selected = computed(() => runtime.operations.find(item => item.id === selectedId.value))
 const formSupported = computed(() => selected.value ? supportsForm(selected.value.inputSchema) : false)
 const fields = computed(() => selected.value ? schemaFields(selected.value.inputSchema) : [])
 const calls = computed(() => Object.values(runtime.operationInvocations).slice().reverse())
 const canceling = ref<string[]>([])
-watch(() => runtime.operations, items => { if (!name.value && items.length) name.value = items[0].name }, { immediate: true })
-watch(name, () => {
+watch(() => runtime.operations, items => { if (!selectedId.value && items.length) selectedId.value = items[0].id }, { immediate: true })
+watch(selectedId, () => {
   values.value = {}
   json.value = '{}'
   mode.value = formSupported.value ? 'form' : 'json'
@@ -37,7 +37,7 @@ watch(name, () => {
 watch(() => route.query.invocation, id => {
   if (typeof id === 'string') {
     const invocation = runtime.operationInvocations[id]
-    if (invocation) name.value = invocation.name
+    if (invocation) selectedId.value = invocation.operationId
   }
 }, { immediate: true })
 function setMode(next: 'form' | 'json') {
@@ -60,7 +60,7 @@ async function run() {
     else { parseObject(json.value); input = json.value }
   } catch (cause) { error.value = t(mode.value === 'json' ? 'jsonObject' : errorMessage(cause)); return }
   busy.value = true
-  try { await runtime.invoke(name.value, input, sessionId.value) }
+  try { await runtime.invoke(selectedId.value, input, sessionId.value) }
   catch (cause) { error.value = errorMessage(cause) }
   finally { busy.value = false }
 }
@@ -77,7 +77,7 @@ async function stop(id: string) {
     <div v-else class="operations-grid">
       <section class="operation-form card">
         <label for="operation-name" class="field-label">{{ t('selectOperation') }}</label>
-        <select id="operation-name" v-model="name" class="field mt-2"><option v-for="item in runtime.operations" :key="item.name" :value="item.name">{{ item.name }}</option></select>
+        <select id="operation-name" v-model="selectedId" class="field mt-2"><option v-for="item in runtime.operations" :key="item.id" :value="item.id">{{ item.group ? item.group + " / " : "" }}{{ item.name }}</option></select>
         <template v-if="selected">
           <p class="muted my-5 text-sm leading-relaxed">{{ selected.description }}</p>
           <form @submit.prevent="run">

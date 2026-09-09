@@ -174,9 +174,9 @@ func TestAgentRunsToolLoopAndPersistsExactOrder(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
 	}}
 	tools := &fakeTools{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,9 +210,9 @@ func TestAgentMaterializesOrderedAttachmentsAndRestoresLazily(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("first")}},
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("second")}},
 	}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: assets, Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,9 +313,9 @@ func TestAgentMaterializesToolImageBeforeFollowupAndPersistence(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, ToolCalls: []tool.Call{{ID: "c1", Name: "image", Arguments: json.RawMessage(`{}`)}}}},
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
 	}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &imageTools{value: []byte("tool-image")}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,9 +342,9 @@ func TestAgentMaterializesToolImageBeforeFollowupAndPersistence(t *testing.T) {
 
 func TestAgentAllowsAttachmentOnlyTurn(t *testing.T) {
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("seen")}}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,9 +366,9 @@ func TestAgentValidatesCompleteResponseBeforePersisting(t *testing.T) {
 	t.Parallel()
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleUser, Content: content.FromText("must not render")}}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,12 +402,12 @@ func TestAgentCompactsEveryModelInvocationWithoutReplacingRawMessages(t *testing
 	}}
 	temperature := 0.25
 	maxTokens := 321
-	exports, _, err := New(context.Background(), Config{
+	exports, _, err := New(context.Background(), withState(t, Config{
 		Provider: "provider", Model: "model", Temperature: &temperature, MaxTokens: &maxTokens,
 	}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 		Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,10 +455,10 @@ func TestAgentCompactorErrorStopsModelAndPreservesCommittedUser(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &sequenceModel{}
 	compactor := &recordingCompactor{err: compactErr}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
 		Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -487,10 +487,10 @@ func TestAgentCompactorErrorStopsModelAndPreservesCommittedUser(t *testing.T) {
 
 func TestAgentRejectsTypedNilCompactor(t *testing.T) {
 	var compactor *recordingCompactor
-	_, _, err := New(context.Background(), Config{}, Dependencies{
+	_, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{}}, Assets: newMemoryAssets(),
 		Prompt: passthroughPrompt{}, Compactor: ingotabi.Some[contextwindow.Compactor](compactor),
-	})
+	}))
 	if !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("error=%v", err)
 	}
@@ -500,9 +500,9 @@ func TestAgentRejectsNonFiniteTemperature(t *testing.T) {
 	t.Parallel()
 	for _, temperature := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		temperature := temperature
-		_, _, err := New(context.Background(), Config{Temperature: &temperature}, Dependencies{
+		_, _, err := New(context.Background(), withState(t, Config{Temperature: &temperature}, Dependencies{
 			Model: &sequenceModel{}, Tools: &fakeTools{}, Store: &memoryStore{entries: map[session.ID][]session.Entry{}}, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-		})
+		}))
 		if !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("temperature=%v error=%v", temperature, err)
 		}
@@ -524,7 +524,7 @@ func TestAgentRecoversTrailingToolRoundWithoutRetry(t *testing.T) {
 	}}}
 	models := &sequenceModel{responses: []model.Response{{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("continued")}}}}
 	tools := &fakeTools{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func (m *blockingModel) Complete(ctx context.Context, _ model.Request) (model.Re
 func TestAgentSerializesSameSession(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &blockingModel{entered: make(chan struct{}), release: make(chan struct{})}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}})
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -612,9 +612,9 @@ func TestHistoryReturnsDeepOwnedMessages(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {{
 		Kind: agentMessageKind, Version: agentMessageVersion, Payload: payload,
 	}}}}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: &sequenceModel{}, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,9 +642,9 @@ func TestHistoryReturnsDeepOwnedMessages(t *testing.T) {
 func TestHistoryWaitsForSameSessionTurn(t *testing.T) {
 	store := &memoryStore{entries: map[session.ID][]session.Entry{"s": {}}}
 	models := &blockingModel{entered: make(chan struct{}), release: make(chan struct{})}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -685,9 +685,9 @@ func TestAgentRejectsInterceptorSessionIDRewriteBeforeTerminal(t *testing.T) {
 		turn.SessionID = "rewritten"
 		return next(ctx, turn)
 	})
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: &fakeTools{}, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{}, Interceptors: []agent.Interceptor{rewrite},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -751,9 +751,9 @@ func TestToolInvocationsInheritTurnSessionScope(t *testing.T) {
 		{Message: model.Message{Role: model.RoleAssistant, Content: content.FromText("done")}},
 	}}
 	tools := &scopeRecordingTools{}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{
+	exports, _, err := New(context.Background(), withState(t, Config{}, Dependencies{
 		Model: models, Tools: tools, Store: store, Assets: newMemoryAssets(), Prompt: passthroughPrompt{},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -94,7 +94,6 @@ func (home *Home) LockPath() string    { return filepath.Join(home.Root, "plugin
 func (home *Home) BuilderConfigPath() string {
 	return filepath.Join(home.Root, "builder.toml")
 }
-func (home *Home) ConfigPath() string  { return filepath.Join(home.Root, "config.toml") }
 func (home *Home) CurrentPath() string { return filepath.Join(home.Root, "current") }
 func (home *Home) imageDirectory(imageID string) string {
 	return filepath.Join(home.Root, "images", layout.ImageDirectoryName(imageID, runtime.GOOS))
@@ -156,7 +155,7 @@ func (home *Home) buildUnlocked(ctx context.Context) (*builder.BuildResult, erro
 	if err != nil {
 		return nil, err
 	}
-	return builder.Build(ctx, desired, lock, builder.BuildOptions{Home: home.Root, ConfigPath: home.ConfigPath(), GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
+	return builder.Build(ctx, desired, lock, builder.BuildOptions{Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
 }
 
 func (home *Home) Apply(ctx context.Context, options builder.ResolveOptions) (*builder.BuildResult, error) {
@@ -180,7 +179,7 @@ func (home *Home) Apply(ctx context.Context, options builder.ResolveOptions) (*b
 	if err := atomicWrite(home.LockPath(), lockData, 0o600); err != nil {
 		return nil, err
 	}
-	result, err := builder.Build(ctx, desired, lock, builder.BuildOptions{Home: home.Root, ConfigPath: home.ConfigPath(), GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
+	result, err := builder.Build(ctx, desired, lock, builder.BuildOptions{Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
 	if err != nil {
 		return nil, err
 	}
@@ -295,7 +294,7 @@ func (home *Home) mutateAllowMissing(ctx context.Context, options builder.Resolv
 	if !apply {
 		return nil, nil
 	}
-	result, err := builder.Build(ctx, desired, candidateLock, builder.BuildOptions{Home: home.Root, ConfigPath: home.ConfigPath(), GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
+	result, err := builder.Build(ctx, desired, candidateLock, builder.BuildOptions{Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
 	if err != nil {
 		return nil, err
 	}
@@ -558,7 +557,11 @@ func (home *Home) RunCurrent(ctx context.Context, arguments []string) error {
 	}
 	command := exec.CommandContext(ctx, binary, arguments...)
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
-	command.Env = replaceEnv(os.Environ(), "INGOT_HOME", home.Root)
+	// INGOT_RUNTIME_HOME is the Runtime Home itself, not its state subdirectory:
+	// the runtime resolves its home and then creates <home>/state/<plugin>/.
+	// Pointing it at the ingot home keeps managed state at <ingot home>/state/,
+	// which is the same layout a standalone run produces under <binary>.home.
+	command.Env = replaceEnv(os.Environ(), "INGOT_RUNTIME_HOME", home.Root)
 	if err := command.Run(); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {

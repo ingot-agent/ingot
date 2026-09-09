@@ -34,9 +34,7 @@ type Component struct {
 	ComponentIndex int
 	ImportPath     string
 	PackageName    string
-	ConfigImport   string
 	Package        *packages.Package
-	ConfigType     *types.Named
 	Dependencies   *types.Named
 	Exports        *types.Named
 	DependencyList []*Dependency
@@ -154,13 +152,8 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	graph := &Graph{Components: make([]*Component, len(locations))}
 	for i, location := range locations {
 		componentPackage := byPath[location.importPath]
-		configPackage := byPath[joinImport(location.plugin.ID, location.plugin.RootPackage)]
-		if componentPackage == nil || configPackage == nil {
+		if componentPackage == nil {
 			return nil, &Error{Code: "INGOT-COMPONENT-PACKAGE", Plugin: location.plugin.ID, Actual: location.importPath}
-		}
-		configType, typeErr := namedStruct(configPackage, "Config", "INGOT-CONFIG-CONTRACT")
-		if typeErr != nil {
-			return nil, typeErr
 		}
 		dependencies, typeErr := namedStruct(componentPackage, "Dependencies", "INGOT-COMPONENT-CONTRACT")
 		if typeErr != nil {
@@ -171,14 +164,14 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 			return nil, typeErr
 		}
 		component := &Component{ID: location.plugin.ID + "/" + location.component.Name, PluginID: location.plugin.ID, PluginName: location.plugin.Name, DirectIndex: location.direct, ComponentIndex: location.index,
-			ImportPath: location.importPath, PackageName: componentPackage.Name, ConfigImport: configPackage.PkgPath, Package: componentPackage, ConfigType: configType, Dependencies: dependencies, Exports: exports}
+			ImportPath: location.importPath, PackageName: componentPackage.Name, Package: componentPackage, Dependencies: dependencies, Exports: exports}
 		if err := validateFields(component, dependencies, true, implementationPackages, runtimeModules, hostTypes); err != nil {
 			return nil, err
 		}
 		if err := validateFields(component, exports, false, implementationPackages, runtimeModules, hostTypes); err != nil {
 			return nil, err
 		}
-		if err := validateNew(component, contextType, configType, dependencies, exports, cleanupType); err != nil {
+		if err := validateNew(component, contextType, dependencies, exports, cleanupType); err != nil {
 			return nil, err
 		}
 		graph.Components[i] = component
@@ -392,18 +385,18 @@ func validateCapabilityBase(value types.Type, implementationPackages map[string]
 	return nil
 }
 
-func validateNew(component *Component, contextType, configType, dependencies, exports, cleanupType *types.Named) error {
+func validateNew(component *Component, contextType, dependencies, exports, cleanupType *types.Named) error {
 	object := component.Package.Types.Scope().Lookup("New")
 	function, ok := object.(*types.Func)
 	if !ok || !object.Exported() {
 		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "exported function"}
 	}
 	signature, ok := function.Type().(*types.Signature)
-	if !ok || signature.Variadic() || signature.Params().Len() != 3 || signature.Results().Len() != 3 {
-		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "func(context.Context, Config, Dependencies) (Exports, ingotabi.Cleanup, error)", Actual: types.TypeString(function.Type(), packageQualifier)}
+	if !ok || signature.Variadic() || signature.Params().Len() != 2 || signature.Results().Len() != 3 {
+		return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "func(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error)", Actual: types.TypeString(function.Type(), packageQualifier)}
 	}
-	wants := []types.Type{contextType, configType, dependencies, exports, cleanupType, types.Universe.Lookup("error").Type()}
-	actual := []types.Type{signature.Params().At(0).Type(), signature.Params().At(1).Type(), signature.Params().At(2).Type(), signature.Results().At(0).Type(), signature.Results().At(1).Type(), signature.Results().At(2).Type()}
+	wants := []types.Type{contextType, dependencies, exports, cleanupType, types.Universe.Lookup("error").Type()}
+	actual := []types.Type{signature.Params().At(0).Type(), signature.Params().At(1).Type(), signature.Results().At(0).Type(), signature.Results().At(1).Type(), signature.Results().At(2).Type()}
 	for i := range wants {
 		if !types.Identical(actual[i], wants[i]) {
 			return &Error{Code: "INGOT-COMPONENT-NEW", Plugin: component.ID, Field: "New", Want: "exact Component constructor signature with the ingot ABI Cleanup", Actual: types.TypeString(function.Type(), packageQualifier)}

@@ -3,10 +3,81 @@
 package appbackend
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
+
+// configFileName is the Plugin-owned configuration file inside this Plugin's
+// Runtime state scope. Both app.backend components share one Plugin identity
+// and therefore one scope. The runtime never reads or decodes this file.
+const configFileName = "config.toml"
+
+// LoadConfig reads the Plugin-owned configuration from its Runtime state
+// scope. A missing file is the normal Unconfigured state and yields the
+// zero-value Config so defaults apply; any other read or decode failure is
+// reported instead of silently discarding persisted state.
+func LoadConfig(scope string) (Config, error) {
+	var config Config
+	if scope == "" {
+		return config, nil
+	}
+	data, err := os.ReadFile(filepath.Join(scope, configFileName))
+	if errors.Is(err, os.ErrNotExist) {
+		return config, nil
+	}
+	if err != nil {
+		return config, fmt.Errorf("read plugin config: %w", err)
+	}
+	decoder := toml.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&config); err != nil {
+		return config, fmt.Errorf("decode plugin config: %w", err)
+	}
+	return config, nil
+}
+
+// SaveConfig writes the Plugin-owned configuration atomically into its Runtime
+// state scope, creating the scope when needed.
+func SaveConfig(scope string, config Config) error {
+	if scope == "" {
+		return fmt.Errorf("state scope is required: %w", ErrInvalidConfig)
+	}
+	if err := os.MkdirAll(scope, 0o700); err != nil {
+		return fmt.Errorf("create state scope: %w", err)
+	}
+	data, err := toml.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("encode plugin config: %w", err)
+	}
+	temporary, err := os.CreateTemp(scope, ".config-")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, filepath.Join(scope, configFileName))
+}
 
 const (
 	defaultAddress          = "127.0.0.1:7316"

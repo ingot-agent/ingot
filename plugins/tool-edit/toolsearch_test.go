@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ingot-agent/sdk/workspace"
 )
 
 func TestSearchFindsMatchesInTree(t *testing.T) {
@@ -18,7 +16,7 @@ func TestSearchFindsMatchesInTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, root, "sub/b.txt", "bar hello\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +34,7 @@ func TestSearchFindsMatchesInTree(t *testing.T) {
 func TestSearchDefaultsToWorkspaceRoot(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "needle here\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +52,7 @@ func TestSearchGlobFilters(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.go", "func foo() {}\n")
 	write(t, root, "b.txt", "foo\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +70,7 @@ func TestSearchGlobFilters(t *testing.T) {
 func TestSearchNoMatchesIsBusinessResult(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "nothing here\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +91,7 @@ func TestSearchSkipsHiddenAndBinaryFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "bin.dat"), []byte{0xff, 0x00}, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +109,7 @@ func TestSearchSkipsHiddenAndBinaryFiles(t *testing.T) {
 func TestSearchRejectsTraversalPath(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "x\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +126,7 @@ func TestSearchRejectsTraversalPath(t *testing.T) {
 func TestSearchPathNotDirectoryIsBusinessResult(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", "x\n")
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +142,7 @@ func TestSearchPathNotDirectoryIsBusinessResult(t *testing.T) {
 
 func TestSearchRejectsMissingPattern(t *testing.T) {
 	root := t.TempDir()
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +155,7 @@ func TestSearchRejectsMissingPattern(t *testing.T) {
 
 func TestSearchDefinitionIsStable(t *testing.T) {
 	root := t.TempDir()
-	exports, _, err := New(context.Background(), Config{}, Dependencies{Workspace: staticResolver{binding: workspace.Binding{Root: root}}})
+	exports, err := newTestTools(t, root, Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

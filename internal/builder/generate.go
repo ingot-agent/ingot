@@ -25,10 +25,9 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 		IngotABIModulePath + "/state":      "state",
 	}
 	wiringImports := map[string]string{
-		"context": "context", "bytes": "bytes", "errors": "errors", "fmt": "fmt", "os": "os", "path/filepath": "filepath", "reflect": "reflect",
+		"context": "context", "errors": "errors", "fmt": "fmt", "os": "os", "path/filepath": "filepath", "reflect": "reflect",
 		IngotABIModulePath:                 "ingotabi",
 		IngotABIModulePath + "/invocation": "invocation",
-		RuntimeSupportTOMLModule:           "toml",
 	}
 	aliasByPath[IngotABIModulePath] = "ingotabi"
 	hasValidate := false
@@ -48,10 +47,11 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	}
 	if !hasState {
 		delete(wiringImports, "path/filepath")
+		delete(wiringImports, "os")
 	}
 	paths := []string{}
 	for _, component := range graph.Components {
-		paths = append(paths, component.ImportPath, component.ConfigImport)
+		paths = append(paths, component.ImportPath)
 		for _, dependency := range component.DependencyList {
 			if dependency.WrapperRuntime != "" {
 				wiringImports[dependency.WrapperRuntime] = aliasByPath[dependency.WrapperRuntime]
@@ -84,7 +84,6 @@ func Generate(rootDirectory string, lock *Lock, graph *Graph) error {
 	writeGeneratedHeader(&mainSource, mainImports)
 	writeGeneratedHeader(&wiringSource, wiringImports)
 	writeRuntimeSupport(&mainSource)
-	writeRuntimeConfig(&wiringSource, lock, aliasByPath)
 	writeWiring(&wiringSource, lock, graph, aliasByPath)
 	if err := formatAndWriteGenerated(rootDirectory, "main.go", mainSource.Bytes()); err != nil {
 		return err
@@ -304,19 +303,15 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	home := os.Getenv("INGOT_HOME")
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil { _, _ = fmt.Fprintln(os.Stderr, err); os.Exit(1) }
-		home = filepath.Join(userHome, ".ingot")
+	home, err := resolveRuntimeHome()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	configPath := os.Getenv("INGOT_CONFIG")
-	if configPath == "" { configPath = filepath.Join(home, "config.toml") }
-	stateRoot := os.Getenv("INGOT_STATE_ROOT")
-	if stateRoot == "" { stateRoot = filepath.Join(home, "state") }
-	absoluteStateRoot, err := filepath.Abs(stateRoot)
-	if err != nil { _, _ = fmt.Fprintln(os.Stderr, fmt.Errorf("resolve state root: %w", err)); os.Exit(1) }
-	stateRoot = absoluteStateRoot
+	if err := ensureWritableDirectory(home); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	processContext, stop := signal.NotifyContext(context.Background(), processSignals()...)
 	defer stop()
 	runtimeContext, cancelRuntime := context.WithCancel(processContext)
@@ -328,55 +323,66 @@ func main() {
 		mode = invocation.ModeCheck
 	}
 	process := newProcessControl(arguments, mode, cancelRuntime)
-	if err := run(runtimeContext, configPath, stateRoot, process); err != nil {
+	if err := run(runtimeContext, home, process); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-`)
-}
-
-func writeRuntimeConfig(source *bytes.Buffer, lock *Lock, aliases map[string]string) {
-	source.WriteString("type decodedConfigs struct {\n")
-	for i, plugin := range lock.Plugins {
-		_, _ = fmt.Fprintf(source, "\tPlugin%d %s.Config\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)])
+// resolveRuntimeHome implements the single Runtime Home contract: an explicit
+// INGOT_RUNTIME_HOME override, otherwise <absolute executable path>.home.
+// The executable path is the actual running file, never the working
+// directory or a PATH lookup, so two differently named copies of the same
+// binary get two isolated Runtime Homes by default.
+func resolveRuntimeHome() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("INGOT_RUNTIME_HOME")); override != "" {
+		absolute, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("resolve INGOT_RUNTIME_HOME %q: %w", override, err)
+		}
+		return filepath.Clean(absolute), nil
 	}
-	source.WriteString("}\n\nfunc decodeConfigs(path string) (decodedConfigs, error) {\n\tvar result decodedConfigs\n\tdata, err := os.ReadFile(path)\n\tif err != nil { return result, fmt.Errorf(\"read runtime config: %w\", err) }\n\tdecoder := toml.NewDecoder(bytes.NewReader(data))\n\tdecoder.DisallowUnknownFields()\n\tvar document struct {\n\t\tPlugins map[string]map[string]any `toml:\"plugins\"`\n\t}\n\tif err := decoder.Decode(&document); err != nil { return result, fmt.Errorf(\"parse runtime config: %w\", err) }\n")
-	for i, plugin := range lock.Plugins {
-		_, _ = fmt.Fprintf(source, "\ttable%d, err := resolveConfigTable(document.Plugins, %q, %q)\n", i, plugin.ID, plugin.Name)
-		_, _ = fmt.Fprintf(source, "\tif err != nil { return result, fmt.Errorf(\"resolve config for plugin %s: %%w\", err) }\n", plugin.ID)
-		_, _ = fmt.Fprintf(source, "\tresult.Plugin%d, err = strictDecodeConfig[%s.Config](table%d)\n", i, aliases[joinImport(plugin.ID, plugin.RootPackage)], i)
-		_, _ = fmt.Fprintf(source, "\tif err != nil { return result, fmt.Errorf(%q, err) }\n", "decode config for plugin "+plugin.ID+": %w")
-	}
-	source.WriteString("\treturn result, nil\n}\n\n")
-	source.WriteString(`func resolveConfigTable(tables map[string]map[string]any, id, name string) (map[string]any, error) {
-	byID, hasID := tables[id]
-	byName, hasName := tables[name]
-	if hasID && hasName {
-		return nil, fmt.Errorf("plugin %s (%s): present under both canonical id and short name", id, name)
-	}
-	if !hasID && !hasName {
-		return nil, fmt.Errorf("plugin %s (%s): missing config table", id, name)
-	}
-	if hasID {
-		return byID, nil
-	}
-	return byName, nil
-}
-
-func strictDecodeConfig[T any](table map[string]any) (T, error) {
-	var value T
-	encoded, err := toml.Marshal(table)
+	executable, err := os.Executable()
 	if err != nil {
-		return value, fmt.Errorf("encode plugin config table: %w", err)
+		return "", fmt.Errorf("resolve runtime executable path: %w", err)
 	}
-	decoder := toml.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&value); err != nil {
-		return value, fmt.Errorf("decode plugin config: %w", err)
+	absolute, err := filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve runtime executable path %q: %w", executable, err)
 	}
-	return value, nil
+	return filepath.Clean(absolute) + ".home", nil
+}
+
+// ensureWritableDirectory creates home when missing and proves it is writable
+// with a real probe write. os.MkdirAll returns nil for an existing read-only
+// directory, so it cannot be the authoritative check. Failure is explicit:
+// the runtime never silently falls back to a temporary location, because that
+// would make users believe their state is persisted.
+func ensureWritableDirectory(home string) error {
+	created := false
+	if _, err := os.Stat(home); os.IsNotExist(err) {
+		created = true
+	} else if err != nil {
+		return fmt.Errorf("runtime home %s is not usable: %w\nSet INGOT_RUNTIME_HOME to use another location.", home, err)
+	}
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return fmt.Errorf("create runtime home %s: %w\nSet INGOT_RUNTIME_HOME to use another location.", home, err)
+	}
+	probe, err := os.CreateTemp(home, ".ingot-write-probe-")
+	if err != nil {
+		return fmt.Errorf("runtime home %s is not writable: %w\nSet INGOT_RUNTIME_HOME to use another location.", home, err)
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		return fmt.Errorf("runtime home %s is not writable: %w\nSet INGOT_RUNTIME_HOME to use another location.", home, err)
+	}
+	if err := os.Remove(probePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("runtime home %s is not writable: %w\nSet INGOT_RUNTIME_HOME to use another location.", home, err)
+	}
+	if created {
+		_, _ = fmt.Fprintf(os.Stderr, "Runtime home initialized at %s\nSet INGOT_RUNTIME_HOME to use another location.\nAdd the executable directory to PATH to run it from anywhere.\n", home)
+	}
+	return nil
 }
 
 `)
@@ -387,12 +393,8 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 	for i, component := range graph.Components {
 		componentNumber[component] = i
 	}
-	pluginNumber := map[string]int{}
-	for i, plugin := range lock.Plugins {
-		pluginNumber[plugin.ID] = i
-	}
-	source.WriteString("func run(ctx context.Context, configPath, stateRoot string, process *processControl) error {\n")
-	source.WriteString("\tconfigs, err := decodeConfigs(configPath)\n\tif err != nil { return err }\n\tcleanups := []ingotabi.Cleanup{}\n")
+	source.WriteString("func run(ctx context.Context, home string, process *processControl) error {\n")
+	source.WriteString("\tcleanups := []ingotabi.Cleanup{}\n")
 	for _, component := range graph.CreationOrder {
 		number := componentNumber[component]
 		alias := aliases[component.ImportPath]
@@ -404,8 +406,11 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 			}
 		}
 		if hasState {
-			_, _ = fmt.Fprintf(source, "\tstateDir%d := filepath.Join(stateRoot, %q)\n", number, component.PluginID)
-			_, _ = fmt.Fprintf(source, "\tif err := os.MkdirAll(stateDir%d, 0o700); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number)
+			// The plugin scope spelling is a persisted on-disk contract:
+			// <runtime home>/state/<plugin scope>/. It uses the Plugin's
+			// manifest short name so the directory is stable and readable.
+			_, _ = fmt.Fprintf(source, "\tstateDir%d := filepath.Join(home, \"state\", %q)\n", number, component.PluginName)
+			_, _ = fmt.Fprintf(source, "\tif err := os.MkdirAll(stateDir%d, 0o700); err != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(\"create plugin state scope %%s: %%w\", stateDir%d, err)) }\n", number, number)
 		}
 		_, _ = fmt.Fprintf(source, "\tdeps%d := %s.Dependencies{\n", number, alias)
 		for _, dependency := range component.DependencyList {
@@ -432,7 +437,9 @@ func writeWiring(source *bytes.Buffer, lock *Lock, graph *Graph, aliases map[str
 				_, _ = fmt.Fprintf(source, "\tif err := validateRequired(reflect.ValueOf(deps%d.%s), %q); err != nil { return cleanupAll(ctx, cleanups, err) }\n", number, dependency.Name, path)
 			}
 		}
-		_, _ = fmt.Fprintf(source, "\texports%d, cleanup%d, constructErr%d := %s.New(ctx, configs.Plugin%d, deps%d)\n", number, number, number, alias, pluginNumber[component.PluginID], number)
+		// No Host-decoded configuration is injected: every Plugin loads its
+		// own state from deps.State and must tolerate being Unconfigured.
+		_, _ = fmt.Fprintf(source, "\texports%d, cleanup%d, constructErr%d := %s.New(ctx, deps%d)\n", number, number, number, alias, number)
 		_, _ = fmt.Fprintf(source, "\t_ = exports%d\n", number)
 		_, _ = fmt.Fprintf(source, "\tif cleanup%d != nil { cleanups = append(cleanups, cleanup%d) }\n", number, number)
 		_, _ = fmt.Fprintf(source, "\tif constructErr%d != nil { return cleanupAll(ctx, cleanups, fmt.Errorf(%q, constructErr%d)) }\n", number, "construct "+component.ID+": %w", number)
