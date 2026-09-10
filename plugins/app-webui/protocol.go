@@ -30,11 +30,13 @@ type WorkspaceBrowseEntry struct {
 
 // WorkspaceBrowse is the response of the host directory picker. Path is the
 // absolute directory being listed; Parent is its parent directory (empty at a
-// filesystem root); Directories holds the selectable subdirectories in sorted
-// order.
+// filesystem root); Roots contains other selectable filesystem roots when the
+// current directory is a root; Directories holds the selectable subdirectories
+// in sorted order.
 type WorkspaceBrowse struct {
 	Path        string                 `json:"path"`
 	Parent      string                 `json:"parent,omitempty"`
+	Roots       []WorkspaceBrowseEntry `json:"roots,omitempty"`
 	Directories []WorkspaceBrowseEntry `json:"directories"`
 }
 

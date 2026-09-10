@@ -1,18 +1,19 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowUp, Folder, FolderOpen, LoaderCircle } from 'lucide-vue-next'
+import { ArrowUp, Folder, FolderOpen, HardDrive, LoaderCircle } from 'lucide-vue-next'
 import { errorMessage, request } from '../api'
 import Overlay from './Overlay.vue'
 
 interface BrowseEntry { name: string; path: string }
-interface BrowseResult { path: string; parent?: string; directories: BrowseEntry[] }
+interface BrowseResult { path: string; parent?: string; roots?: BrowseEntry[]; directories: BrowseEntry[] }
 
 const props = defineProps<{ open: boolean; initialPath?: string }>()
 const emit = defineEmits<{ 'update:open': [value: boolean]; select: [path: string] }>()
 const { t } = useI18n()
 const current = ref('')
 const parent = ref('')
+const roots = ref<BrowseEntry[]>([])
 const directories = ref<BrowseEntry[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -25,6 +26,7 @@ async function load(path?: string) {
     const result = await request<BrowseResult>('/workspace/browse' + query)
     current.value = result.path
     parent.value = result.parent || ''
+    roots.value = result.roots || []
     directories.value = result.directories || []
   } catch (cause) { error.value = errorMessage(cause) } finally { loading.value = false }
 }
@@ -52,6 +54,12 @@ watch(() => props.open, open => { if (open) void load(props.initialPath || undef
               <span>..</span>
             </button>
           </li>
+          <li v-for="root in roots" :key="root.path">
+            <button type="button" class="directory-picker-row" @click="enter(root.path)">
+              <HardDrive :size="16" class="shrink-0" />
+              <span class="truncate">{{ root.name }}</span>
+            </button>
+          </li>
           <li v-for="entry in directories" :key="entry.path">
             <button type="button" class="directory-picker-row" @click="enter(entry.path)">
               <Folder :size="16" class="shrink-0" />
@@ -59,7 +67,7 @@ watch(() => props.open, open => { if (open) void load(props.initialPath || undef
             </button>
           </li>
         </ul>
-        <p v-if="!directories.length" class="directory-picker-empty muted text-sm">{{ t('workspaceNoSubdirectories') }}</p>
+        <p v-if="!roots.length && !directories.length" class="directory-picker-empty muted text-sm">{{ t('workspaceNoSubdirectories') }}</p>
       </template>
     </div>
     <template #footer>

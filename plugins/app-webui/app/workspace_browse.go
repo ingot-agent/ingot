@@ -38,6 +38,8 @@ func (a *application) handleBrowseWorkspace(w http.ResponseWriter, r *http.Reque
 	parent := filepath.Dir(clean)
 	if parent != clean {
 		result.Parent = parent
+	} else {
+		result.Roots = workspaceRootEntries(clean)
 	}
 	for _, entry := range entries {
 		// Only plain directories are offered so the picker cannot be used to
