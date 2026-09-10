@@ -364,11 +364,12 @@ func TestSessionControllerListsAndFindsBeyondFirstPage(t *testing.T) {
 func TestSessionHTTPAndBootstrap(t *testing.T) {
 	a := testApplication(t)
 	handler := a.routes()
+	workspaceRoot := t.TempDir()
 	for _, test := range []struct {
 		method, path, body string
 		status             int
 	}{
-		{http.MethodPost, "/api/sessions", `{"title":"first","workspace":"/tmp/ws"}`, http.StatusCreated},
+		{http.MethodPost, "/api/sessions", `{"title":"first","workspace":` + strconv.Quote(workspaceRoot) + `}`, http.StatusCreated},
 		{http.MethodPatch, "/api/sessions/session-1", `{"title":"renamed"}`, http.StatusOK},
 		{http.MethodGet, "/api/sessions/session-1", "", http.StatusOK},
 		{http.MethodGet, "/api/sessions/session-1/history", "", http.StatusOK},
@@ -454,7 +455,7 @@ func (r runtimeWithEvents) Events() appbackend.EventHub { return r.events }
 
 func TestConcurrentRenamesKeepEventsInMutationOrder(t *testing.T) {
 	a := testApplication(t)
-	if _, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: "/tmp/ws"}); err != nil {
+	if _, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: t.TempDir()}); err != nil {
 		t.Fatal(err)
 	}
 	hub := &gatedSessionHub{EventHub: a.backend.Events(), entered: make(chan struct{}), release: make(chan struct{})}

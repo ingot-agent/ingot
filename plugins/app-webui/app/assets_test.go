@@ -126,7 +126,7 @@ func TestAttachmentOnlyTurnUsesAssetReferences(t *testing.T) {
 
 func TestSessionLifecycleHTTPDelegatesMetadata(t *testing.T) {
 	a := testApplication(t)
-	item, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: "/tmp/ws"})
+	item, err := a.sessions.Create(context.Background(), "original", workspace.Binding{Root: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
