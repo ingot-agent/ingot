@@ -299,15 +299,14 @@ See the [Usage Guide](./docs/USAGE.md) or
 - [Contributing guide](./CONTRIBUTING.md) · [贡献指南](./docs/CONTRIBUTING.zh.md)
 - [Usage Guide](./docs/USAGE.md) · [使用说明](./docs/USAGE.zh.md)
 - [Architecture design v0.3](./docs/ingot_架构设计_v0.3.md) (Chinese)
+- [M2 Image / Runtime / Process design](./docs/ingot_M2_image_runtime_process_设计方案.md) (Chinese)
 - [M0 architecture freeze ADRs: Image identity, Runtime Home, Plugin Configuration, Operation identity, Collection, Runtime environment](./docs/adr/) (Chinese)
 - [Plugin manifest design](./docs/ingot.plugin.toml_设计方案_v0.1.md) (Chinese)
 - [`plugins.toml` design](./docs/ingot_plugins.toml_v0.1_设计方案.md) (Chinese)
 - [`builder.toml` design](./docs/ingot_builder.toml_v0.1_设计方案.md) (Chinese)
 - [`plugins.lock` design](./docs/ingot_plugins.lock_v0.1_设计方案.md) (Chinese)
 - [SDK design v0.1](./docs/ingot_SDK_v0.1_设计方案.md) (Chinese)
-- [SDK multimodal v0.2 migration](../ingot_SDK_多模态协议迁移方案.md) (Chinese)
 - [ingot ABI design v0.1](./docs/ingot_ABI_v0.1_设计提案.md) (Chinese)
-- [`ingot init` design](./docs/ingot_init_设计方案_v0.1.md) (Chinese)
 
 ## Repository layout
 
