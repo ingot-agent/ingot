@@ -321,28 +321,12 @@ setup.*
 
 ### Runtime Management Channel
 
-这一阶段建议同时增加一个不依赖 Application Plugin 的本地 Runtime control channel。
+M1 不实现 Runtime management channel。Standalone Runtime 只处理系统 signal、Plugin
+发起的 lifecycle shutdown 和 cleanup，保持 generated binary 轻量。
 
-用途：
-
-```text
-list operations
-invoke operation
-health/status
-shutdown
-runtime metadata
-```
-
-Unix 可以使用 local socket，Windows 使用相应本地 IPC。
-
-这样：
-
-```text
-Ingot CLI
-Ingot Manager
-```
-
-都不需要依赖 `app-webui` 才能管理 Runtime。
+M2 由 Runtime 外部的 per-process supervisor 提供 metadata 与 graceful shutdown；M5 再在
+独立协议中增加 Operation invocation 和 Application health。两者都不依赖 `app-webui`，也
+不把管理协议注入 generated Runtime。
 
 ### M1 Done
 
@@ -371,7 +355,20 @@ chmod +x
 
 完成 M1 后，把现在的单 `current` 模型升级成正式 Image / Runtime 模型。
 
-### Image Registry
+详细持久格式、CLI、breaking transition、supervisor 与 GC 契约见
+[M2 Image / Runtime / Process 设计方案](./docs/ingot_M2_image_runtime_process_设计方案.md)。
+
+### Build Recipe 与 Named Images
+
+项目目录允许存在多套 recipe/lock：
+
+```text
+plugins.toml       + plugins.lock
+coding-agent.toml  + coding-agent.lock
+```
+
+`ingot build` 默认读取当前目录的 `plugins.toml`，也可以通过 `--use` 选择其他 recipe。
+Ingot Home 不提供隐式 recipe fallback。
 
 Ingot Home 维护 immutable image store：
 
@@ -383,13 +380,15 @@ Ingot Home 维护 immutable image store：
       manifest.json
 ```
 
-再增加 Image catalog：
+再增加 Docker-like mutable tag catalog：
 
 ```text
 coding-agent
   1.3.0 -> sha256:A
   1.4.0 -> sha256:B
 ```
+
+Runtime 创建时将 tag 解析为 concrete digest；后续移动 tag 不影响已有 Runtime 或 Process。
 
 ### Runtime Registry
 
@@ -416,8 +415,8 @@ coding-agent
 例如：
 
 ```text
-work/image = coding-agent:1.4.0
-personal/image = coding-agent:1.4.0
+work desired image = sha256:A      # resolved from coding-agent:1.4.0
+personal desired image = sha256:A
 ```
 
 两个 Runtime 共享 Image binary，但 state 完全独立。
@@ -458,18 +457,21 @@ Runtime Home 保持不变。
 
 ### Process Model
 
-正式增加 Process/Instance registry：
+正式增加 supervisor-owned Process registry：
 
 ```text
 runtime
-image
-pid
+image digest
+process id
+supervisor/runtime pid + birth identity
 started_at
-command
-health
-endpoint
+argv
 exit_status
 ```
+
+Generated Runtime 保持轻量，只负责 Runtime Home、writer lock、signal、Component Graph 和
+cleanup。前台 CLI 或 detached `ingot supervise` 负责 process metadata、日志、shutdown
+control 与 exit status；M2 不伪造 Application readiness/health。
 
 支持：
 
@@ -498,8 +500,9 @@ Image GC 必须根据引用关系计算：
 
 ```text
 all Runtime image refs
-running Processes
+managed/orphaned Processes
 rollback refs
+tagged images
 pinned images
 ```
 
@@ -514,7 +517,8 @@ pinned images
 - Runtime state 完全隔离；
 - Image upgrade 不丢 Runtime state；
 - rollback 不需要复制 Runtime Home；
-- standalone binary 与 Ingot managed Runtime 使用同一套 Runtime Home contract。
+- standalone binary 与 managed Runtime 共享 Runtime Home/writer lock/lifecycle contract；
+- generated Runtime 不包含 Process metadata、control server 或 supervisor protocol。
 
 ---
 

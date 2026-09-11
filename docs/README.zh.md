@@ -182,15 +182,14 @@ plugin      add | remove | update | reorder | list | inspect
 - [Contributing guide](../CONTRIBUTING.md) · [贡献指南](./CONTRIBUTING.zh.md)
 - [Usage Guide](./USAGE.md) · [使用说明](./USAGE.zh.md)
 - [ingot 架构设计 v0.3](./ingot_架构设计_v0.3.md)
+- [M2 Image / Runtime / Process 设计方案](./ingot_M2_image_runtime_process_设计方案.md)
 - [M0 架构冻结 ADR：Image 身份 / Runtime Home / Plugin Configuration / Operation 身份 / Collection / Runtime 环境变量](./adr/)
 - [Plugin Manifest 设计](./ingot.plugin.toml_设计方案_v0.1.md)
 - [`plugins.toml` 设计](./ingot_plugins.toml_v0.1_设计方案.md)
 - [`builder.toml` 设计](./ingot_builder.toml_v0.1_设计方案.md)
 - [`plugins.lock` 设计](./ingot_plugins.lock_v0.1_设计方案.md)
 - [SDK 设计 v0.1](./ingot_SDK_v0.1_设计方案.md)
-- [SDK 多模态 v0.2 迁移方案](../../ingot_SDK_多模态协议迁移方案.md)
 - [ingot ABI 设计 v0.1](./ingot_ABI_v0.1_设计提案.md)
-- [`ingot init` 设计](./ingot_init_设计方案_v0.1.md)
 
 ## 仓库结构
 
