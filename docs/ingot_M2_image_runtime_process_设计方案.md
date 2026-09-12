@@ -152,8 +152,10 @@ flowchart LR
     RuntimeB --> StateB["personal/state"]
 ```
 
-Recipe 和 lock 位于项目工作目录；Image Store、Tag Catalog、Runtime Registry 和 Process
-observations 位于 Ingot Home。两侧具有独立的所有权和锁边界。
+用户拥有的 Recipe 和 lock 位于项目工作目录；安装与 bootstrap 使用的官方 Profile recipe
+位于 Ingot Home 的 `profiles/`，并由 Ingot 管理。Image Store、Tag Catalog、Runtime
+Registry 和 Process observations 同样位于 Ingot Home。项目文件与 Home 具有独立的所有权
+和锁边界。
 
 ### 5.1 Docker-like 心智模型
 
@@ -201,6 +203,9 @@ M2 的 managed Home 只保存机器级 Builder 配置、缓存、Image 和 Runti
   home.json
   builder.toml
   bundled-plugins/
+  profiles/
+    <profile>.toml
+    <profile>.lock
   cache/
     gomod/
   images/
@@ -230,6 +235,8 @@ M2 的 managed Home 只保存机器级 Builder 配置、缓存、Image 和 Runti
   `images/catalog.json`，缺失时视为损坏，不得静默重建空 catalog；
 - `images/<digest>/` 在成功提交后不可修改；
 - `runtimes/<name>/` 自身就是 ADR 0002 定义的 Runtime Home；
+- `profiles/<name>.toml` 是从官方 Profile 与 managed bundle 生成的派生 recipe，`init` 可在
+  内容变化时重写；用户项目 recipe 不得放在这里；
 - Runtime 进程只知道自己的 Runtime Home，不读取 `home.json`、catalog、process metadata
   或 Builder workspace；
 - `run/` 是 Host-owned ephemeral/observability state；Plugin 不得读取或写入；
@@ -243,6 +250,7 @@ M2 的 managed Home 只保存机器级 Builder 配置、缓存、Image 和 Runti
 | Path | Unix mode | 说明 |
 |---|---:|---|
 | 新建 project lock | `0644` | 可提交的 resolved build facts；遵守用户 umask |
+| managed Profile recipe | `0600` | Home-owned 派生输入；由 `init` 维护 |
 | project lock writer file | `0600` | 同目录临时 coordination，不进入版本控制 |
 | managed Home、`images/`、`runtimes/`、Runtime Home、`run/`、`logs/` | `0700` | 不向其他本地用户开放管理面与日志 |
 | `home.json`、`images/catalog.json`、`runtime.json` | `0600` | Host-owned 权威 metadata |
@@ -453,6 +461,10 @@ Recipe 发现顺序固定为：
 - 不复制或改写被选择的 recipe；
 - 不读取或覆盖 Home 中的任何隐式 recipe/lock；
 - `--use -` 不在 M2 支持，避免 stdin recipe 无法定义稳定的相对路径基准。
+
+`profiles/<name>.toml` 不参与默认发现；构建 managed Profile 时必须显式传入
+`--use <home>/profiles/<name>.toml`。因此项目命令不会因为 Home 中存在 Profile recipe 而
+改变含义。
 
 Lock 发现顺序固定为：
 
@@ -1202,19 +1214,25 @@ M2 CLI 打开 Home 时必须先读取 `home.json`：
 ```text
 mv ~/.ingot ~/.ingot.pre-m2
 ingot init
-ingot build --use ./coding-agent.toml --tag acme/coding-agent:1.0.0
+ingot project init . --profile default
+ingot build --tag acme/coding-agent:1.0.0
 ingot run --name work --detach acme/coding-agent:1.0.0 -- web
 ```
 
-`ingot init` 有两个独立且幂等的效果：初始化/验证 schema v2 Home，以及在当前工作目录
-缺少 `plugins.toml` 时写入所选 profile recipe。它不覆盖已有 recipe，也不预先创建 lock；
-首次 resolve/build 生成 `plugins.lock`。Fresh init 不自动创建 Runtime。
+`ingot init` 只初始化/验证 schema v2 Home、物化官方 Bundle，并在
+`<home>/profiles/<profile>.toml` 维护所选 managed Profile recipe。它不读取或写入当前工作
+目录，也不预先创建 lock；首次显式构建该 Profile 时生成相邻 `.lock`。Fresh init 不自动
+创建 Runtime。
+
+`ingot project init <directory> [--profile <name>] [--force]` 是创建项目 Recipe 的唯一初始化
+入口。目录必须显式给出；默认在已有 `plugins.toml` 时失败，只有 `--force` 才覆盖。生成的
+Recipe 属于用户项目，后续 `init` 和 `bundle update` 不得修改它。
 
 不需要保留旧数据时的标准新用户流程为：
 
 ```text
 ingot init
-ingot build --tag acme/coding-agent:1.0.0
+ingot build --use ~/.ingot/profiles/default.toml --tag acme/coding-agent:1.0.0
 ingot runtime create work --image acme/coding-agent:1.0.0 -- web
 ingot runtime start work
 ```
@@ -1225,6 +1243,7 @@ ingot runtime start work
 
 ```text
 init
+project init <directory> [--profile <name>] [--force]
 resolve [--use <recipe.toml>] [--lock <recipe.lock>]
 build [--use <recipe.toml>] [--lock <recipe.lock>] [--locked] [--tag <name>:<tag>]
 status
@@ -1456,6 +1475,8 @@ source 只增加跨平台 writer lock，并继续使用现有 signal、cleanup �
 ### 23.5 Build Recipe 与 Breaking Transition
 
 - 无 `--use` 时只读取 cwd `plugins.toml`；缺失时不向父目录或 Home fallback；
+- `init` 不写 cwd；`project init <directory>` 才显式创建项目 `plugins.toml`；
+- managed Profile recipe 位于 Home `profiles/`，构建时必须通过 `--use` 显式选择；
 - `build --use` 的 path 以 CLI cwd 解析，Plugin local path 以 recipe 目录解析；
 - 默认 lock 与 recipe 同目录同 basename，`--lock` 可以覆盖；
 - recipe path、comments 和 formatting 变化不改变 identity；semantic desired 变化会改变 identity；

@@ -110,19 +110,23 @@ go build -o ingot ./cmd/ingot
 # 2. Initialize a home with the official plugin set
 ./ingot init
 
-# 3. Compose an image
-./ingot apply
+# 3. Build and name the managed default profile
+./ingot build --use ~/.ingot/profiles/default.toml \
+  --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
 
-# 4. Start the browser workspace
-./ingot web        # then open http://127.0.0.1:7316/
+# 4. Create and start an isolated Runtime
+./ingot runtime create default --image local/ingot:default -- web
+./ingot runtime start default   # then open http://127.0.0.1:7316/
 ```
 
 Plugins start Unconfigured and own their configuration. Set the model provider
 through the `app.backend.config` operation (or by editing the plugin's own
 `state/` file) once the runtime is running.
 
-`ingot init` materializes the official plugins under `bundled-plugins/` and
-writes `builder.toml` and `plugins.toml`. Pass
+`ingot init` materializes the official plugins under `bundled-plugins/`, writes
+`builder.toml`, and maintains the selected recipe under `profiles/` in the
+managed Home. It never writes to the current directory. Use
+`ingot project init .` when you explicitly want a project-owned `plugins.toml`. Pass
 `--profile minimal` for the smallest runnable graph (terminal CLI, no tools).
 See the [Usage Guide](./docs/USAGE.md) for installation options and the full
 workflow.
@@ -233,11 +237,11 @@ To add or replace a plugin:
 ingot plugin add github.com/example/my-plugin@v1.2.3
 ingot plugin add --path ../my-local-plugin
 ingot plugin remove tool.ask
-ingot apply
+ingot build --tag acme/agent:dev
 ```
 
 If the new composition has a missing, duplicate, or cyclic capability, the
-build fails before it can become the active image.
+build fails before an Image is committed.
 
 ## Build guarantees
 
@@ -254,23 +258,26 @@ build fails before it can become the active image.
   inputs; `ArtifactDigest` identifies the final executable bytes.
 - **Reproducibility checks** — rebuilding an existing `ImageID` must reproduce
   its artifact digest instead of silently replacing different bytes.
-- **Transactional activation** — `apply` resolves, builds, validates, and then
-  switches `current` atomically. Failed builds never replace the running image.
+- **Explicit deployment** — mutable tags name immutable target variants;
+  Runtimes resolve them to concrete digests and switch desired Images atomically
+  without changing a live Process.
 
 ## The ingot home
 
-Everything lives in `~/.ingot` by default; use `--home PATH` to select another
-location.
+Managed machine state lives in `~/.ingot` by default; project recipes remain in
+the project directory. Use `--home PATH` to select another managed Home.
 
 | Path | Role |
 |---|---|
 | `builder.toml` | Builder configuration (no SDK list; the ingot ABI is fixed). |
-| `plugins.toml` | The desired plugin composition. |
-| `plugins.lock` | Exact resolution, source hashes, module graph, and build flags. |
-| `state/<plugin>/` | Plugin-owned persistent configuration and data. |
+| `profiles/<name>.toml` | Ingot-managed recipe for an official profile. |
+| `profiles/<name>.lock` | Resolution lock generated when that managed profile is built. |
+| `<project>/plugins.toml` | The desired plugin composition. |
+| `<project>/plugins.lock` | Target-neutral resolution, source hashes, and module graph. |
 | `bundled-plugins/` | Materialized sources for the official plugin set. |
-| `current` | Atomic pointer to the active image. |
-| `images/<ImageID>/` | Immutable runtime executable and `manifest.json`. |
+| `images/catalog.json` | Mutable tags and pins. |
+| `images/<ImageID>/` | Immutable runtime executable and manifest v3. |
+| `runtimes/<name>/state/<plugin>/` | Runtime-isolated Plugin state. |
 
 ## Commands at a glance
 
@@ -278,16 +285,18 @@ location.
 ingot [--home PATH] <command>
 
 init        Initialize a home with an official plugin profile
+project     Explicitly initialize a project recipe with `project init <dir>`
 bundle      Check or update the official plugin bundle
 resolve     Resolve plugins.toml and refresh plugins.lock
-build       Build the locked composition without activating it
-apply       Resolve + build + atomically activate
-status      Show desired, locked, built, and current state as JSON
+build       Resolve/build a content-addressed Image, optionally with --tag
+image       list | inspect | verify | tag | import | export | pin | remove
+runtime     create | inspect | switch | rollback | run | start | stop | logs
+run         Create and start a named Runtime
+ps / stop   Observe or gracefully stop managed Processes
+status      Show project desired, locked, and built state as JSON
 inspect     Inspect the environment or one plugin as JSON
-rollback    Activate the previous image
-gc          Remove old images while preserving rollback safety
+gc          Sweep Images using tag, pin, Runtime, and Process roots
 plugin      add | remove | update | reorder | list | inspect
-<other>     Dispatch to the active image, for example ingot web
 ```
 
 See the [Usage Guide](./docs/USAGE.md) or
@@ -312,8 +321,11 @@ See the [Usage Guide](./docs/USAGE.md) or
 
 - `cmd/ingot` — CLI entry point.
 - `internal/cli` — command parsing and user-facing output.
-- `internal/home` — desired/locked/current state, plugin mutations, image
-  switching, rollback, GC, transactions, runtime dispatch, and initialization.
+- `internal/home` — schema v2 Home facade, project mutations, Image GC, and
+  Runtime/Process coordination.
+- `internal/image` — manifest v3, catalog, references, verification, and bundles.
+- `internal/managedruntime` — persistent Runtime registry and bindings.
+- `internal/process` — per-Process supervision, control, reconciliation, and logs.
 - `internal/bundle` — official plugin profiles and source materialization.
 - `internal/builder` — resolution, type analysis, component graph, code
   generation, reproducible build, and image validation.

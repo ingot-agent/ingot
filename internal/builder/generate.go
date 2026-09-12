@@ -105,7 +105,72 @@ func processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIG
 	if err := formatAndWriteGenerated(rootDirectory, "signals_nonwindows_gen.go", []byte(buildTags)); err != nil {
 		return err
 	}
-	return formatAndWriteGenerated(rootDirectory, "signals_windows_gen.go", []byte("//go:build windows\n\npackage main\n\nimport \"os\"\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt} }\n"))
+	if err := formatAndWriteGenerated(rootDirectory, "signals_windows_gen.go", []byte("//go:build windows\n\npackage main\n\nimport (\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIGBREAK} }\n")); err != nil {
+		return err
+	}
+	writerLockUnix := `//go:build !windows
+
+package main
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
+)
+
+func acquireRuntimeWriterLock(home string) (func(), error) {
+	runDir := filepath.Join(home, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil { return nil, err }
+	file, err := os.OpenFile(filepath.Join(runDir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil { return nil, err }
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) { return nil, fmt.Errorf("runtime home is already in use by another writer") }
+		return nil, err
+	}
+	return func(){ _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
+}
+`
+	if err := formatAndWriteGenerated(rootDirectory, "writer_lock_nonwindows_gen.go", []byte(writerLockUnix)); err != nil {
+		return err
+	}
+	writerLockWindows := `//go:build windows
+
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"syscall"
+	"unsafe"
+)
+
+var (
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	lockFileEx = kernel32.NewProc("LockFileEx")
+	unlockFileEx = kernel32.NewProc("UnlockFileEx")
+)
+
+const (
+	lockfileExclusiveLock = 0x00000002
+	lockfileFailImmediately = 0x00000001
+)
+
+func acquireRuntimeWriterLock(home string) (func(), error) {
+	runDir := filepath.Join(home, "run")
+	if err := os.MkdirAll(runDir, 0o700); err != nil { return nil, err }
+	file, err := os.OpenFile(filepath.Join(runDir, "writer.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil { return nil, err }
+	var overlapped syscall.Overlapped
+	result, _, callErr := lockFileEx.Call(file.Fd(), lockfileExclusiveLock|lockfileFailImmediately, 0, 1, 0, uintptr(unsafe.Pointer(&overlapped)))
+	if result == 0 { _ = file.Close(); return nil, fmt.Errorf("runtime home is already in use by another writer: %w", callErr) }
+	return func(){ _, _, _ = unlockFileEx.Call(file.Fd(), 0, 1, 0, uintptr(unsafe.Pointer(&overlapped))); _ = file.Close() }, nil
+}
+`
+	return formatAndWriteGenerated(rootDirectory, "writer_lock_windows_gen.go", []byte(writerLockWindows))
 }
 
 func writeGeneratedHeader(source *bytes.Buffer, imports map[string]string) {
@@ -287,31 +352,36 @@ func cleanupAll(parent context.Context, cleanups []ingotabi.Cleanup, cause error
 	return errors.Join(errorsFound...)
 }
 
-func main() {
+func main() { os.Exit(runtimeMain()) }
+
+func runtimeMain() int {
 	check := false
 	for index, argument := range os.Args[1:] {
 		if argument == "--ingot-check" {
 			if check || len(os.Args) != 2 {
 				_, _ = fmt.Fprintln(os.Stderr, "--ingot-check must be the only runtime argument")
-				os.Exit(2)
+				return 2
 			}
 			check = true
 			continue
 		}
 		if strings.HasPrefix(argument, "--ingot-") {
 			_, _ = fmt.Fprintf(os.Stderr, "unknown ingot runtime argument at index %d: %s\n", index, argument)
-			os.Exit(2)
+			return 2
 		}
 	}
 	home, err := resolveRuntimeHome()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
 	if err := ensureWritableDirectory(home); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	releaseWriter, err := acquireRuntimeWriterLock(home)
+	if err != nil { _, _ = fmt.Fprintln(os.Stderr, err); return 1 }
+	defer releaseWriter()
 	processContext, stop := signal.NotifyContext(context.Background(), processSignals()...)
 	defer stop()
 	runtimeContext, cancelRuntime := context.WithCancel(processContext)
@@ -325,8 +395,9 @@ func main() {
 	process := newProcessControl(arguments, mode, cancelRuntime)
 	if err := run(runtimeContext, home, process); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // resolveRuntimeHome implements the single Runtime Home contract: an explicit

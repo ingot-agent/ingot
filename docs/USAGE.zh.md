@@ -1,464 +1,192 @@
-# ingot 使用说明
+# ingot M2 使用说明
 
 > 中文版 · [English version](./USAGE.md)
 
-本文档介绍安装方法、ingot home 目录结构、全部命令及示例，以及 build/apply 工作流的细节。
+M2 将项目 Recipe、不可变 Image、持久 Runtime 与单次 Process 明确分离。不再存在全局
+当前镜像，未知命令也不会隐式派发到某个 Runtime。
 
-## 目录
+## 安装与初始化
 
-- [安装](#安装)
-- [ingot home](#ingot-home)
-  - [Builder 配置与 Runtime ABI](#builder-配置与-runtime-abi)
-- [工作流概览](#工作流概览)
-- [命令参考](#命令参考)
-  - [全局选项](#全局选项)
-  - [`init`](#init)
-  - [`bundle`](#bundle)
-  - [`resolve`](#resolve)
-  - [`build`](#build)
-  - [`apply`](#apply)
-  - [`status`](#status)
-  - [`inspect`](#inspect)
-  - [`rollback`](#rollback)
-  - [`gc`](#gc)
-  - [`plugin`](#plugin)
-  - [运行 Runtime Image](#运行-runtime-image)
-  - [系统提示词](#系统提示词)
-- [退出码](#退出码)
-- [构建与校验流水线](#构建与校验流水线)
-- [示例](#示例)
-
-## 安装
-
-需要 Go 1.24+。
+需要 Go 1.24 或更高版本。
 
 ```sh
-go build ./cmd/ingot
+go build -o ingot ./cmd/ingot
+./ingot init
 ```
 
-这会在当前目录生成 `ingot` 二进制。也可以使用官方安装脚本，它会同时安装 CLI 与官方插件集（存放于 `<prefix>/share/ingot/plugins`，供 `ingot init` 定位）：
+`init` 在 `~/.ingot` 初始化 schema v2 Home、物化官方插件 Bundle，并在
+`~/.ingot/profiles/` 下维护所选官方 Profile recipe。它不会写入当前目录，也不会创建
+Runtime。
+
+只有显式指定项目目录时才创建项目自己的 Recipe：
 
 ```sh
-./scripts/install.sh                          # 安装到 /usr/local
-./scripts/install.sh --prefix ~/.local        # 自定义前缀
+ingot project init . [--profile default|minimal] [--force]
 ```
 
-Windows：
-
-```powershell
-.\scripts\install.ps1
-```
-
-也可以把二进制放入 `PATH`：
+全局 `--home` 必须放在命令之前：
 
 ```sh
-install ./ingot ~/bin/ingot   # 或 PATH 中的任意目录
+ingot --home /path/to/home init
 ```
 
-## ingot home
+旧布局或非空的不兼容 Home 会被拒绝。M2 不迁移预发布阶段的 `current`、顶层
+`state` 或旧 Image manifest。
 
-所有状态都保存在 ingot home 中，默认为 `~/.ingot`。可以通过全局 `--home` 参数指定其他路径（必须位于命令之前）：
+## 存储布局
 
-```sh
-ingot --home /path/to/home status
+项目拥有：
+
+```text
+<project>/
+  plugins.toml
+  plugins.lock
 ```
 
-```
+机器级 Managed Home：
+
+```text
 ~/.ingot/
-├── builder.toml        # Builder 配置（ingot ABI 固定，无 SDK 列表）
-├── plugins.toml        # 期望的插件集合（由你或 CLI 维护）
-├── plugins.lock        # 精确解析结果：模块图、摘要、构建参数
-├── state/              # Runtime Home（`ingot <命令>` 使用）；插件自有状态
-├── bundled-plugins/    # 物化后的官方插件源码（由 ingot init 写入）
-├── current             # 指向当前激活镜像 ID 的原子指针
-├── current.previous    # 上一个镜像 ID（回滚/GC 安全使用）
-├── cache/gomod/        # 构建使用的 Go 模块缓存
-└── images/
-    └── <ImageID>/      # 不可变的已构建镜像
-        ├── ingot-runtime   # 原生二进制
-        └── manifest.json   # 镜像来源信息
+  home.json
+  builder.toml
+  bundled-plugins/
+  profiles/
+    <profile>.toml
+    <profile>.lock
+  cache/gomod/
+  images/
+    catalog.json
+    <image-id>/
+      manifest.json
+      ingot-runtime[.exe]
+  runtimes/<name>/
+    runtime.json
+    state/<plugin>/
+    run/
+    logs/
+  .transactions/
 ```
 
-- `plugins.toml` 与 `plugins.lock` 一起原子写入；事务文件（`.plugins.transaction`）支持崩溃恢复。
-- `current` 只在构建成功且通过 `--ingot-check` 校验后才会原子切换。
-- `bundled-plugins/` 由 ingot 管理：`ingot init` 写入或刷新；`plugins.toml` 中的官方插件均作为本地开发源码指向这里。
-- 镜像是不可变的：不要修改 `images/` 下的任何内容。
-
-### Builder 配置与 Runtime ABI
-
-`builder.toml` 是 Builder 配置。不存在可配置的 SDK 列表：Agent SDK 等
-Contract Module 由插件 `go.mod` 引入，以普通 Go Type Identity 参与
-Component Graph，并作为普通 module 记录进 `plugins.lock`。
-`github.com/ingot-agent/ingot-abi`（Component `Cleanup`/`Optional`/`Named`、
-调用元数据、生命周期关闭与插件状态目录）由 Builder 独占并精确定版：
-
-```toml
-builder_config_version = 1
-```
-
-锁定后的 Runtime ABI 记录在 `plugins.lock`：
-
-```toml
-[runtime]
-module_path = "github.com/ingot-agent/ingot-abi"
-version = "v0.1.0"
-sum = "h1:..."
-```
-
-当 ingot ABI 缺失、Go MVS 因插件要求选出不同版本、Plugin 导出 host
-类型或出现未授权的 replacement 时，resolve/build 会失败。旧的 `[[sdks]]`
-声明与 `INGOT_BUILDER_SDKS*` 覆盖已不再是 schema 的一部分并被拒绝。
-
-## 工作流概览
-
-```text
-安装 ingot
-  -> ingot init          写官方插件集 + plugins.toml + 配置模板
-  -> 通过插件自己的 Operation 配置
-  -> ingot apply         解析 + 构建 + 切换
-  -> ingot web           打开浏览器工作区
-```
-
-`apply` 是 `resolve` + `build` + 切换 `current` 的快捷方式。如果希望分步执行，也可以单独运行 `resolve` 和 `build`，检查结果后再切换。
-
-## 命令参考
-
-除特别说明外，所有命令成功时以 JSON 输出结果到 stdout，错误输出到 stderr。
-
-### 全局选项
-
-| 选项 | 含义 |
-|---|---|
-| `--home PATH` | 使用 `PATH` 作为 ingot home，而不是 `~/.ingot`。必须放在命令之前：`ingot --home /tmp/h status`。 |
-
-### `init`
-
-```text
-ingot init [--profile default|minimal] [--bundle PATH] [--force] [--apply]
-```
-
-初始化一个可用的 ingot home：
-
-1. 定位官方插件集（`--bundle` 显式指定，否则按可执行文件相对位置探测：安装脚本的 `<prefix>/share/ingot/plugins` 或仓库根目录的 `plugins/`）；
-2. 将其物化到 `~/.ingot/bundled-plugins/`（幂等：内容未变化时不重写）；
-3. 写入默认 `plugins.toml`（profile 内所有插件均为本地开发源码）；
-4. 写入默认的 `builder.toml`（Builder 配置，无 SDK 列表）。
-
-`init` 不写入任何运行时配置：插件以未配置状态启动，并在 Runtime Home 内各自
-持久化自己的状态。
-
-| 选项 | 含义 |
-|---|---|
-| `--profile` | `default`（骨架 + 常用适配器，15 个插件）或 `minimal`（最小可运行集，9 个插件），默认 `default`；两者都包含管理不可变多模态数据的 `asset.local`。 |
-| `--bundle` | 指向官方插件集目录（默认按可执行文件位置自动定位）。 |
-| `--force` | 覆盖已初始化的 home（默认拒绝覆盖已有 `plugins.toml`）。 |
-| `--apply` | 完成后立即执行 `apply`（解析 + 构建 + 切换 current）。 |
-
-`init` 幂等：已有 `plugins.toml` 时拒绝重复初始化（除非 `--force`）。输出下一步提示：运行 `ingot apply`、运行 `ingot web`，再通过插件自己的 Operation 完成配置。
-
-### `bundle`
-
-```text
-ingot bundle check [--bundle PATH]
-ingot bundle update [--bundle PATH] [--apply]
-```
-
-`bundle check` 比较当前安装所携带的官方插件集与 home 中的
-`bundled-plugins/`，并报告安装摘要、可用摘要、是否存在更新以及受管插件数。
-它也会检测 `bundled-plugins/` 中偏离已安装摘要的本地修改。
-
-`bundle update` 先在临时目录复制并校验新版插件集，再替换 home 中的受管副本。
-它不会改写 `plugins.toml` 或插件顺序，因此用户添加、删除、重排的插件都会保留。不带 `--apply` 时，随后运行 `ingot apply` 以生成并切换
-到使用新版源码的镜像；带 `--apply` 时一步完成更新、解析、构建和切换，失败会恢复
-旧 Bundle 与 `plugins.lock`。
-
-重新运行官方安装脚本时，脚本会对已有 home 自动执行 `bundle update`，然后按正常
-安装流程执行 `apply`。`--bundle PATH` 主要用于开发构建或非标准安装布局。
-
-### 插件配置
-
-不存在统一的运行时 `config.toml`。每个插件在 Runtime Home 内的独立作用域中
-持久化自己的配置：
-
-```text
-<runtime home>/state/<plugin>/
-```
-
-官方 `prompt.default` 插件的 `system_prompt` 就存放在那里。配置插件有两种方式：
-调用插件自己的 Operation（浏览器工作台的 Operations 页面会列出全部 Operation），
-或直接编辑它的状态文件。尚未配置的插件仍会以默认值启动，因此首次配置始终可以
-通过 Operation 完成。
-
-### `resolve`
-
-```text
-ingot resolve
-```
-
-解析 `plugins.toml`，将每个直接插件解析为精确的 Go Module 版本（拉取完整模块图），并写入 `plugins.lock`。成功时输出锁定的 `ImageID`。
-
-### `build`
-
-```text
-ingot build
-```
-
-按 `plugins.lock` 中的锁定解析结果构建新的不可变镜像：
-
-1. 还原 Builder 拥有的 root module（`go.mod`/`go.sum`）；
-2. 下载并校验模块图；
-3. 校验锁定源码（本地开发源码会被重新哈希）；
-4. 用 `go/packages` + `go/types` 加载组件契约；
-5. 解析组件图（ONE/OPTIONAL/MANY、环检测、稳定顺序）；
-6. 生成 `main.go` 与 `wiring_gen.go`；
-7. 按锁定的工具链参数编译原生二进制；
-8. 运行 `ingot-runtime --ingot-check` 做启动校验；
-9. 提交镜像并输出其 `ImageID`。
-
-**不会**切换 `current`。如需切换，请使用 `apply` 或稍后手动切换。
-
-### `apply`
-
-```text
-ingot apply
-```
-
-一步完成 `resolve` + `build` + 原子切换 `current`。输出新的 `ImageID`。修改插件集合后执行此命令。
-
-### `status`
-
-```text
-ingot status
-```
-
-以 JSON 输出 home 的状态：
-
-```json
-{
-  "desired_digest": "sha256:...",
-  "locked_digest": "sha256:...",
-  "locked_image_id": "sha256:...",
-  "current_image_id": "sha256:...",
-  "desired_locked": true,
-  "locked_sources": true,
-  "built": true,
-  "current": true
-}
-```
-
-| 字段 | 含义 |
-|---|---|
-| `desired_digest` | `plugins.toml` 的规范化摘要。 |
-| `locked_digest` | 生成 `plugins.lock` 时所依据的期望状态摘要。 |
-| `desired_locked` | 为 `true` 表示期望与锁定摘要一致（无漂移）。 |
-| `locked_sources` | 为 `true` 表示所有锁定的本地开发源码与哈希一致。 |
-| `built` | 为 `true` 表示锁定镜像存在且校验通过。 |
-| `current` | 为 `true` 表示一切一致且 `current` 指向锁定镜像。 |
-
-`current` 是告诉你「当前运行的就是你声明的」的关键字段。
-
-### `inspect`
-
-```text
-ingot inspect                 # 查看全部
-ingot inspect <id-or-name>    # 查看单个插件
-```
-
-输出 status 以及：
-
-- `direct_plugins`：每个直接插件的索引、ID、名称、来源类型、版本、Manifest 摘要与组件；
-- `component_creation_order`：构建产物中的组件创建顺序；
-- `many_order`：MANY 能力消费者的排序。
-
-`plugin list` 与 `plugin inspect` 是该输出的两个专用视图。
-
-### `rollback`
-
-```text
-ingot rollback                # 切换到上一个镜像
-ingot rollback <image-id>     # 切换到指定的已存在镜像
-```
-
-将 `current` 指向一个已存在的镜像（会校验其存在性）。输出新的 `current` 镜像 ID。上一个镜像 ID 会保留在 `current.previous` 中，因此误回滚后可以再次回滚。
-
-### `gc`
-
-```text
-ingot gc                      # 保留最近 3 个镜像
-ingot gc --keep 5             # 保留最近 5 个
-```
-
-清理旧镜像。始终保留：
-
-- 当前镜像；
-- 上一个镜像（`current.previous`）；
-- `--keep` 指定的最近构建镜像（默认 3）。
-
-同时会清理遗留的 staging 目录。输出被删除的镜像 ID 列表。
-
-### `plugin`
-
-#### `plugin add`
-
-```text
-ingot plugin add <module>[@query]   # 例如 github.com/example/plugin@v1.2.3
-ingot plugin add <module>           # 解析最新版本
-ingot plugin add --path ../local-plugin
-ingot plugin add <module>@v1.2.3 --apply   # 同时 解析+构建+切换
-```
-
-- 远程插件：`module` 是 Go Module 路径（即 canonical Plugin ID）；`@query` 是任意 Go Module 版本查询（`latest`、`v1.2.3`、`@v1` 等）。不带查询时解析最新版本。
-- 本地开发源码：`--path` 指向磁盘上的 Go Module，模块路径从 `go.mod` 读取，不记录版本。
-- 不带 `--apply` 时，只更新 `plugins.toml` 与 `plugins.lock`。
-
-#### `plugin remove`
-
-```text
-ingot plugin remove <id-or-name>
-```
-
-从期望集合中移除插件。接受 ID 或插件名。加 `--apply` 可立即构建并切换。
-
-#### `plugin update`
-
-```text
-ingot plugin update <id-or-name>[@query]   # 例如 my-plugin@v2.0.0
-ingot plugin update <id-or-name>           # 默认查询：latest
-```
-
-将插件更新到新版本（重新解析并刷新 lock）。加 `--apply` 可立即构建并切换。
-
-#### `plugin reorder`
-
-```text
-ingot plugin reorder <id-or-name> --before <anchor>
-ingot plugin reorder <id-or-name> --after  <anchor>
-```
-
-将插件移动到锚点插件之前/之后。顺序很重要：它决定直接插件顺序并影响稳定解析排序。加 `--apply` 可立即构建并切换。
-
-#### `plugin list`
-
-```text
-ingot plugin list
-```
-
-输出直接插件集合（JSON 数组）。
-
-#### `plugin inspect`
-
-```text
-ingot plugin inspect <id-or-name>
-```
-
-输出单个插件的完整检查信息（结构同 `ingot inspect`）。
-
-### 运行 Runtime Image
-
-任何非内置的 ingot 命令都会派发到当前 Runtime Image：
-
-```sh
-# 启动本地浏览器工作区（默认 profile：app.backend）
-ingot web
-```
-
-运行时以 `INGOT_RUNTIME_HOME` 指向 `<ingot home>/state` 执行，镜像据此解析
-Runtime Home 与各插件的状态作用域。运行时的退出码会被透传。
-
-`web` 是 `app.backend` 的 runtime 命令：它在本地 HTTP/SSE 地址（默认
-`http://127.0.0.1:7316/`）上提供内嵌 Vue 浏览器工作区并打印该链接。模型
-provider 与 API key 通过插件 Operation（或插件自己的状态文件）配置，不通过命令行传入。
-
-每个对话都属于一个 Session，Session 绑定到一个不可变的本地 Workspace 目录。
-在浏览器工作区新建对话时选择该 Workspace 路径；应用随即创建 Session、绑定
-Workspace。shell tool 的工作目录只从这份 session-scoped binding 解析；删除
-Session 会一并删除 binding，Fork Session 会继承其 Workspace binding。旧 schema
-迁移出的 Session 可能暂时未绑定；浏览器会引导选择一个已存在的本地目录，并在
-一次性绑定成功前阻止执行。
-
-如果当前没有镜像（或镜像缺失），命令会失败并给出说明。
-
-内部运行时参数（保留给 Builder 使用）：
-
-```text
-ingot-runtime --ingot-check
-```
-
-执行启动校验（配置解码、组件实例化、启动值检查），不启动 Agent 主循环。该参数必须是唯一参数。Builder 在提交镜像前会调用它。
-
-## 退出码
-
-| 码 | 含义 |
-|---|---|
-| `0` | 成功。 |
-| `1` | 命令失败（构建、解析、IO、校验等）。 |
-| `2` | 用法错误（未知命令、参数错误、缺少参数值）。 |
-
-派发的运行时命令的退出码即运行时自身的退出码。
-
-## 构建与校验流水线
-
-构建只有在整个流水线全部通过后才会提交：
-
-```mermaid
-flowchart LR
-    A["还原 root module"] --> B["下载 + 校验模块"]
-    B --> C["校验锁定图与源码"]
-    C --> D["加载契约（go/packages、go/types）"]
-    D --> E["解析组件图"]
-    E --> F["生成 main.go + wiring_gen.go"]
-    F --> G["编译原生二进制"]
-    G --> H["--ingot-check 启动校验"]
-    H --> I["提交不可变镜像"]
-```
-
-身份是内容寻址的：
-
-```text
-ImageID        = SHA256(规范化构建清单)
-ArtifactDigest = SHA256(最终二进制内容)
-```
-
-`ImageID` 标识构建输入；`ArtifactDigest` 标识实际产物。相同 `ImageID` 重建应复现相同的 `ArtifactDigest`；与已有镜像不一致会导致构建失败（可复现性检查），而不会静默覆盖。
-
-## 示例
-
-从零开始的完整流程：
-
-```sh
-./scripts/install.sh
-```
+`plugins.lock` 只保存 target-neutral 解析事实。实际 target、Go toolchain、构建参数、
+Runtime ABI 与 target-specific Graph projection 进入每个 Image 的 BuildManifest。
+State 永远属于 Runtime，不属于 Image。
+
+## 标准流程
 
 ```sh
 ingot init
-# 通过 app.backend 的 Operation 填写模型提供商 base_url / api_key
-ingot apply
-ingot web
+ingot project init .
+ingot build --tag acme/coding-agent:1.0.0
+ingot runtime create work --image acme/coding-agent:1.0.0 -- web
+ingot runtime start work
+ingot runtime logs work --follow
+ingot stop work
 ```
 
-验证 home 是否一致：
+也可以用 Docker 风格便利命令一次创建并启动：
 
 ```sh
-ingot status | jq .current      # true
+ingot run --name work --detach acme/coding-agent:1.0.0 -- web
 ```
 
-迭代本地插件（重新添加、重建、检查启动、不行就回滚）：
+## 项目命令
+
+Recipe 命令默认只读取当前目录的 `plugins.toml` 与相邻 `plugins.lock`，不向父目录搜索，
+也不回退到 Home。Home 中由 Ingot 管理的官方 Profile recipe 必须像安装脚本一样通过
+`--use` 显式选择。
+
+```text
+ingot resolve [--use recipe.toml] [--lock recipe.lock]
+ingot build [--use recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
+ingot status [--use recipe.toml] [--lock recipe.lock]
+ingot inspect [--use recipe.toml] [--lock recipe.lock] [plugin]
+```
+
+普通 build 会刷新缺失或 stale 的 lock。`--locked` 要求 lock 与全部源码事实完全匹配，
+且绝不改写 lock。`--tag` 只在构建成功后移动当前主机 target slot。
+
+Plugin mutation 使用同一套 `--use/--lock` 规则：
+
+```text
+ingot plugin list|inspect ...
+ingot plugin add module@version
+ingot plugin add --path ../plugin
+ingot plugin remove|update|reorder ...
+```
+
+## Image 命令
+
+```text
+ingot image list
+ingot image inspect <ref>
+ingot image verify <ref-or-digest>
+ingot image tag <ref-or-digest> <name>:<tag>
+ingot image untag <name>:<tag>
+ingot image pin|unpin <ref-or-digest>
+ingot image remove <digest>
+ingot image export <ref-or-digest> [--target os/arch] --output file.ingot-image
+ingot image import file.ingot-image [--no-tag]
+```
+
+引用格式为 `sha256:<64 位小写 hex>`、`name:tag` 或 `name:tag@goos/goarch`。
+名称与 tag 只允许小写 ASCII；系统不会隐式补 `latest`。
+
+一个 tag 是可移动的多 target 指针。Runtime 与 Process 保存 concrete Image/Artifact
+digest，因此 tag 移动不会改变已有 binding。Bundle 是只包含一个 target variant 的确定性
+ZIP；import 会在提交前校验路径、entry 数量、大小、Build Input identity、target 与可执行
+文件摘要。校验通过只代表内容完整，不代表本机代码可信。
+
+## Runtime 命令
+
+```text
+ingot runtime create <name> --image <ref> [-- <default-argv>]
+ingot runtime list
+ingot runtime inspect <name>
+ingot runtime switch <name> <ref>
+ingot runtime rollback <name>
+ingot runtime command set <name> -- <argv...>
+ingot runtime command clear <name>
+ingot runtime run <name> [-- <temporary-argv>]
+ingot runtime start <name> [--timeout 30s] [-- <temporary-argv>]
+ingot runtime restart <name> [--timeout 30s]
+ingot runtime logs <name> [--process <id>] [--follow]
+ingot runtime delete <name> [--purge]
+```
+
+`switch` 原子更新 desired/rollback binding，但不会重启 live Process。当实际 Image 或
+Runtime generation 与期望值不同时，`runtime inspect` 输出 `restart_required: true`。
+`rollback` 只交换 binding，不复制或解释 State。
+
+每个 Runtime 都有独立 Runtime Home。Generated Image 在构造任何 Plugin 之前获取
+`run/writer.lock`，因此 standalone 与 managed launch 遵守同一单 writer 契约。
+
+## Process 命令
+
+```text
+ingot ps
+ingot stop <runtime> [--timeout 10s]
+ingot stop --process <process-id> [--timeout 10s]
+```
+
+前台 CLI 与后台 `ingot supervise` 负责 Process record、退出记录、日志，以及带随机 token
+鉴权的 IPv4 loopback control endpoint。`running` 只表示 OS child 已启动，不代表应用
+ready。Stop 只请求正常 termination，不基于 PID 猜测并强制杀死进程。
+
+Runtime 状态包括 `stopped`、`starting`、`running`、`stopping`、`unresponsive`、
+`orphaned`、`external` 与 `failed`。外部 standalone writer 的实际 Image 不可知，因此
+相关 mutation 与 GC 会 fail-closed。
+
+## GC
 
 ```sh
-ingot plugin update my-local-plugin --apply
-ingot status
-ingot rollback                  # 不行，回退
-ingot gc                        # 清理失败的镜像
+ingot gc [--keep-recent N]
 ```
 
-管理插件顺序（某个插件需要先于另一个运行）：
+GC 保留全部 tag variant、pin、Runtime desired/rollback、live Process actual Image 和指定
+数量的最近未引用 Image。任何 root 缺失/损坏或存在 external Runtime writer 时，本次 sweep
+不删除任何内容。
 
-```sh
-ingot plugin reorder approval --before script
-```
+## 输出与退出码
 
-查看实际 wiring 的内容：
-
-```sh
-ingot inspect | jq '.component_creation_order'
-```
+除前台 Runtime stdio 与原始日志流外，命令成功时输出稳定 JSON。Usage error 返回 `2`；
+domain、I/O 与 verification error 返回 `1`；前台运行原样传播 Runtime exit code。

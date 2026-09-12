@@ -16,7 +16,7 @@ func RuntimeExecutableName(goos string) string {
 
 // ImageDirectoryName maps a logical image ID to a platform-safe directory
 // name. Windows forbids ':' in a path component, so its on-disk spelling uses
-// a dash while manifests and current pointers retain the canonical image ID.
+// a dash while manifests and catalog/Runtime bindings retain the canonical ID.
 func ImageDirectoryName(imageID, goos string) string {
 	if goos == "windows" && strings.HasPrefix(imageID, "sha256:") {
 		return "sha256-" + strings.TrimPrefix(imageID, "sha256:")

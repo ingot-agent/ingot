@@ -14,14 +14,15 @@
 ```sh
 go build -o ingot ./cmd/ingot
 ./ingot init                # 默认 profile 已包含 app.backend
-# 在该 home 的 config.toml 中设置模型供应商与下方 app.backend 配置
-./ingot apply
-./ingot web
+./ingot build --tag local/ingot:web
+./ingot runtime create web --image local/ingot:web -- web
+# 在 runtimes/web/state/ 下配置模型供应商与下方 app.backend 配置
+./ingot runtime run web
 ```
 
-`ingot web` 启动成功后会输出可点击的 Web 地址和打开提示；按 `Ctrl+C` 可停止服务。`web` 是转发给 Runtime Image 的命令；HTTP 监听由应用组件的生命周期启动，不依赖 Builder 的专用命令或插件特判。不要同时保留 CLI 的 Interaction 提供者。
+`ingot runtime run web` 启动成功后会输出可点击的 Web 地址和打开提示；按 `Ctrl+C` 可停止服务。`web` 是 Runtime 的 default argv；HTTP 监听由应用组件的生命周期启动，不依赖 Builder 的专用命令或插件特判。不要同时保留 CLI 的 Interaction 提供者。
 
-前端产物通过 Go `embed` 编入 Runtime Image；运行时不需要 Node、Vite 或外部 CDN。修改前端后需重新构建前端，再执行 `ingot apply`。开发命令见 [前端说明](../../web/app-webui/README.md)。
+前端产物通过 Go `embed` 编入 Runtime Image；运行时不需要 Node、Vite 或外部 CDN。修改前端后需重新构建前端，再执行 `ingot build --tag local/ingot:web` 和 `ingot runtime switch web local/ingot:web`。开发命令见 [前端说明](../../web/app-webui/README.md)。
 
 初版面向可信的本机单用户环境，没有登录、多租户隔离或公网部署保护。请保持回环监听，不要直接暴露至局域网或互联网。
 

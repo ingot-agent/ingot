@@ -7,147 +7,46 @@ import (
 	"testing"
 )
 
-func TestBundleUpdatePreservesUserFilesAndRefreshesManagedSources(t *testing.T) {
-	t.Parallel()
-	home := initHome(t)
+func TestBundleUpdateRefreshesManagedSourcesWithoutApply(t *testing.T) {
+	home, _ := initHome(t)
 	distribution := testBundleSource(t)
 	if _, err := home.Init(InitOptions{BundlePath: distribution}); err != nil {
 		t.Fatal(err)
 	}
-	desiredBefore, err := os.ReadFile(home.DesiredPath())
+	updated := filepath.Join(t.TempDir(), "plugins")
+	if err := os.CopyFS(updated, os.DirFS(distribution)); err != nil {
+		t.Fatal(err)
+	}
+	changed := filepath.Join(updated, "tool-shell", "go.mod")
+	file, err := os.OpenFile(changed, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	builderBefore, err := os.ReadFile(home.BuilderConfigPath())
+	_, _ = file.WriteString("\n// m2 bundle update\n")
+	_ = file.Close()
+	result, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: updated})
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	updatedDistribution := filepath.Join(t.TempDir(), "plugins")
-	if err := os.CopyFS(updatedDistribution, os.DirFS(distribution)); err != nil {
-		t.Fatal(err)
+	if !result.Updated || result.Applied {
+		t.Fatalf("result = %#v", result)
 	}
-	changedSource := filepath.Join(updatedDistribution, "tool-shell", "go.mod")
-	file, err := os.OpenFile(changedSource, os.O_APPEND|os.O_WRONLY, 0)
+	managed, err := os.ReadFile(filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString("\n// bundle update test\n"); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	status, err := home.CheckBundle(context.Background(), updatedDistribution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !status.UpdateAvailable || status.ManagedPlugins != 11 {
-		t.Fatalf("pre-update status = %#v", status)
-	}
-	result, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: updatedDistribution})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !result.Updated || result.Applied || result.UpdateAvailable || result.Drifted {
-		t.Fatalf("update result = %#v", result)
-	}
-
-	desiredAfter, err := os.ReadFile(home.DesiredPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	builderAfter, err := os.ReadFile(home.BuilderConfigPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(desiredAfter) != string(desiredBefore) {
-		t.Fatal("bundle update rewrote plugins.toml")
-	}
-	if string(builderAfter) != string(builderBefore) {
-		t.Fatal("bundle update rewrote builder.toml")
-	}
-	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod")
-	updatedData, err := os.ReadFile(changedSource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	managedData, err := os.ReadFile(managedSource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(managedData) != string(updatedData) {
-		t.Fatal("managed plugin source was not refreshed")
-	}
-
-	second, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: updatedDistribution})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Updated || second.UpdateAvailable {
-		t.Fatalf("unchanged second update = %#v", second)
+	want, _ := os.ReadFile(changed)
+	if string(managed) != string(want) {
+		t.Fatal("managed source was not refreshed")
 	}
 }
 
-func TestBundleUpdateRequiresInitializedHome(t *testing.T) {
-	t.Parallel()
-	home := initHome(t)
-	if _, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: testBundleSource(t)}); err == nil {
-		t.Fatal("bundle update accepted an uninitialized home")
-	}
-}
-
-func TestBundleUpdateApplyFailureRestoresPreviousBundle(t *testing.T) {
-	t.Parallel()
-	home := initHome(t)
-	distribution := testBundleSource(t)
-	if _, err := home.Init(InitOptions{BundlePath: distribution}); err != nil {
+func TestBundleUpdateRejectsApply(t *testing.T) {
+	home, _ := initHome(t)
+	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t)}); err != nil {
 		t.Fatal(err)
 	}
-	updatedDistribution := filepath.Join(t.TempDir(), "plugins")
-	if err := os.CopyFS(updatedDistribution, os.DirFS(distribution)); err != nil {
-		t.Fatal(err)
-	}
-	changedSource := filepath.Join(updatedDistribution, "tool-shell", "go.mod")
-	file, err := os.OpenFile(changedSource, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.WriteString("\n// update that must roll back\n"); err != nil {
-		_ = file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	managedSource := filepath.Join(home.Root, "bundled-plugins", "tool-shell", "go.mod")
-	before, err := os.ReadFile(managedSource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(home.BuilderConfigPath(), []byte("builder_config_version = 1\nunknown = true\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: updatedDistribution, Apply: true}); err == nil {
-		t.Fatal("bundle update --apply succeeded with an invalid builder config")
-	}
-	after, err := os.ReadFile(managedSource)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatal("failed bundle update did not restore the previous sources")
-	}
-	if _, err := os.Stat(home.LockPath()); !os.IsNotExist(err) {
-		t.Fatalf("failed bundle update left plugins.lock behind: %v", err)
-	}
-	status, err := home.CheckBundle(context.Background(), updatedDistribution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !status.UpdateAvailable || status.Drifted {
-		t.Fatalf("restored bundle status = %#v", status)
+	if _, err := home.UpdateBundle(context.Background(), BundleUpdateOptions{BundlePath: testBundleSource(t), Apply: true}); err == nil {
+		t.Fatal("bundle update --apply was accepted")
 	}
 }

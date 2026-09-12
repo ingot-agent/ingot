@@ -11,8 +11,8 @@
 #
 # After installation the script initializes a new home or refreshes the
 # official bundle in an existing home, collects model provider settings (from
-# the INGOT_* environment variables or interactively), runs `ingot apply` to
-# build the runtime image, and offers to start the web UI.
+# the INGOT_* environment variables or interactively), builds a named image,
+# creates the `default` Runtime, and offers to start the web UI.
 #
 # Usage:
 #   .\scripts\install.ps1                                   # -> $env:LocalAppData\ingot
@@ -161,34 +161,54 @@ try {
     } else {
         "--home `"$HomeDir`""
     }
-    $applyCommand = if ($homeArgument) { "ingot $homeArgument apply" } else { 'ingot apply' }
-    $webCommand = if ($homeArgument) { "ingot $homeArgument web" } else { 'ingot web' }
+    $ProfileRecipe = Join-Path $HomeDir "profiles/$Profile.toml"
+    $ProfileLock = Join-Path $HomeDir "profiles/$Profile.lock"
+    $buildCommand = if ($homeArgument) { "ingot $homeArgument build --use `"$ProfileRecipe`" --lock `"$ProfileLock`" --tag local/ingot:default" } else { "ingot build --use `"$ProfileRecipe`" --lock `"$ProfileLock`" --tag local/ingot:default" }
+    $startCommand = if ($homeArgument) { "ingot $homeArgument runtime start default" } else { 'ingot runtime start default' }
 
     # --- init -----------------------------------------------------------------
-    if (Test-Path (Join-Path $HomeDir 'plugins.toml')) {
-        Write-Host "==> refreshing official plugins in existing home $HomeDir"
-        & $Ingot --home $HomeDir bundle update --bundle $PluginDir
-        if ($LASTEXITCODE -ne 0) { throw 'ingot bundle update failed' }
+    Write-Host "==> initializing or refreshing ingot home $HomeDir (profile: $Profile)"
+    New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
+    & $Ingot --home $HomeDir init --profile $Profile --bundle $PluginDir
+    if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
+
+    $ImageRef = 'local/ingot:default'
+    $RuntimeName = 'default'
+    if ($NoApply) {
+        Write-Host '==> skipping image build and Runtime creation (legacy NoApply switch)'
     } else {
-        Write-Host "==> initializing ingot home $HomeDir (profile: $Profile)"
-        New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
-        & $Ingot --home $HomeDir init --profile $Profile --bundle $PluginDir
-        if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
+        Write-Host '==> building runtime image (first build downloads modules and may take a few minutes)'
+        $buildAttempts = 0
+        while ($true) {
+            & $Ingot --home $HomeDir build --use $ProfileRecipe --lock $ProfileLock --tag $ImageRef
+            if ($LASTEXITCODE -eq 0) { break }
+            $buildAttempts++
+            if ($buildAttempts -ge 2) { throw 'build failed twice; re-run this script after checking network access' }
+            Write-Host '==> retrying build'
+            Start-Sleep -Seconds 2
+        }
+        & $Ingot --home $HomeDir runtime inspect $RuntimeName *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & $Ingot --home $HomeDir runtime switch $RuntimeName $ImageRef
+        } else {
+            & $Ingot --home $HomeDir runtime create $RuntimeName --image $ImageRef -- web
+        }
+        if ($LASTEXITCODE -ne 0) { throw 'runtime create/switch failed' }
     }
 
     # --- model provider configuration -----------------------------------------
     # Plugins own their persistent configuration inside the Runtime Home; there
     # is no shared runtime config.toml. The model provider is configured by
     # writing the provider plugin's own state file before the first run.
-    $ProviderDir = Join-Path $HomeDir 'state/model.openai-compatible'
-    $RuntimeDir = Join-Path $HomeDir 'state/model.runtime'
+    $ProviderDir = Join-Path $HomeDir "runtimes/$RuntimeName/state/model.openai-compatible"
+    $RuntimeDir = Join-Path $HomeDir "runtimes/$RuntimeName/state/model.runtime"
     $Config = Join-Path $ProviderDir 'config.toml'
     $Defaults = Join-Path $RuntimeDir 'config.toml'
     $Configured = $false
     if ((Test-Path $Config) -and -not (Select-String -Path $Config -Pattern 'api_key = ""' -Quiet)) {
         $Configured = $true
     }
-    if (-not $NoConfigure -and -not $Configured) {
+    if (-not $NoApply -and -not $NoConfigure -and -not $Configured) {
         Write-Host '==> model provider configuration'
         $ProviderName = if ($env:INGOT_PROVIDER_NAME) { $env:INGOT_PROVIDER_NAME } else { 'openai' }
         $BaseUrl = if ($env:INGOT_BASE_URL) { $env:INGOT_BASE_URL } else { 'https://api.openai.com/v1' }
@@ -210,38 +230,19 @@ try {
             Write-Host "==> wrote provider $ProviderName ($Model) to $Config"
         } else {
             Write-Warning 'no API key provided; skipping configuration'
-            Write-Warning "write $Config manually, then run: $Ingot --home `"$HomeDir`" apply"
+            Write-Warning "write $Config manually, then run: $Ingot --home `"$HomeDir`" runtime start $RuntimeName"
         }
-    }
-
-    # --- apply ----------------------------------------------------------------
-    if ($NoApply) {
-        Write-Host "==> skipping apply (NoApply); run later: $Ingot --home `"$HomeDir`" apply"
-    } else {
-        Write-Host '==> building runtime image (first build downloads modules and may take a few minutes)'
-        $applyAttempts = 0
-        while ($true) {
-            & $Ingot --home $HomeDir apply
-            if ($LASTEXITCODE -eq 0) { break }
-            $applyAttempts++
-            if ($applyAttempts -ge 2) {
-                throw 'apply failed twice; re-run this script after checking network access'
-            }
-            Write-Host '==> retrying apply'
-            Start-Sleep -Seconds 2
-        }
-        Write-Host '==> active image ready'
     }
 
     Write-Host ''
     Write-Host 'Agent home is ready. Next steps:'
     if ($NoApply) {
-        Write-Host "1. $applyCommand"
-        Write-Host '2. Start the Web UI with the following command:'
-        Write-Host $webCommand
+        Write-Host "1. $buildCommand"
+        Write-Host '2. Create the Runtime: ingot runtime create default --image local/ingot:default -- web'
+        Write-Host "3. $startCommand"
     } else {
         Write-Host 'Start the Web UI with the following command:'
-        Write-Host $webCommand
+        Write-Host $startCommand
     }
 } finally {
     Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue

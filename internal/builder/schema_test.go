@@ -45,7 +45,7 @@ path = "plugins/../local"
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"plugins":[{"module":"github.com/example/remote","source":{"kind":"module","version":"v1.2.3"}},{"module":"github.com/example/local","source":{"kind":"path","path":"local"}}],"schema_version":1}`
+	want := `{"plugins":[{"module":"github.com/example/remote","source":{"kind":"module","version":"v1.2.3"}},{"module":"github.com/example/local","source":{"kind":"path"}}],"schema_version":1}`
 	if string(canonical) != want {
 		t.Fatalf("canonical JSON\n got: %s\nwant: %s", canonical, want)
 	}
@@ -164,7 +164,7 @@ func TestDevSourceDigestAndSyntheticVersion(t *testing.T) {
 	}
 }
 
-func TestLockRequiresMaterializedFalseFields(t *testing.T) {
+func TestLockRejectsLegacyTargetSpecificTables(t *testing.T) {
 	t.Parallel()
 	file := filepath.Join(t.TempDir(), "plugins.lock")
 	writeTestFile(t, file, strings.TrimSpace(`
@@ -200,8 +200,8 @@ gcflags=[]
 asmflags=[]
 `)+"\n")
 	_, err := ParseLock(file)
-	if err == nil || !strings.Contains(err.Error(), "target.cgo_enabled") {
-		t.Fatalf("missing cgo field error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "INGOT-LOCK-PARSE") {
+		t.Fatalf("legacy target-specific lock error = %v", err)
 	}
 }
 

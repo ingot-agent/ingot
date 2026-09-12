@@ -60,17 +60,19 @@ go build -o ingot ./cmd/ingot
 # 2. 使用官方插件集初始化 ingot home
 ./ingot init
 
-# 3. 组合镜像
-./ingot apply
+# 3. 构建并命名 Home 管理的默认 Profile
+./ingot build --use ~/.ingot/profiles/default.toml \
+  --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
 
-# 4. 启动浏览器工作区（默认 profile 为 app.backend）
-./ingot web
+# 4. 创建并启动隔离 Runtime（默认 profile 为 app.backend）
+./ingot runtime create default --image local/ingot:default -- web
+./ingot runtime start default
 ```
 
 插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
 `app.backend.config` Operation（或直接编辑插件自己的 `state/` 文件）设置模型 Provider。
 
-`ingot init` 会把官方插件物化到 `bundled-plugins/`，并写入 `builder.toml` 和 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
+`ingot init` 会把官方插件物化到 `bundled-plugins/`，写入 `builder.toml`，并在 Managed Home 的 `profiles/` 下维护所选 Profile recipe；它不会写入当前目录。只有显式执行 `ingot project init .` 才会创建项目自己的 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
 
 ## 构建期组合如何工作
 
@@ -128,10 +130,10 @@ Builder 读取这些 Contract，解析 `ONE`、`OPTIONAL` 和 `MANY` 依赖，�
 ingot plugin add github.com/example/my-plugin@v1.2.3
 ingot plugin add --path ../my-local-plugin
 ingot plugin remove tool.ask
-ingot apply
+ingot build --tag acme/agent:dev
 ```
 
-如果新的组合存在 Capability 缺失、重复或成环，构建会在它成为当前镜像之前失败。
+如果新的组合存在 Capability 缺失、重复或成环，构建会在提交 Image 之前失败。
 
 ## 构建保证
 
@@ -140,21 +142,25 @@ ingot apply
 - **普通 Contract Module** —— Agent SDK 与领域 SDK 无需 Builder 配置，以普通 Go Type Identity 参与 Component Graph，并作为普通 Module 锁定。
 - **内容寻址身份** —— `ImageID` 标识完整构建输入，`ArtifactDigest` 标识最终可执行文件字节。
 - **可复现性检查** —— 重建一个已有 `ImageID` 时必须得到相同的产物摘要，而不是静默覆盖不同的二进制。
-- **事务式激活** —— `apply` 依次完成解析、构建、校验，最后原子切换 `current`；失败的构建不会替换当前运行镜像。
+- **显式部署** —— mutable tag 命名不可变 target variant；Runtime 将其解析为 concrete
+  digest，并可原子切换 desired Image，而不改变 live Process。
 
 ## ingot home
 
-所有状态默认位于 `~/.ingot`；可使用 `--home PATH` 指定其他位置。
+机器级 Managed State 默认位于 `~/.ingot`，项目 Recipe 保留在项目目录；可使用
+`--home PATH` 指定其他 Managed Home。
 
 | 路径 | 作用 |
 |---|---|
 | `builder.toml` | Builder 配置（无 SDK 列表；ingot ABI 固定）。 |
-| `plugins.toml` | 期望的插件组合。 |
-| `plugins.lock` | 精确解析结果、源码哈希、Module 图和构建参数。 |
-| `state/<plugin>/` | 插件自有的持久化配置与数据。 |
+| `profiles/<name>.toml` | Ingot 管理的官方 Profile recipe。 |
+| `profiles/<name>.lock` | 构建该 Managed Profile 时生成的解析 lock。 |
+| `<project>/plugins.toml` | 期望的插件组合。 |
+| `<project>/plugins.lock` | target-neutral 解析结果、源码哈希与 Module 图。 |
 | `bundled-plugins/` | 物化后的官方插件源码。 |
-| `current` | 指向当前激活镜像的原子指针。 |
-| `images/<ImageID>/` | 不可变的运行时可执行文件和 `manifest.json`。 |
+| `images/catalog.json` | mutable tag 与 pin。 |
+| `images/<ImageID>/` | 不可变运行时可执行文件与 manifest v3。 |
+| `runtimes/<name>/state/<plugin>/` | 按 Runtime 隔离的 Plugin State。 |
 
 ## 命令一览
 
@@ -162,16 +168,18 @@ ingot apply
 ingot [--home PATH] <command>
 
 init        使用官方插件 Profile 初始化 home
+project     使用 `project init <目录>` 显式初始化项目 Recipe
 bundle      检查或更新官方插件 Bundle
 resolve     解析 plugins.toml 并刷新 plugins.lock
-build       构建已锁定的组合，但不激活
-apply       解析 + 构建 + 原子激活
-status      以 JSON 输出 desired、locked、built 和 current 状态
+build       解析并构建内容寻址 Image，可通过 --tag 命名
+image       list | inspect | verify | tag | import | export | pin | remove
+runtime     create | inspect | switch | rollback | run | start | restart | logs
+run         创建并启动命名 Runtime
+ps / stop   观察或正常关闭 managed Process
+status      以 JSON 输出项目 desired、locked 和 built 状态
 inspect     以 JSON 查看环境或单个插件
-rollback    激活上一个镜像
-gc          在保留回滚安全性的前提下清理旧镜像
+gc          按 tag、pin、Runtime 与 Process 引用图清理 Image
 plugin      add | remove | update | reorder | list | inspect
-<other>     派发到当前镜像，例如 ingot web
 ```
 
 完整命令参考见 [Usage Guide](./USAGE.md) 或[使用说明](./USAGE.zh.md)。
@@ -195,7 +203,10 @@ plugin      add | remove | update | reorder | list | inspect
 
 - `cmd/ingot` —— CLI 入口。
 - `internal/cli` —— 命令解析与面向用户的输出。
-- `internal/home` —— desired/locked/current 状态、插件变更、镜像切换、回滚、GC、事务、运行时派发与初始化。
+- `internal/home` —— schema v2 Home facade、项目 mutation、Image GC 与 Runtime/Process 协调。
+- `internal/image` —— manifest v3、catalog、引用、验证与离线 bundle。
+- `internal/managedruntime` —— 持久 Runtime registry 与 concrete binding。
+- `internal/process` —— per-Process supervisor、control、reconciliation 与日志。
 - `internal/bundle` —— 官方插件 Profile 与源码物化。
 - `internal/builder` —— 解析、类型分析、Component Graph、代码生成、可复现构建与镜像校验。
 - `plugins/` —— 官方插件集；每个目录都是独立 Go Module。
