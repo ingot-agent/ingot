@@ -3,8 +3,35 @@ package builder
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestLockSerializationIsTargetNeutral(t *testing.T) {
+	t.Parallel()
+	lock := fixtureGraphLock("/dev/placeholder-a", "/dev/placeholder-b", "/dev/placeholder-c")
+	data, err := lock.MarshalTOML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"[toolchain]", "[target]", "[environment]", "[build]", "goos =", "goarch ="} {
+		if strings.Contains(string(data), forbidden) {
+			t.Fatalf("target-specific field %q entered lock:\n%s", forbidden, data)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "plugins.lock")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Target.GOOS != runtime.GOOS || parsed.Target.GOARCH != runtime.GOARCH || parsed.Toolchain.Version != runtime.Version() {
+		t.Fatalf("ephemeral build facts = %#v %#v", parsed.Target, parsed.Toolchain)
+	}
+}
 
 func TestLockRoundTripKeepsIdentity(t *testing.T) {
 	t.Parallel()

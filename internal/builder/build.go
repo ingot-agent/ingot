@@ -3,8 +3,6 @@ package builder
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ingot-agent/ingot/internal/image"
 	"github.com/ingot-agent/ingot/internal/layout"
 )
 
@@ -32,18 +31,10 @@ type BuildResult struct {
 	ComponentCreationOrder []string
 	ManyOrder              map[string][]string
 	HostDependencies       map[string][]string
+	Target                 image.Target
 }
 
-type ImageManifest struct {
-	SchemaVersion          int                 `json:"schema_version"`
-	ImageID                string              `json:"image_id"`
-	ArtifactDigest         string              `json:"artifact_digest"`
-	BuildManifest          json.RawMessage     `json:"build_manifest"`
-	DirectPlugins          []string            `json:"direct_plugins"`
-	ComponentCreationOrder []string            `json:"component_creation_order"`
-	ManyOrder              map[string][]string `json:"many_order"`
-	HostDependencies       map[string][]string `json:"host_dependencies"`
-}
+type ImageManifest = image.Manifest
 
 func (options BuildOptions) defaults() (BuildOptions, error) {
 	if options.Home == "" {
@@ -68,8 +59,8 @@ func (options BuildOptions) defaults() (BuildOptions, error) {
 }
 
 // Build performs the normal offline, readonly locked build, runs the generated
-// runtime's pre-switch check, and atomically commits an immutable image. It does
-// not change the current pointer.
+// runtime's validation check, and atomically commits an immutable image. It
+// does not mutate tags or Runtime bindings.
 func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options BuildOptions) (*BuildResult, error) {
 	if err := desired.Validate(); err != nil {
 		return nil, err
@@ -190,12 +181,16 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 		return nil, err
 	}
 	buildManifest := expectedBuildManifest
+	target, err := image.TargetFromBuildManifest(buildManifest)
+	if err != nil {
+		return nil, err
+	}
 	creationOrder, manyOrder, hostDependencies := inspectGraph(graph)
 	directPlugins := make([]string, len(lock.Plugins))
 	for i, plugin := range lock.Plugins {
 		directPlugins[i] = plugin.ID
 	}
-	imageManifest := ImageManifest{SchemaVersion: 2, ImageID: imageID, ArtifactDigest: artifactDigest, BuildManifest: buildManifest, DirectPlugins: directPlugins, ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies}
+	imageManifest := ImageManifest{SchemaVersion: 3, ImageID: imageID, ArtifactDigest: artifactDigest, Target: target, BuildManifest: buildManifest, DirectPlugins: directPlugins, ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies}
 	manifestData, err := json.MarshalIndent(imageManifest, "", "  ")
 	if err != nil {
 		return nil, err
@@ -230,12 +225,15 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 			}
 			committed = true
 			return existing, nil
+		} else {
+			return nil, fmt.Errorf("commit image: %w; existing image verification failed: %v", err, existingErr)
 		}
-		return nil, err
 	}
 	committed = true
-	_ = syncDirectory(imagesDirectory)
-	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, runtimeName), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies}, nil
+	if err := syncDirectory(imagesDirectory); err != nil {
+		return nil, err
+	}
+	return &BuildResult{ImageID: imageID, ArtifactDigest: artifactDigest, ImageDirectory: finalDirectory, BinaryPath: filepath.Join(finalDirectory, runtimeName), ComponentCreationOrder: creationOrder, ManyOrder: manyOrder, HostDependencies: hostDependencies, Target: target}, nil
 }
 
 func verifySelectedGraph(lock *Lock, selected []resolvedModule, devDirs map[string]string) error {
@@ -405,12 +403,7 @@ func inspectGraph(graph *Graph) ([]string, map[string][]string, map[string][]str
 }
 
 func fileDigest(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return image.FileDigest(path)
 }
 func runRuntimeCheck(ctx context.Context, binary string, environment []string) error {
 	command := exec.CommandContext(ctx, binary, "--ingot-check")
@@ -423,36 +416,12 @@ func runRuntimeCheck(ctx context.Context, binary string, environment []string) e
 	return nil
 }
 func readExistingImage(directory, imageID string, expectedBuildManifest []byte) (*BuildResult, error) {
-	data, err := os.ReadFile(filepath.Join(directory, "manifest.json"))
+	verified, err := image.Verify(directory, imageID, expectedBuildManifest)
 	if err != nil {
 		return nil, err
 	}
-	var manifest ImageManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return nil, err
-	}
-	if (manifest.SchemaVersion != 1 && manifest.SchemaVersion != 2) || manifest.ImageID != imageID {
-		return nil, &Error{Code: "INGOT-IMAGE-ID", Path: directory, Want: imageID, Actual: manifest.ImageID}
-	}
-	canonicalStored, err := canonicalJSON(manifest.BuildManifest)
-	if err != nil {
-		return nil, err
-	}
-	if digestBytes(canonicalStored) != imageID {
-		return nil, &Error{Code: "INGOT-IMAGE-BUILD-IDENTITY", Path: directory, Want: imageID, Actual: digestBytes(canonicalStored)}
-	}
-	if len(expectedBuildManifest) > 0 && !bytes.Equal(canonicalStored, expectedBuildManifest) {
-		return nil, &Error{Code: "INGOT-IMAGE-BUILD-MANIFEST", Path: directory, Want: digestBytes(expectedBuildManifest), Actual: digestBytes(canonicalStored)}
-	}
-	runtimeName := layout.RuntimeExecutableName(runtime.GOOS)
-	digest, err := fileDigest(filepath.Join(directory, runtimeName))
-	if err != nil {
-		return nil, err
-	}
-	if digest != manifest.ArtifactDigest {
-		return nil, &Error{Code: "INGOT-IMAGE-ARTIFACT", Path: directory, Want: manifest.ArtifactDigest, Actual: digest}
-	}
-	return &BuildResult{ImageID: imageID, ArtifactDigest: digest, ImageDirectory: directory, BinaryPath: filepath.Join(directory, runtimeName), ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder, HostDependencies: manifest.HostDependencies}, nil
+	manifest := verified.Manifest
+	return &BuildResult{ImageID: imageID, ArtifactDigest: manifest.ArtifactDigest, ImageDirectory: directory, BinaryPath: verified.BinaryPath, ComponentCreationOrder: manifest.ComponentCreationOrder, ManyOrder: manifest.ManyOrder, HostDependencies: manifest.HostDependencies, Target: manifest.Target}, nil
 }
 
 // VerifyImage verifies an immutable image's identity, provenance, and binary

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,10 +47,10 @@ type Lock struct {
 	BuilderVersion string          `toml:"builder_version"`
 	Replacements   []Replacement   `toml:"replacements"`
 	Runtime        RuntimeLock     `toml:"runtime"`
-	Toolchain      ToolchainLock   `toml:"toolchain"`
-	Target         TargetLock      `toml:"target"`
-	Environment    EnvironmentLock `toml:"environment"`
-	Build          BuildLock       `toml:"build"`
+	Toolchain      ToolchainLock   `toml:"-"`
+	Target         TargetLock      `toml:"-"`
+	Environment    EnvironmentLock `toml:"-"`
+	Build          BuildLock       `toml:"-"`
 	Plugins        []LockedPlugin  `toml:"plugins"`
 	Modules        []LockedModule  `toml:"modules"`
 	filePath       string
@@ -147,6 +148,7 @@ func ParseLock(filePath string) (*Lock, error) {
 	if err := decoder.Decode(&lock); err != nil {
 		return nil, diagnostic("INGOT-LOCK-PARSE", filePath, "", err)
 	}
+	lock.applyBuildDefaults()
 	lock.filePath = filePath
 	if err := lock.Validate(); err != nil {
 		if diagnosticErr, ok := err.(*Error); ok && diagnosticErr.Path == "" {
@@ -162,7 +164,7 @@ func validateLockPresence(data []byte) error {
 	if err := toml.Unmarshal(data, &document); err != nil {
 		return err
 	}
-	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "runtime", "toolchain", "target", "environment", "build", "plugins", "modules"} {
+	for _, key := range []string{"lock_version", "plugins_digest", "ingot_version", "builder_version", "replacements", "runtime", "plugins", "modules"} {
 		if _, ok := document[key]; !ok {
 			return fmt.Errorf("missing required field %s", key)
 		}
@@ -174,22 +176,6 @@ func validateLockPresence(data []byte) error {
 	for _, key := range []string{"module_path", "version"} {
 		if _, exists := runtimeTable[key]; !exists {
 			return fmt.Errorf("missing required field runtime.%s", key)
-		}
-	}
-	for table, keys := range map[string][]string{
-		"toolchain":   {"version"},
-		"target":      {"goos", "goarch", "cgo_enabled", "goexperiment", "tuning"},
-		"environment": {"gowork", "gotoolchain", "goproxy", "mod"},
-		"build":       {"trimpath", "buildvcs", "tags", "ldflags", "gcflags", "asmflags"},
-	} {
-		values, ok := document[table].(map[string]any)
-		if !ok {
-			return fmt.Errorf("%s must be a table", table)
-		}
-		for _, key := range keys {
-			if _, ok := values[key]; !ok {
-				return fmt.Errorf("missing required field %s.%s", table, key)
-			}
 		}
 	}
 	pluginTables, ok := tomlTableArray(document["plugins"])
@@ -264,6 +250,9 @@ func tomlTableArray(value any) ([]map[string]any, bool) {
 }
 
 func (l *Lock) Validate() error {
+	if l.Toolchain.Version == "" {
+		l.applyBuildDefaults()
+	}
 	if l.LockVersion != 3 {
 		return &Error{Code: "INGOT-LOCK-UNSUPPORTED-VERSION", Field: "lock_version", Want: "3", Actual: strconv.Itoa(l.LockVersion)}
 	}
@@ -319,6 +308,42 @@ func (l *Lock) Validate() error {
 		return err
 	}
 	return nil
+}
+
+func (l *Lock) applyBuildDefaults() {
+	if l.Toolchain.Version == "" {
+		l.Toolchain.Version = runtime.Version()
+	}
+	if l.Target.GOOS == "" {
+		l.Target.GOOS = runtime.GOOS
+	}
+	if l.Target.GOARCH == "" {
+		l.Target.GOARCH = runtime.GOARCH
+	}
+	if l.Target.GOExperiment == nil {
+		l.Target.GOExperiment = []string{}
+	}
+	if l.Target.Tuning == nil {
+		l.Target.Tuning = defaultTuning(l.Target.GOARCH)
+	}
+	if l.Environment == (EnvironmentLock{}) {
+		l.Environment = EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"}
+	}
+	if !l.Build.Trimpath && !l.Build.BuildVCS && l.Build.Tags == nil && l.Build.LDFlags == nil && l.Build.GCFlags == nil && l.Build.ASMFlags == nil {
+		l.Build.Trimpath = true
+	}
+	if l.Build.Tags == nil {
+		l.Build.Tags = []string{}
+	}
+	if l.Build.LDFlags == nil {
+		l.Build.LDFlags = []string{}
+	}
+	if l.Build.GCFlags == nil {
+		l.Build.GCFlags = []string{}
+	}
+	if l.Build.ASMFlags == nil {
+		l.Build.ASMFlags = []string{}
+	}
 }
 
 func validateRuntimeLockValue(value string) bool {

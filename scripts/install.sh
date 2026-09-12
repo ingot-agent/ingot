@@ -13,13 +13,13 @@
 #
 # After installation the script initializes a new home or refreshes the
 # official bundle in an existing home, collects model provider settings (from
-# the INGOT_* environment variables or interactively), runs `ingot apply` to
-# build the runtime image, and offers to start the web UI.
+# the INGOT_* environment variables or interactively), builds a named image,
+# creates the `default` Runtime, and offers to start the web UI.
 #
 # Usage:
 #   ./scripts/install.sh                          # -> /usr/local, one-command setup
 #   ./scripts/install.sh --prefix ~/.local        # -> ~/.local/bin, ~/.local/share/ingot
-#   DESTDIR=./pkg ./scripts/install.sh            # staged packaging (no init/apply)
+#   DESTDIR=./pkg ./scripts/install.sh            # staged packaging (no init/build)
 #   INGOT_API_KEY=sk-... INGOT_BASE_URL=https://api.example.com/v1 \
 #     INGOT_MODEL=gpt-4o-mini ./scripts/install.sh   # non-interactive
 set -eu
@@ -36,8 +36,8 @@ options:
   --home PATH        ingot home directory (default: ~/.ingot)
   --profile NAME     bundle profile: default (web UI) or minimal (default: default)
   --no-configure     skip model provider configuration
-  --no-apply         prepare the home only; do not build the runtime image
-  --no-open          do not open the web UI after apply
+  --no-apply         legacy alias: skip image build and Runtime creation
+  --no-open          do not open the web UI after start
   -h, --help         show this help
 
 Model provider settings, when not provided interactively:
@@ -165,13 +165,33 @@ ingot_bin="$bindir/ingot"
 # ---------------------------------------------------------------------------
 # 1. init
 # ---------------------------------------------------------------------------
-if [ -f "$home/plugins.toml" ]; then
-	echo "==> refreshing official plugins in existing home $home"
-	"$ingot_bin" --home "$home" bundle update --bundle "$sharedir/plugins"
+echo "==> initializing or refreshing ingot home $home (profile: $profile)"
+mkdir -p "$home"
+"$ingot_bin" --home "$home" init --profile "$profile" --bundle "$sharedir/plugins"
+
+image_ref=local/ingot:default
+runtime_name=default
+profile_recipe="$home/profiles/${profile}.toml"
+profile_lock="$home/profiles/${profile}.lock"
+if $no_apply; then
+	echo "==> skipping image build and Runtime creation (--no-apply legacy alias)"
 else
-	echo "==> initializing ingot home $home (profile: $profile)"
-	mkdir -p "$home"
-	"$ingot_bin" --home "$home" init --profile "$profile" --bundle "$sharedir/plugins"
+	echo "==> building runtime image (first build downloads modules and may take a few minutes)"
+	build_attempts=0
+	until "$ingot_bin" --home "$home" build --use "$profile_recipe" --lock "$profile_lock" --tag "$image_ref"; do
+		build_attempts=$((build_attempts + 1))
+		if [ "$build_attempts" -ge 2 ]; then
+			echo "install.sh: build failed twice; re-run this script after checking network access" >&2
+			exit 1
+		fi
+		echo "==> retrying build"
+		sleep 2
+	done
+	if "$ingot_bin" --home "$home" runtime inspect "$runtime_name" >/dev/null 2>&1; then
+		"$ingot_bin" --home "$home" runtime switch "$runtime_name" "$image_ref"
+	else
+		"$ingot_bin" --home "$home" runtime create "$runtime_name" --image "$image_ref" -- web
+	fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -180,8 +200,8 @@ fi
 # Plugins own their persistent configuration inside the Runtime Home; there is
 # no shared runtime config.toml. The model provider is configured by writing
 # the provider plugin's own state file before the first run.
-provider_dir="$home/state/model.openai-compatible"
-runtime_dir="$home/state/model.runtime"
+provider_dir="$home/runtimes/$runtime_name/state/model.openai-compatible"
+runtime_dir="$home/runtimes/$runtime_name/state/model.runtime"
 config="$provider_dir/config.toml"
 defaults="$runtime_dir/config.toml"
 configured=false
@@ -189,7 +209,7 @@ if [ -f "$config" ] && ! grep -q 'api_key = ""' "$config"; then
 	configured=true
 fi
 
-if $no_configure || $configured; then
+if $no_apply || $no_configure || $configured; then
 	:
 else
 	echo "==> model provider configuration"
@@ -255,27 +275,7 @@ PY
 fi
 
 # ---------------------------------------------------------------------------
-# 3. apply
-# ---------------------------------------------------------------------------
-if $no_apply; then
-	echo "==> skipping apply (--no-apply); run later: $ingot_bin --home \"$home\" apply"
-else
-	echo "==> building runtime image (first build downloads modules and may take a few minutes)"
-	apply_attempts=0
-	until "$ingot_bin" --home "$home" apply; do
-		apply_attempts=$((apply_attempts + 1))
-		if [ "$apply_attempts" -ge 2 ]; then
-			echo "install.sh: apply failed twice; re-run this script after checking network access" >&2
-			exit 1
-		fi
-		echo "==> retrying apply (attempt $((apply_attempts + 1)))"
-		sleep 2
-	done
-	echo "==> active image ready"
-fi
-
-# ---------------------------------------------------------------------------
-# 4. start
+# 3. start
 # ---------------------------------------------------------------------------
 launch_web() {
 	if [ -t 0 ]; then
@@ -285,26 +285,23 @@ launch_web() {
 			n|N|no|NO) return ;;
 		esac
 	fi
-	mkdir -p "$1"
-	echo '==> starting web UI in the background (log: '"$1/web.log"')'
-	"$ingot_bin" --home "$1" web >"$1/web.log" 2>&1 &
-	web_pid=$!
-	sleep 1
-	if kill -0 "$web_pid" 2>/dev/null; then
-		echo "    listening on http://127.0.0.1:7316/ (pid $web_pid)"
+	echo '==> starting web UI in the background'
+	if "$ingot_bin" --home "$1" runtime start "$runtime_name"; then
+		echo "    listening on http://127.0.0.1:7316/"
 		if ! $no_open && [ -n "${DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
 			(xdg-open http://127.0.0.1:7316/ >/dev/null 2>&1 || true) &
 		fi
 	else
-		echo "    web UI did not start; inspect $1/web.log" >&2
+		echo "    web UI did not start; run: $ingot_bin --home \"$1\" runtime logs $runtime_name" >&2
 	fi
 }
 
-if [ -z "$no_apply" ]; then
+if ! $no_apply; then
 	launch_web "$home"
 else
 	echo
 	echo "Agent home is ready. Next steps:"
-	echo "  $ingot_bin --home \"$home\" apply"
-	echo "  $ingot_bin --home \"$home\" web   # then open http://127.0.0.1:7316/"
+	echo "  $ingot_bin --home \"$home\" build --use \"$profile_recipe\" --lock \"$profile_lock\" --tag $image_ref"
+	echo "  $ingot_bin --home \"$home\" runtime create $runtime_name --image $image_ref -- web"
+	echo "  $ingot_bin --home \"$home\" runtime start $runtime_name"
 fi

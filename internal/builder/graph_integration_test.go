@@ -118,8 +118,18 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	if !strings.Contains(string(mainData), "INGOT_RUNTIME_HOME") {
 		t.Fatal("generated runtime must resolve its home from INGOT_RUNTIME_HOME")
 	}
+	if !strings.Contains(string(mainData), "func runtimeMain() int") || strings.Index(string(mainData), "acquireRuntimeWriterLock(home)") > strings.Index(string(mainData), "run(runtimeContext") {
+		t.Fatal("generated runtime must acquire writer lock before constructing the graph")
+	}
+	writerData, err := os.ReadFile(filepath.Join(root, "writer_lock_nonwindows_gen.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(writerData), "writer.lock") || !strings.Contains(string(writerData), "LOCK_NB") {
+		t.Fatal("generated runtime writer lock is not non-blocking")
+	}
 	runtimePath := filepath.Join(root, layout.RuntimeExecutableName(runtime.GOOS))
-	command := exec.Command("go", "build", "-mod=readonly", "-o", runtimePath, ".")
+	command := exec.Command("go", "build", "-mod=readonly", "-buildvcs=false", "-o", runtimePath, ".")
 	command.Dir = root
 	command.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local", "GOPROXY=off", "CGO_ENABLED=0")
 	output, err := command.CombinedOutput()

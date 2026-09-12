@@ -126,7 +126,6 @@ type desiredPluginProjection struct {
 type desiredSourceProjection struct {
 	Kind    string `json:"kind"`
 	Version string `json:"version,omitempty"`
-	Path    string `json:"path,omitempty"`
 }
 
 // CanonicalJSON returns CanonicalDesiredPluginsV1 in RFC 8785 form.
@@ -136,7 +135,10 @@ func (d *DesiredPlugins) CanonicalJSON() ([]byte, error) {
 	}
 	projection := desiredProjection{SchemaVersion: 1, Plugins: make([]desiredPluginProjection, len(d.Plugins))}
 	for i, plugin := range d.Plugins {
-		source := desiredSourceProjection{Kind: "path", Path: plugin.Path}
+		// A local source locator is a workspace detail. Its verified content
+		// digest enters the lock and BuildManifest; the absolute or relative
+		// spelling of the locator does not enter Image identity.
+		source := desiredSourceProjection{Kind: "path"}
 		if plugin.Version != "" {
 			source = desiredSourceProjection{Kind: "module", Version: plugin.Version}
 		}

@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ingot-agent/ingot/internal/builder"
 	"golang.org/x/mod/module"
 )
 
@@ -60,25 +59,4 @@ func (home *Home) ResolveModuleQuery(ctx context.Context, specification string) 
 		return "", "", fmt.Errorf("resolver returned non-canonical module %s@%s", result.Path, result.Version)
 	}
 	return result.Path, result.Version, nil
-}
-
-func (home *Home) LookupPlugin(reference string) (DesiredLookup, error) {
-	desired, err := builder.ParseDesired(home.DesiredPath())
-	if err != nil {
-		return DesiredLookup{}, err
-	}
-	lock, lockErr := builder.ParseLock(home.LockPath())
-	if lockErr != nil {
-		lock = nil
-	}
-	index, err := findPlugin(desired, lock, reference)
-	if err != nil {
-		return DesiredLookup{}, err
-	}
-	return DesiredLookup{Index: index, Plugin: desired.Plugins[index]}, nil
-}
-
-type DesiredLookup struct {
-	Index  int
-	Plugin builder.DesiredPlugin
 }

@@ -313,6 +313,12 @@ func Materialize(sourceDir, homeRoot string, profile *Profile) ([]Entry, error) 
 	return readEntries(destRoot, profile)
 }
 
+// ManagedEntries reads one profile from the plugin sources materialized in an
+// initialized Home.
+func ManagedEntries(homeRoot string, profile *Profile) ([]Entry, error) {
+	return readEntries(filepath.Join(homeRoot, BundledDirectory), profile)
+}
+
 // staleMarker reports whether destRoot is missing, has a different digest, or
 // is missing any of the profile's plugin directories.
 func staleMarker(destRoot, digest string, profile *Profile) bool {

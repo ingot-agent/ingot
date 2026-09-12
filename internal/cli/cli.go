@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,27 +30,35 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 	}
 	homePath, arguments, err := parseGlobalHome(arguments)
 	if err != nil {
-		_, _ = fmt.Fprintln(cli.Stderr, err)
-		return 2
-	}
-	home, err := ingothome.Open(homePath)
-	if err != nil {
-		_, _ = fmt.Fprintln(cli.Stderr, err)
-		return 1
+		return cli.usageError(err.Error())
 	}
 	if len(arguments) == 0 {
 		cli.usage()
 		return 2
 	}
 	command, rest := arguments[0], arguments[1:]
+	if command == "help" || command == "--help" || command == "-h" {
+		cli.usage()
+		return 0
+	}
+	var home *ingothome.Home
+	if command == "supervise" {
+		home, err = ingothome.OpenForSupervisor(homePath)
+	} else if command == "init" {
+		home, err = ingothome.OpenForInit(homePath)
+	} else {
+		home, err = ingothome.Open(homePath)
+	}
+	if err != nil {
+		return cli.result(err)
+	}
 	switch command {
 	case "init":
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
 		flags.SetOutput(cli.Stderr)
-		profile := flags.String("profile", "default", "bundle profile: default or minimal")
-		bundlePath := flags.String("bundle", "", "official plugins distribution directory (default: locate relative to the executable)")
-		force := flags.Bool("force", false, "overwrite an already initialized home")
-		directApply := flags.Bool("apply", false, "resolve, build and switch current immediately")
+		profile := flags.String("profile", "default", "bundle profile")
+		bundlePath := flags.String("bundle", "", "official plugins directory")
+		force := flags.Bool("force", false, "rewrite managed Home configuration")
 		if err := flags.Parse(rest); err != nil {
 			return 2
 		}
@@ -59,101 +66,82 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 			return cli.usageError("init takes no positional arguments")
 		}
 		result, err := home.Init(ingothome.InitOptions{Profile: *profile, BundlePath: *bundlePath, Force: *force})
-		if err != nil {
-			return cli.result(err)
+		if err == nil {
+			err = writeJSON(cli.Stdout, result)
 		}
-		if result.WrotePlugins {
-			_, _ = fmt.Fprintf(cli.Stdout, "Initialized ingot home: %s\n", result.Home)
-			_, _ = fmt.Fprintf(cli.Stdout, "  profile: %s (%d plugins)\n", result.Profile, len(result.Plugins))
-			_, _ = fmt.Fprintf(cli.Stdout, "  sources: %s\n", result.BundledPath)
-			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.PluginsPath)
-		}
-		if result.WroteBuilderConfig {
-			_, _ = fmt.Fprintf(cli.Stdout, "  wrote: %s\n", result.BuilderConfigPath)
-		}
-		if *directApply {
-			applied, err := home.Apply(ctx, builder.ResolveOptions{})
-			if err != nil {
-				_, _ = fmt.Fprintln(cli.Stderr, "init files written; apply failed:", err)
-				return 1
-			}
-			_, _ = fmt.Fprintf(cli.Stdout, "  applied image: %s\n", applied.ImageID)
-			_, _ = fmt.Fprintln(cli.Stdout, "\nYou can now run: ingot <command>  (e.g. ingot web)")
-			return 0
-		}
-		_, _ = fmt.Fprintln(cli.Stdout, "\nNext steps:")
-		_, _ = fmt.Fprintln(cli.Stdout, "  1. Run: ingot apply")
-		_, _ = fmt.Fprintln(cli.Stdout, "  2. Run: ingot web   (open the browser workspace)")
-		_, _ = fmt.Fprintln(cli.Stdout, "  3. Configure the model provider through the app.backend Operations UI.")
-		return 0
+		return cli.result(err)
 	case "resolve":
-		if len(rest) != 0 {
-			return cli.usageError("resolve takes no arguments")
+		options, resolveOptions, code := cli.parseRecipeFlags("resolve", rest, false)
+		if code != 0 {
+			return code
 		}
-		lock, err := home.Resolve(ctx, builder.ResolveOptions{})
+		lock, paths, err := home.ResolveProject(ctx, options, resolveOptions)
 		if err == nil {
-			id, _ := lock.ImageID()
-			_, _ = fmt.Fprintln(cli.Stdout, id)
+			imageID, _ := lock.ImageID()
+			err = writeJSON(cli.Stdout, map[string]any{"recipe": paths.Recipe, "lock": paths.Lock, "image_id": imageID})
 		}
 		return cli.result(err)
+	case "project":
+		return cli.runProject(ctx, home, rest)
 	case "build":
-		if len(rest) != 0 {
-			return cli.usageError("build takes no arguments")
+		options, resolveOptions, code := cli.parseRecipeFlags("build", rest, true)
+		if code != 0 {
+			return code
 		}
-		result, err := home.Build(ctx)
+		result, paths, err := home.BuildProject(ctx, options, resolveOptions)
 		if err == nil {
-			_, _ = fmt.Fprintln(cli.Stdout, result.ImageID)
-		}
-		return cli.result(err)
-	case "apply":
-		if len(rest) != 0 {
-			return cli.usageError("apply takes no arguments")
-		}
-		result, err := home.Apply(ctx, builder.ResolveOptions{})
-		if err == nil {
-			_, _ = fmt.Fprintln(cli.Stdout, result.ImageID)
+			err = writeJSON(cli.Stdout, map[string]any{"recipe": paths.Recipe, "lock": paths.Lock, "image_id": result.ImageID, "artifact_digest": result.ArtifactDigest, "target": result.Target})
 		}
 		return cli.result(err)
 	case "status":
-		if len(rest) != 0 {
-			return cli.usageError("status takes no arguments")
+		options, _, code := cli.parseRecipeFlags("status", rest, false)
+		if code != 0 {
+			return code
 		}
-		status, err := home.Status()
+		status, err := home.ProjectStatus(options)
 		if err == nil {
 			err = writeJSON(cli.Stdout, status)
 		}
 		return cli.result(err)
 	case "inspect":
-		if len(rest) > 1 {
+		before, _ := splitDashDash(rest)
+		options, remaining, err := extractRecipeOptions(before)
+		if err != nil {
+			return cli.usageError(err.Error())
+		}
+		if len(remaining) > 1 {
 			return cli.usageError("inspect accepts at most one plugin id or name")
 		}
 		reference := ""
-		if len(rest) == 1 {
-			reference = rest[0]
+		if len(remaining) == 1 {
+			reference = remaining[0]
 		}
-		inspection, err := home.Inspect(reference)
+		inspection, err := home.ProjectInspect(options, reference)
 		if err == nil {
 			err = writeJSON(cli.Stdout, inspection)
 		}
 		return cli.result(err)
-	case "rollback":
-		if len(rest) > 1 {
-			return cli.usageError("rollback accepts at most one image id")
+	case "image":
+		return cli.runImage(ctx, home, rest)
+	case "runtime":
+		return cli.runRuntime(ctx, home, rest)
+	case "run":
+		return cli.runNamed(ctx, home, rest)
+	case "ps":
+		if len(rest) != 0 {
+			return cli.usageError("ps takes no arguments")
 		}
-		imageID := ""
-		if len(rest) == 1 {
-			imageID = rest[0]
-		}
-		err := home.Rollback(ctx, imageID)
+		processes, err := home.Processes(ctx)
 		if err == nil {
-			current, _ := home.Current()
-			_, _ = fmt.Fprintln(cli.Stdout, current)
+			err = writeJSON(cli.Stdout, processes)
 		}
 		return cli.result(err)
+	case "stop":
+		return cli.runStop(ctx, home, rest)
 	case "gc":
 		flags := flag.NewFlagSet("gc", flag.ContinueOnError)
 		flags.SetOutput(cli.Stderr)
-		keep := flags.Int("keep", 3, "number of recent images to retain")
+		keep := flags.Int("keep-recent", 3, "recent unreferenced images to keep")
 		if err := flags.Parse(rest); err != nil {
 			return 2
 		}
@@ -162,19 +150,39 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		}
 		removed, err := home.GC(ctx, *keep)
 		if err == nil {
-			err = writeJSON(cli.Stdout, removed)
+			err = writeJSON(cli.Stdout, map[string]any{"removed": removed})
 		}
 		return cli.result(err)
 	case "plugin":
 		return cli.runPlugin(ctx, home, rest)
 	case "bundle":
 		return cli.runBundle(ctx, home, rest)
-	case "help", "--help", "-h":
-		cli.usage()
-		return 0
+	case "supervise":
+		return cli.runSupervise(ctx, home, rest)
+	case "apply", "rollback":
+		return cli.usageError(command + " was removed in M2; use build/runtime switch/runtime rollback")
 	default:
-		return cli.runCurrent(ctx, home, arguments)
+		return cli.usageError("unknown command " + strconv.Quote(command))
 	}
+}
+
+func (cli CLI) parseRecipeFlags(name string, arguments []string, build bool) (ingothome.RecipeOptions, builder.ResolveOptions, int) {
+	flags := flag.NewFlagSet(name, flag.ContinueOnError)
+	flags.SetOutput(cli.Stderr)
+	use := flags.String("use", "", "recipe path")
+	lock := flags.String("lock", "", "lock path")
+	locked := flags.Bool("locked", false, "require an existing up-to-date lock")
+	tag := flags.String("tag", "", "image name:tag")
+	if err := flags.Parse(arguments); err != nil {
+		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, 2
+	}
+	if flags.NArg() != 0 {
+		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, cli.usageError(name + " takes no positional arguments")
+	}
+	if !build && (*locked || *tag != "") {
+		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, cli.usageError(name + " does not accept --locked or --tag")
+	}
+	return ingothome.RecipeOptions{Use: *use, Lock: *lock, Locked: *locked, Tag: *tag}, builder.ResolveOptions{}, 0
 }
 
 func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []string) int {
@@ -185,7 +193,7 @@ func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []
 	flags := flag.NewFlagSet("bundle "+command, flag.ContinueOnError)
 	flags.SetOutput(cli.Stderr)
 	bundlePath := flags.String("bundle", "", "official plugins distribution directory (default: locate relative to the executable)")
-	apply := flags.Bool("apply", false, "resolve, build and switch current after updating")
+	apply := flags.Bool("apply", false, "legacy flag removed in M2")
 	if err := flags.Parse(rest); err != nil {
 		return 2
 	}
@@ -203,6 +211,9 @@ func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []
 		}
 		return cli.result(err)
 	case "update":
+		if *apply {
+			return cli.usageError("bundle update --apply was removed in M2")
+		}
 		result, err := home.UpdateBundle(ctx, ingothome.BundleUpdateOptions{BundlePath: *bundlePath, Apply: *apply})
 		if err == nil {
 			err = writeJSON(cli.Stdout, result)
@@ -213,26 +224,28 @@ func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []
 	}
 }
 
-func (cli CLI) runCurrent(ctx context.Context, home *ingothome.Home, arguments []string) int {
-	err := home.RunCurrent(ctx, arguments)
-	var exitErr *ingothome.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr.Code
-	}
-	return cli.result(err)
-}
-
 func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []string) int {
 	if len(arguments) == 0 {
 		return cli.usageError("plugin requires a subcommand")
 	}
 	command, rest := arguments[0], arguments[1:]
+	if remaining, apply, err := extractBoolOption(rest, "apply"); err != nil {
+		return cli.usageError(err.Error())
+	} else if apply {
+		return cli.usageError("plugin --apply was removed in M2")
+	} else {
+		rest = remaining
+	}
+	options, rest, err := extractRecipeOptions(rest)
+	if err != nil {
+		return cli.usageError(err.Error())
+	}
 	switch command {
 	case "list":
 		if len(rest) != 0 {
 			return cli.usageError("plugin list takes no arguments")
 		}
-		inspection, err := home.Inspect("")
+		inspection, err := home.ProjectInspect(options, "")
 		if err == nil {
 			err = writeJSON(cli.Stdout, inspection.DirectPlugins)
 		}
@@ -241,16 +254,12 @@ func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []
 		if len(rest) != 1 {
 			return cli.usageError("plugin inspect requires an id or name")
 		}
-		inspection, err := home.Inspect(rest[0])
+		inspection, err := home.ProjectInspect(options, rest[0])
 		if err == nil {
 			err = writeJSON(cli.Stdout, inspection)
 		}
 		return cli.result(err)
 	case "add":
-		rest, apply, err := extractBoolOption(rest, "apply")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
 		rest, localPath, _, err := extractStringOption(rest, "path")
 		if err != nil {
 			return cli.usageError(err.Error())
@@ -268,7 +277,11 @@ func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []
 			if identityErr != nil {
 				return cli.result(identityErr)
 			}
-			locator, relativeErr := filepath.Rel(home.Root, absolute)
+			paths, discoverErr := ingothome.DiscoverProject(options)
+			if discoverErr != nil {
+				return cli.result(discoverErr)
+			}
+			locator, relativeErr := filepath.Rel(filepath.Dir(paths.Recipe), absolute)
 			if relativeErr != nil {
 				locator = absolute
 			}
@@ -282,30 +295,22 @@ func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []
 			plugin = builder.DesiredPlugin{Module: moduleID, Version: version}
 		}
 		if err == nil {
-			_, err = home.Add(ctx, plugin, builder.ResolveOptions{}, apply)
+			_, err = home.AddProject(ctx, options, plugin, builder.ResolveOptions{})
 		}
 		return cli.result(err)
 	case "remove":
-		rest, apply, err := extractBoolOption(rest, "apply")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
 		if len(rest) != 1 {
 			return cli.usageError("plugin remove requires an id or name")
 		}
-		_, err = home.Remove(ctx, rest[0], builder.ResolveOptions{}, apply)
+		_, err = home.RemoveProject(ctx, options, rest[0], builder.ResolveOptions{})
 		return cli.result(err)
 	case "update":
-		rest, apply, err := extractBoolOption(rest, "apply")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
 		if len(rest) != 1 {
 			return cli.usageError("plugin update requires name[@query] or id[@query]")
 		}
 		token := rest[0]
 		reference, query := splitReferenceQuery(token)
-		lookup, err := home.LookupPlugin(reference)
+		lookup, err := home.LookupProjectPlugin(options, reference)
 		if err != nil {
 			return cli.result(err)
 		}
@@ -314,14 +319,10 @@ func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []
 		}
 		moduleID, version, err := home.ResolveModuleQuery(ctx, lookup.Plugin.Module+"@"+query)
 		if err == nil {
-			_, err = home.Update(ctx, reference, builder.DesiredPlugin{Module: moduleID, Version: version}, builder.ResolveOptions{}, apply)
+			_, err = home.UpdateProject(ctx, options, reference, builder.DesiredPlugin{Module: moduleID, Version: version}, builder.ResolveOptions{})
 		}
 		return cli.result(err)
 	case "reorder":
-		rest, apply, err := extractBoolOption(rest, "apply")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
 		rest, before, hasBefore, err := extractStringOption(rest, "before")
 		if err != nil {
 			return cli.usageError(err.Error())
@@ -337,7 +338,7 @@ func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []
 		if hasAfter {
 			anchor, isBefore = after, false
 		}
-		_, err = home.Reorder(ctx, rest[0], anchor, isBefore, builder.ResolveOptions{}, apply)
+		_, err = home.ReorderProject(ctx, options, rest[0], anchor, isBefore, builder.ResolveOptions{})
 		return cli.result(err)
 	default:
 		return cli.usageError("unknown plugin subcommand " + strconv.Quote(command))
@@ -432,5 +433,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|resolve|build|apply|status|inspect|rollback|gc|bundle ...|plugin ...|web|runtime command>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|bundle ...|plugin ...>")
 }

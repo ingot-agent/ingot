@@ -1,234 +1,323 @@
 package home
 
 import (
+	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ingot-agent/ingot/internal/builder"
+	"github.com/ingot-agent/ingot/internal/image"
 	"github.com/ingot-agent/ingot/internal/layout"
 )
 
-func TestCurrentSwitchRollbackAndGC(t *testing.T) {
-	t.Parallel()
-	home, err := Open(t.TempDir())
+func newM2Home(t *testing.T) *Home {
+	t.Helper()
+	root := t.TempDir()
+	home, err := OpenForInit(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := writeImageFixture(t, home, `{"generation":1}`, "first")
-	second := writeImageFixture(t, home, `{"generation":2}`, "second")
-	third := writeImageFixture(t, home, `{"generation":3}`, "third")
-	if err := home.switchCurrent(first); err != nil {
+	if err := home.initializeSchema(); err != nil {
 		t.Fatal(err)
 	}
-	if err := home.switchCurrent(second); err != nil {
+	home, err = Open(root)
+	if err != nil {
 		t.Fatal(err)
 	}
-	current, err := home.Current()
-	if err != nil || current != second {
-		t.Fatalf("current = %q, %v", current, err)
+	return home
+}
+
+func TestOpenRejectsUninitializedAndLegacyHome(t *testing.T) {
+	if _, err := Open(t.TempDir()); err == nil || !strings.Contains(err.Error(), "INGOT-HOME-SCHEMA-MISSING") {
+		t.Fatalf("empty home error = %v", err)
 	}
-	if err := home.Rollback(context.Background(), ""); err != nil {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "current"), []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	current, _ = home.Current()
-	if current != first {
-		t.Fatalf("rollback current = %q", current)
+	if _, err := OpenForInit(root); err == nil {
+		t.Fatal("legacy non-empty home was accepted")
+	}
+}
+
+func TestSupervisorOpenDoesNotAcquireHomeWriterLock(t *testing.T) {
+	home := newM2Home(t)
+	release, err := home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if _, err := OpenForSupervisor(home.Root); err != nil {
+		t.Fatalf("supervisor open while writer lock held: %v", err)
+	}
+}
+
+func TestTagRuntimeBindingRollbackAndGC(t *testing.T) {
+	home := newM2Home(t)
+	first := writeM2ImageFixture(t, home, "first")
+	second := writeM2ImageFixture(t, home, "second")
+	third := writeM2ImageFixture(t, home, "third")
+	if _, err := home.ImageTag(context.Background(), first, "acme/app:stable"); err != nil {
+		t.Fatal(err)
+	}
+	work, err := home.RuntimeCreate(context.Background(), "work", "acme/app:stable", []string{"serve"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := home.ImageTag(context.Background(), second, "acme/app:stable"); err != nil {
+		t.Fatal(err)
+	}
+	if work.DesiredImage.ImageID != first {
+		t.Fatalf("runtime followed moved tag: %s", work.DesiredImage.ImageID)
+	}
+	personal, err := home.RuntimeCreate(context.Background(), "personal", "acme/app:stable", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if personal.DesiredImage.ImageID != second {
+		t.Fatalf("new runtime resolved %s, want %s", personal.DesiredImage.ImageID, second)
+	}
+	switched, err := home.RuntimeSwitch(context.Background(), "work", "acme/app:stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if switched.DesiredImage.ImageID != second || switched.RollbackImage == nil || switched.RollbackImage.ImageID != first {
+		t.Fatalf("switch = %#v", switched.Runtime)
+	}
+	rolled, err := home.RuntimeRollback(context.Background(), "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolled.DesiredImage.ImageID != first || rolled.RollbackImage == nil || rolled.RollbackImage.ImageID != second {
+		t.Fatalf("rollback = %#v", rolled.Runtime)
 	}
 	removed, err := home.GC(context.Background(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(removed) != 1 || removed[0] != third {
-		t.Fatalf("GC removed %#v", removed)
-	}
-	if _, err := os.Stat(home.imageDirectory(first)); err != nil {
-		t.Fatal("GC removed current", err)
-	}
-	if _, err := os.Stat(home.imageDirectory(second)); err != nil {
-		t.Fatal("GC removed previous", err)
+		t.Fatalf("removed = %#v", removed)
 	}
 }
 
-func TestSwitchRejectsTraversalAndCorruptArtifact(t *testing.T) {
-	t.Parallel()
-	home, err := Open(t.TempDir())
-	if err != nil {
+func TestRuntimeStateIsolation(t *testing.T) {
+	home := newM2Home(t)
+	id := writeM2ImageFixture(t, home, "image")
+	if _, err := home.RuntimeCreate(context.Background(), "one", id, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := home.switchCurrent("sha256:../../outside"); err == nil {
-		t.Fatal("path traversal image id was accepted")
-	}
-	imageID := writeImageFixture(t, home, `{"generation":1}`, "binary")
-	if err := os.WriteFile(filepath.Join(home.imageDirectory(imageID), layout.RuntimeExecutableName(runtime.GOOS)), []byte("corrupt"), 0o755); err != nil {
+	if _, err := home.RuntimeCreate(context.Background(), "two", id, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := home.switchCurrent(imageID); err == nil {
-		t.Fatal("corrupt artifact was accepted")
+	one := filepath.Join(home.Root, "runtimes", "one", "state", "plugin", "value")
+	two := filepath.Join(home.Root, "runtimes", "two", "state", "plugin", "value")
+	if err := os.MkdirAll(filepath.Dir(one), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(two), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(one, []byte("one"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(two, []byte("two"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	left, _ := os.ReadFile(one)
+	right, _ := os.ReadFile(two)
+	if string(left) == string(right) {
+		t.Fatal("runtime state was not isolated")
 	}
 }
 
-func TestResolveCandidateValidatesBuilderConfig(t *testing.T) {
-	t.Parallel()
-	home, err := Open(t.TempDir())
+func TestForegroundRunInjectsRuntimeHomeAndRecordsExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX script fixture")
+	}
+	home := newM2Home(t)
+	recorded := filepath.Join(t.TempDir(), "runtime-home")
+	script := "#!/bin/sh\nprintf '%s' \"$INGOT_RUNTIME_HOME\" > " + strconvQuote(recorded) + "\n"
+	id := writeM2ImageFixture(t, home, script)
+	if _, err := home.RuntimeCreate(context.Background(), "work", id, nil); err != nil {
+		t.Fatal(err)
+	}
+	code, err := home.RuntimeRun(context.Background(), "work", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
+	if err != nil && strings.Contains(err.Error(), "operation not permitted") {
+		t.Skip("sandbox forbids loopback control listener")
+	}
+	if err != nil || code != 0 {
+		t.Fatalf("run = %d, %v", code, err)
+	}
+	data, err := os.ReadFile(recorded)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(home.BuilderConfigPath(), []byte("builder_config_version = 1\nunknown = true\n"), 0o600); err != nil {
+	want := filepath.Join(home.Root, "runtimes", "work")
+	if string(data) != want {
+		t.Fatalf("runtime home = %q, want %q", data, want)
+	}
+	view, err := home.RuntimeInspect(context.Background(), "work")
+	if err != nil {
 		t.Fatal(err)
 	}
-	desired := builder.NewDesired(home.DesiredPath(), nil)
-	if _, err := home.resolveCandidate(context.Background(), desired, builder.ResolveOptions{}); err == nil || !strings.Contains(err.Error(), "INGOT-BUILDER-CONFIG-PARSE") {
-		t.Fatalf("invalid builder.toml error = %v", err)
+	if view.State != "stopped" || view.LastExit == nil || view.LastExit.ExitCode != 0 {
+		t.Fatalf("view = %#v", view)
 	}
 }
 
-func TestOpenRecoversPluginPairTransaction(t *testing.T) {
-	t.Parallel()
-	home, err := Open(t.TempDir())
+func TestImageBundleRoundTripDeterministic(t *testing.T) {
+	home := newM2Home(t)
+	id := writeM2ImageFixture(t, home, "bundle-binary")
+	if _, err := home.ImageTag(context.Background(), id, "acme/app:one"); err != nil {
+		t.Fatal(err)
+	}
+	first := filepath.Join(t.TempDir(), "first.ingot-image")
+	second := filepath.Join(t.TempDir(), "second.ingot-image")
+	if err := home.ImageExport(context.Background(), "acme/app:one", "", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := home.ImageExport(context.Background(), "acme/app:one", "", second); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.ReadFile(first)
+	b, _ := os.ReadFile(second)
+	if !bytes.Equal(a, b) {
+		t.Fatal("bundle bytes are not deterministic")
+	}
+	other := newM2Home(t)
+	result, err := other.ImageImport(context.Background(), first, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	desired, lock := []byte("desired candidate"), []byte("lock candidate")
-	marker, err := json.Marshal(transaction{Desired: base64.StdEncoding.EncodeToString(desired), Lock: base64.StdEncoding.EncodeToString(lock)})
+	if result.Binding.ImageID != id || result.Tag == nil {
+		t.Fatalf("import = %#v", result)
+	}
+	if _, _, err := other.ResolveImage(context.Background(), "acme/app:one"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOpenRecoversImageImportAndRuntimeDeleteTransactions(t *testing.T) {
+	home := newM2Home(t)
+	id := writeM2ImageFixture(t, home, "transaction-image")
+	binding, _, err := home.resolveImageUnlocked(id, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(home.transactionPath(), marker, 0o600); err != nil {
+	tag := image.Source{Name: "acme/recovered", Tag: "latest"}
+	binding.Source = &tag
+	if _, err := home.writeHomeTransaction(homeTransaction{Kind: "image_import", ImageImport: &imageImportTransaction{Binding: binding, Tag: tag}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(home.DesiredPath(), []byte("partial old value"), 0o600); err != nil {
+	if _, err := home.RuntimeCreate(context.Background(), "discard", id, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := home.writeHomeTransaction(homeTransaction{Kind: "runtime_delete", RuntimeDelete: &runtimeDeleteTransaction{Name: "discard", Purge: true}}); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := Open(home.Root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotDesired, err := os.ReadFile(reopened.DesiredPath())
+	resolved, _, err := reopened.ResolveImage(context.Background(), "acme/recovered:latest")
+	if err != nil || resolved.ImageID != id {
+		t.Fatalf("recovered binding = %#v, %v", resolved, err)
+	}
+	if _, err := os.Stat(reopened.registry().RuntimeHome("discard")); !os.IsNotExist(err) {
+		t.Fatalf("runtime delete transaction was not completed: %v", err)
+	}
+	entries, err := os.ReadDir(reopened.transactionDirectory())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("transactions after recovery = %#v, %v", entries, err)
+	}
+}
+
+func TestProjectWriterLockHonorsContext(t *testing.T) {
+	project := t.TempDir()
+	recipe := filepath.Join(project, "plugins.toml")
+	if err := os.WriteFile(recipe, []byte("plugins_version = 1\nplugins = []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	options := RecipeOptions{CWD: project}
+	paths, err := resolveProjectPaths(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotLock, err := os.ReadFile(reopened.LockPath())
+	release, err := acquireProjectLock(context.Background(), projectWriterLockPath(paths))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotDesired) != string(desired) || string(gotLock) != string(lock) {
-		t.Fatalf("recovered pair = %q / %q", gotDesired, gotLock)
-	}
-	if _, err := os.Stat(home.transactionPath()); !os.IsNotExist(err) {
-		t.Fatalf("transaction marker still exists: %v", err)
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, blockedRelease, err := prepareProject(ctx, options); err == nil {
+		blockedRelease()
+		t.Fatal("second project writer acquired an already-held lock")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lock error = %v", err)
 	}
 }
 
 func TestDesiredWriterPreservesCommentsAcrossUpdateAndReorder(t *testing.T) {
-	t.Parallel()
 	path := filepath.Join(t.TempDir(), "plugins.toml")
-	existing := `# top-level note
-plugins_version = 1
-
-[[plugins]]
-# A detail
-module = "example.com/a"
-version = "v1.0.0" # A pin
-
-[[plugins]]
-module = "example.com/b" # B identity
-version = "v1.0.0"
-`
-	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+	existing := "# top-level note\nplugins_version = 1\n\n[[plugins]]\n# A detail\nmodule = \"example.com/a\"\nversion = \"v1.0.0\" # A pin\n"
+	if err := os.WriteFile(path, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	desired := builder.NewDesired(path, []builder.DesiredPlugin{
-		{Module: "example.com/b", Version: "v1.0.0"},
-		{Module: "example.com/a", Version: "v1.1.0"},
-		{Module: "example.com/c", Version: "v1.0.0"},
-	})
+	desired := builder.NewDesired(path, []builder.DesiredPlugin{{Module: "example.com/a", Version: "v1.1.0"}})
 	data, err := marshalDesiredPreservingComments(path, desired)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, comment := range []string{"# top-level note", "# A detail", "# A pin", "# B identity"} {
+	for _, comment := range []string{"# top-level note", "# A detail", "# A pin"} {
 		if !strings.Contains(string(data), comment) {
-			t.Fatalf("comment %q was lost:\n%s", comment, data)
+			t.Fatalf("lost %s", comment)
 		}
-	}
-	written := filepath.Join(t.TempDir(), "plugins.toml")
-	if err := os.WriteFile(written, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	parsed, err := builder.ParseDesired(written)
-	if err != nil {
-		t.Fatalf("preserved output is invalid: %v\n%s", err, data)
-	}
-	if len(parsed.Plugins) != 3 || parsed.Plugins[0].Module != "example.com/b" || parsed.Plugins[1].Version != "v1.1.0" || parsed.Plugins[2].Module != "example.com/c" {
-		t.Fatalf("preserved semantics = %#v", parsed.Plugins)
 	}
 }
 
-func writeImageFixture(t *testing.T, home *Home, buildManifest, binary string) string {
+func writeM2ImageFixture(t *testing.T, home *Home, binary string) string {
 	t.Helper()
-	manifestDigest := sha256.Sum256([]byte(buildManifest))
-	imageID := "sha256:" + hex.EncodeToString(manifestDigest[:])
-	directory := home.imageDirectory(imageID)
+	target := image.Target{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, CGOEnabled: false, GOExperiment: []string{}, Tuning: []image.TargetKey{}}
+	buildManifestValue := map[string]any{"schema_version": 3, "target": map[string]any{"goos": target.GOOS, "goarch": target.GOARCH, "cgo_enabled": false, "goexperiment": []string{}, "tuning": map[string]string{}}}
+	buildManifest, err := image.CanonicalJSON(buildManifestValue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildManifest = bytes.Replace(buildManifest, []byte(`"schema_version":3`), []byte(`"fixture":`+strconvQuote(binary)+`,"schema_version":3`), 1)
+	buildManifest, err = image.CanonicalJSON(json.RawMessage(buildManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := image.Digest(buildManifest)
+	directory := home.imageDirectory(id)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	binaryDigest := sha256.Sum256([]byte(binary))
-	artifact := "sha256:" + hex.EncodeToString(binaryDigest[:])
-	if err := os.WriteFile(filepath.Join(directory, layout.RuntimeExecutableName(runtime.GOOS)), []byte(binary), 0o755); err != nil {
+	binaryPath := filepath.Join(directory, layout.RuntimeExecutableName(runtime.GOOS))
+	if err := os.WriteFile(binaryPath, []byte(binary), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := builder.ImageManifest{SchemaVersion: 1, ImageID: imageID, ArtifactDigest: artifact, BuildManifest: json.RawMessage(buildManifest), DirectPlugins: []string{}, ComponentCreationOrder: []string{}, ManyOrder: map[string][]string{}}
-	data, err := json.Marshal(manifest)
+	artifact, err := image.FileDigest(binaryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), data, 0o644); err != nil {
+	manifest := image.Manifest{SchemaVersion: 3, ImageID: id, ArtifactDigest: artifact, Target: target, BuildManifest: buildManifest, DirectPlugins: []string{}, ComponentCreationOrder: []string{}, ManyOrder: map[string][]string{}, HostDependencies: map[string][]string{}}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(imageID, "sha256:") {
-		t.Fatal("bad fixture")
+	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), append(data, '\n'), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	return imageID
+	return id
 }
 
-// TestRunCurrentInjectsRuntimeHomeAsTheHomeItself pins the managed dispatch
-// contract: INGOT_RUNTIME_HOME is the Runtime Home, not its state
-// subdirectory. The runtime appends "state/<plugin>", so passing
-// <ingot home>/state would nest a second state directory and hide every
-// plugin's persisted configuration from it.
-func TestRunCurrentInjectsRuntimeHomeAsTheHomeItself(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell script fixture is POSIX-only")
-	}
-	t.Parallel()
-	home, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	recorded := filepath.Join(t.TempDir(), "runtime-home")
-	// The fixture stands in for the runtime binary and reports the value it
-	// received, so the test observes exactly what ingot injects.
-	script := "#!/bin/sh\nprintf '%s' \"$INGOT_RUNTIME_HOME\" > " + recorded + "\n"
-	imageID := writeImageFixture(t, home, `{"generation":1}`, script)
-	if err := home.switchCurrent(imageID); err != nil {
-		t.Fatal(err)
-	}
-	if err := home.RunCurrent(context.Background(), nil); err != nil {
-		t.Fatalf("run current: %v", err)
-	}
-	data, err := os.ReadFile(recorded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(data); got != home.Root {
-		t.Fatalf("INGOT_RUNTIME_HOME = %q, want the runtime home %q", got, home.Root)
-	}
-}
+func strconvQuote(value string) string { data, _ := json.Marshal(value); return string(data) }

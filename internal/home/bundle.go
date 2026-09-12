@@ -46,27 +46,24 @@ func (home *Home) CheckBundle(ctx context.Context, bundlePath string) (BundleSta
 
 // UpdateBundle replaces the managed bundle with the distribution shipped
 // with the current executable. It never rewrites plugins.toml or config.toml.
-// When Apply is requested, a failed resolve, build, validation, or activation
-// restores both the previous bundle and plugins.lock.
+// Apply is retained only so older callers receive an explicit M2 removal error.
 func (home *Home) UpdateBundle(ctx context.Context, options BundleUpdateOptions) (BundleUpdateResult, error) {
+	if options.Apply {
+		return BundleUpdateResult{}, fmt.Errorf("bundle update --apply was removed in M2")
+	}
 	release, err := home.acquire(ctx)
 	if err != nil {
 		return BundleUpdateResult{}, err
 	}
 	defer release()
 
-	desired, err := builder.ParseDesired(home.DesiredPath())
-	if err != nil {
-		return BundleUpdateResult{}, fmt.Errorf("bundle update requires an initialized home: %w", err)
-	}
-	status, err := home.checkBundleWithDesiredUnlocked(options.BundlePath, desired)
+	status, err := home.checkBundleWithDesiredUnlocked(options.BundlePath, nil)
 	if err != nil {
 		return BundleUpdateResult{}, err
 	}
 	result := BundleUpdateResult{BundleStatus: status}
 
 	var backup string
-	var hadPrevious, swapped bool
 	if status.UpdateAvailable {
 		staged, digest, stageErr := bundle.Stage(status.SourcePath, home.Root)
 		if stageErr != nil {
@@ -76,62 +73,12 @@ func (home *Home) UpdateBundle(ctx context.Context, options BundleUpdateOptions)
 		if digest != status.AvailableDigest {
 			return BundleUpdateResult{}, fmt.Errorf("plugin distribution changed while staging: inspected %s, staged %s", status.AvailableDigest, digest)
 		}
-		backup, hadPrevious, err = swapManagedBundle(home.Root, staged)
+		backup, _, err = swapManagedBundle(home.Root, staged)
 		if err != nil {
 			return BundleUpdateResult{}, fmt.Errorf("activate staged plugin bundle: %w", err)
 		}
-		swapped = true
 		result.Updated = true
 		defer func() { _ = os.RemoveAll(backup) }()
-	}
-
-	if options.Apply {
-		oldLock, lockExisted, readErr := readOptionalFile(home.LockPath())
-		if readErr != nil {
-			if swapped {
-				readErr = errors.Join(readErr, restoreManagedBundle(home.Root, backup, hadPrevious))
-			}
-			return BundleUpdateResult{}, readErr
-		}
-		lockWritten := false
-		rollback := func(primary error) error {
-			var rollbackErrors []error
-			if lockWritten {
-				if restoreErr := restoreOptionalFile(home.LockPath(), oldLock, lockExisted); restoreErr != nil {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore plugins.lock: %w", restoreErr))
-				}
-			}
-			if swapped {
-				if restoreErr := restoreManagedBundle(home.Root, backup, hadPrevious); restoreErr != nil {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore plugin bundle: %w", restoreErr))
-				}
-			}
-			return errors.Join(append([]error{primary}, rollbackErrors...)...)
-		}
-
-		candidateLock, resolveErr := home.resolveCandidate(ctx, desired, builder.ResolveOptions{})
-		if resolveErr != nil {
-			return BundleUpdateResult{}, rollback(resolveErr)
-		}
-		built, buildErr := builder.Build(ctx, desired, candidateLock, builder.BuildOptions{
-			Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod"),
-		})
-		if buildErr != nil {
-			return BundleUpdateResult{}, rollback(buildErr)
-		}
-		lockData, marshalErr := candidateLock.MarshalTOML()
-		if marshalErr != nil {
-			return BundleUpdateResult{}, rollback(marshalErr)
-		}
-		if writeErr := atomicWrite(home.LockPath(), lockData, 0o600); writeErr != nil {
-			return BundleUpdateResult{}, rollback(writeErr)
-		}
-		lockWritten = true
-		if switchErr := home.switchCurrent(built.ImageID); switchErr != nil {
-			return BundleUpdateResult{}, rollback(switchErr)
-		}
-		result.Applied = true
-		result.ImageID = built.ImageID
 	}
 
 	if result.Updated {
@@ -144,14 +91,7 @@ func (home *Home) UpdateBundle(ctx context.Context, options BundleUpdateOptions)
 }
 
 func (home *Home) checkBundleUnlocked(bundlePath string) (BundleStatus, error) {
-	desired, err := builder.ParseDesired(home.DesiredPath())
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return BundleStatus{}, err
-		}
-		return home.checkBundleWithDesiredUnlocked(bundlePath, nil)
-	}
-	return home.checkBundleWithDesiredUnlocked(bundlePath, desired)
+	return home.checkBundleWithDesiredUnlocked(bundlePath, nil)
 }
 
 func (home *Home) checkBundleWithDesiredUnlocked(bundlePath string, desired *builder.DesiredPlugins) (BundleStatus, error) {
