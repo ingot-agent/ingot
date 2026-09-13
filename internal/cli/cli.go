@@ -56,8 +56,8 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 	case "init":
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
 		flags.SetOutput(cli.Stderr)
-		profile := flags.String("profile", "default", "bundle profile")
-		bundlePath := flags.String("bundle", "", "official plugins directory")
+		profile := flags.String("profile", "default", "official plugin profile")
+		bundlePath := flags.String("bundle", "", "legacy local official plugins directory")
 		force := flags.Bool("force", false, "rewrite managed Home configuration")
 		if err := flags.Parse(rest); err != nil {
 			return 2

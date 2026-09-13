@@ -1,0 +1,37 @@
+plugins_version = 1
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/asset-local"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/http-default"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/model-openai-compatible"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/model-runtime"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/tool-runtime"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/prompt-default"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/session-sqlite"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/agent-default"
+version = "v0.1.0"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/app-webui"
+version = "v0.1.0"

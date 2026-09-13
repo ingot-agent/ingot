@@ -123,9 +123,9 @@ Plugins start Unconfigured and own their configuration. Set the model provider
 through the `app.backend.config` operation (or by editing the plugin's own
 `state/` file) once the runtime is running.
 
-`ingot init` materializes the official plugins under `bundled-plugins/`, writes
-`builder.toml`, and maintains the selected recipe under `profiles/` in the
-managed Home. It never writes to the current directory. Use
+`ingot init` writes the selected official profile with exact released plugin
+module versions under `profiles/` in the managed Home, then writes
+`builder.toml`. It never writes to the current directory. Use
 `ingot project init .` when you explicitly want a project-owned `plugins.toml`. Pass
 `--profile minimal` for the smallest runnable graph (terminal CLI, no tools).
 See the [Usage Guide](./docs/USAGE.md) for installation options and the full
@@ -274,7 +274,6 @@ the project directory. Use `--home PATH` to select another managed Home.
 | `profiles/<name>.lock` | Resolution lock generated when that managed profile is built. |
 | `<project>/plugins.toml` | The desired plugin composition. |
 | `<project>/plugins.lock` | Target-neutral resolution, source hashes, and module graph. |
-| `bundled-plugins/` | Materialized sources for the official plugin set. |
 | `images/catalog.json` | Mutable tags and pins. |
 | `images/<ImageID>/` | Immutable runtime executable and manifest v3. |
 | `runtimes/<name>/state/<plugin>/` | Runtime-isolated Plugin state. |
@@ -284,7 +283,7 @@ the project directory. Use `--home PATH` to select another managed Home.
 ```text
 ingot [--home PATH] <command>
 
-init        Initialize a home with an official plugin profile
+init        Initialize a home with an official released plugin profile
 project     Explicitly initialize a project recipe with `project init <dir>`
 bundle      Check or update the official plugin bundle
 resolve     Resolve plugins.toml and refresh plugins.lock
@@ -326,7 +325,8 @@ See the [Usage Guide](./docs/USAGE.md) or
 - `internal/image` — manifest v3, catalog, references, verification, and bundles.
 - `internal/managedruntime` — persistent Runtime registry and bindings.
 - `internal/process` — per-Process supervision, control, reconciliation, and logs.
-- `internal/bundle` — official plugin profiles and source materialization.
+- `internal/bundle` — legacy local plugin bundle compatibility during M3 migration.
+- `internal/profiles` — exact released Official Plugin profile definitions.
 - `internal/builder` — resolution, type analysis, component graph, code
   generation, reproducible build, and image validation.
 - `plugins/` — official plugins; every directory is an independent Go module.
@@ -347,9 +347,9 @@ done
 (cd ../sdk && go test -race ./...)
 ```
 
-The repository `go.work` compiles the official plugins against the local SDK
-and ingot ABI checkouts so a coordinated cross-repository refactor can be
-developed and tested before either module is released.
+The repository `go.work` selects the Core module only. Official profile builds
+resolve released plugin modules with `GOWORK=off`; local plugin development is
+performed in the standalone `ingot-agent/plugins` repository.
 
 ## Roadmap
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ingot-agent/ingot/internal/builder"
@@ -110,6 +111,35 @@ func TestInitIsIdempotentAndRefreshesManagedProfileRecipe(t *testing.T) {
 	}
 	if !forced.WroteProfileRecipe || !forced.WroteBuilderConfig {
 		t.Fatal("force did not rewrite managed configuration")
+	}
+}
+
+func TestInitUsesReleasedProfileWithoutLocalPluginSources(t *testing.T) {
+	home, _ := initHome(t)
+	result, err := home.Init(InitOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.BundledPath != "" {
+		t.Fatalf("remote profile unexpectedly materialized bundle: %s", result.BundledPath)
+	}
+	if _, err := os.Stat(filepath.Join(home.Root, "bundled-plugins")); !os.IsNotExist(err) {
+		t.Fatalf("remote profile created bundled-plugins: %v", err)
+	}
+	desired, err := builder.ParseDesired(result.ProfileRecipePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(desired.Plugins) != 11 {
+		t.Fatalf("plugins = %d", len(desired.Plugins))
+	}
+	for _, plugin := range desired.Plugins {
+		if plugin.Path != "" || plugin.Version != "v0.1.0" {
+			t.Fatalf("plugin source = %#v, want exact released module", plugin)
+		}
+		if !strings.HasPrefix(plugin.Module, "github.com/ingot-agent/plugins/") {
+			t.Fatalf("plugin module = %s", plugin.Module)
+		}
 	}
 }
 

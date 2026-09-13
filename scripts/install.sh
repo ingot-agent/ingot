@@ -155,7 +155,7 @@ echo
 # A staged packaging run (DESTDIR) cannot touch the real home; stop here.
 if [ -n "$destdir" ]; then
 	echo "Staged packaging complete (DESTDIR set). To prepare a usable home:"
-	echo "  $bindir/ingot --home \"$home\" init --profile $profile --bundle \"$sharedir/plugins\""
+	echo "  $bindir/ingot --home \"$home\" init --profile $profile"
 	exit 0
 fi
 
@@ -167,7 +167,7 @@ ingot_bin="$bindir/ingot"
 # ---------------------------------------------------------------------------
 echo "==> initializing or refreshing ingot home $home (profile: $profile)"
 mkdir -p "$home"
-"$ingot_bin" --home "$home" init --profile "$profile" --bundle "$sharedir/plugins"
+"$ingot_bin" --home "$home" init --profile "$profile"
 
 image_ref=local/ingot:default
 runtime_name=default

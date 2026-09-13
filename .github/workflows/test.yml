@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: Go test
+    name: Core tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -26,22 +26,49 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: '**/go.sum'
+          cache-dependency-path: go.sum
 
-      - name: Test all Go modules
+      - name: Test Core module
         shell: bash
+        run: GOWORK=off go test -race ./...
+
+  official-profile-smoke:
+    name: Released official profile smoke
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Resolve and build the default released profile
+        shell: bash
+        env:
+          GOWORK: off
+          GOTOOLCHAIN: local
         run: |
           set -euo pipefail
+          binary="$RUNNER_TEMP/ingot"
+          home="$RUNNER_TEMP/ingot-home"
+          project="$RUNNER_TEMP/ingot-project"
 
-          while IFS= read -r -d '' mod_file; do
-            module_dir="$(dirname "$mod_file")"
-            echo "::group::go test -race ${module_dir}/..."
-            (
-              cd "$module_dir"
-              GOWORK=off go test -race ./...
-            )
-            echo "::endgroup::"
-          done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
+          go build -trimpath -o "$binary" ./cmd/ingot
+          "$binary" --home "$home" init --profile default
+          "$binary" --home "$home" project init "$project" --profile default
+          "$binary" --home "$home" resolve \
+            --use "$project/plugins.toml" \
+            --lock "$project/plugins.lock"
+          "$binary" --home "$home" build \
+            --use "$project/plugins.toml" \
+            --lock "$project/plugins.lock" \
+            --tag local/ingot:m3-released-profile-smoke
 
   webui:
     name: Web UI

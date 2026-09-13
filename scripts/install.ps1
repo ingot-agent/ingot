@@ -148,7 +148,7 @@ try {
 
     if ($DestDir) {
         Write-Host 'Staged packaging complete (DestDir set). To prepare a usable home:'
-        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile --bundle `"$PluginDir`""
+        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile"
         return
     }
 
@@ -169,7 +169,7 @@ try {
     # --- init -----------------------------------------------------------------
     Write-Host "==> initializing or refreshing ingot home $HomeDir (profile: $Profile)"
     New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
-    & $Ingot --home $HomeDir init --profile $Profile --bundle $PluginDir
+    & $Ingot --home $HomeDir init --profile $Profile
     if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
 
     $ImageRef = 'local/ingot:default'
