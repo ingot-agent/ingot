@@ -11,15 +11,6 @@ import (
 	"github.com/ingot-agent/ingot/internal/image"
 )
 
-func testBundleSource(t *testing.T) string {
-	t.Helper()
-	root, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return filepath.Join(root, "plugins")
-}
-
 func initHome(t *testing.T) (*Home, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -33,9 +24,8 @@ func initHome(t *testing.T) (*Home, string) {
 
 func TestInitWritesSchemaCatalogAndManagedProfileRecipe(t *testing.T) {
 	home, project := initHome(t)
-	bundleSource := testBundleSource(t)
 	t.Chdir(project)
-	result, err := home.Init(InitOptions{BundlePath: bundleSource})
+	result, err := home.Init(InitOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,12 +46,11 @@ func TestInitWritesSchemaCatalogAndManagedProfileRecipe(t *testing.T) {
 		t.Fatalf("plugins = %d", len(desired.Plugins))
 	}
 	for _, plugin := range desired.Plugins {
-		absolute, err := desired.ResolvePath(plugin.Path)
-		if err != nil {
-			t.Fatal(err)
+		if plugin.Path != "" || plugin.Version != "v0.1.0" {
+			t.Fatalf("plugin source = %#v, want exact released module", plugin)
 		}
-		if _, err := os.Stat(filepath.Join(absolute, "ingot.plugin.toml")); err != nil {
-			t.Fatalf("plugin locator %q: %v", plugin.Path, err)
+		if !strings.HasPrefix(plugin.Module, "github.com/ingot-agent/plugins/") {
+			t.Fatalf("plugin module = %s", plugin.Module)
 		}
 	}
 	if _, err := image.LoadCatalog(home.CatalogPath()); err != nil {
@@ -79,7 +68,7 @@ func TestInitWritesSchemaCatalogAndManagedProfileRecipe(t *testing.T) {
 
 func TestInitIsIdempotentAndRefreshesManagedProfileRecipe(t *testing.T) {
 	home, _ := initHome(t)
-	options := InitOptions{BundlePath: testBundleSource(t)}
+	options := InitOptions{}
 	first, err := home.Init(options)
 	if err != nil {
 		t.Fatal(err)
@@ -105,7 +94,7 @@ func TestInitIsIdempotentAndRefreshesManagedProfileRecipe(t *testing.T) {
 	if data, _ := os.ReadFile(first.ProfileRecipePath); string(data) == string(corrupt) {
 		t.Fatal("managed recipe remained corrupt")
 	}
-	forced, err := home.Init(InitOptions{BundlePath: testBundleSource(t), Force: true})
+	forced, err := home.Init(InitOptions{Force: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,38 +103,9 @@ func TestInitIsIdempotentAndRefreshesManagedProfileRecipe(t *testing.T) {
 	}
 }
 
-func TestInitUsesReleasedProfileWithoutLocalPluginSources(t *testing.T) {
-	home, _ := initHome(t)
-	result, err := home.Init(InitOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.BundledPath != "" {
-		t.Fatalf("remote profile unexpectedly materialized bundle: %s", result.BundledPath)
-	}
-	if _, err := os.Stat(filepath.Join(home.Root, "bundled-plugins")); !os.IsNotExist(err) {
-		t.Fatalf("remote profile created bundled-plugins: %v", err)
-	}
-	desired, err := builder.ParseDesired(result.ProfileRecipePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(desired.Plugins) != 11 {
-		t.Fatalf("plugins = %d", len(desired.Plugins))
-	}
-	for _, plugin := range desired.Plugins {
-		if plugin.Path != "" || plugin.Version != "v0.1.0" {
-			t.Fatalf("plugin source = %#v, want exact released module", plugin)
-		}
-		if !strings.HasPrefix(plugin.Module, "github.com/ingot-agent/plugins/") {
-			t.Fatalf("plugin module = %s", plugin.Module)
-		}
-	}
-}
-
 func TestInitProjectRequiresExplicitDirectoryAndDoesNotOverwrite(t *testing.T) {
 	home, project := initHome(t)
-	if _, err := home.Init(InitOptions{BundlePath: testBundleSource(t)}); err != nil {
+	if _, err := home.Init(InitOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := home.InitProject(context.Background(), ProjectInitOptions{Directory: project, Profile: "minimal"})
@@ -180,7 +140,7 @@ func TestInitProjectRequiresExplicitDirectoryAndDoesNotOverwrite(t *testing.T) {
 
 func TestInitMinimalProfile(t *testing.T) {
 	home, _ := initHome(t)
-	result, err := home.Init(InitOptions{Profile: "minimal", BundlePath: testBundleSource(t)})
+	result, err := home.Init(InitOptions{Profile: "minimal"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -175,7 +175,7 @@ v0.1 内置两个 Profile：
 
 两个 Profile 当前均报告 `estimate`，且必须由用户显式 route。DeepSeek Profile 的本地 tokenizer 与官方文本、基础消息和工具调用 golden vector 已一致；托管 API 的基础、长文本和工具请求也确认默认 high effort 均比公开模板多 79 tokens。由于该 framing 由服务端拥有、可能不随公开 tokenizer 版本同步变化，而且 SDK 当前不能表达 `reasoning_content`、thinking mode 开关和 reasoning effort 等 DeepSeek 完整请求维度，因此仍不能声明 `exact` 或安全上界。
 
-官方 tokenizer 资源固定到 `deepseek-ai/DeepSeek-V4-Flash` revision `60d8d70770c6776ff598c94bb586a859a38244f1`，以 gzip 形式嵌入 Plugin，运行时不联网；来源、SHA-256 与 MIT License 记录在 `plugins/usage-default/assets/`。未配置匹配 route 的模型返回包装 `usage.ErrUnsupportedModel`，不静默退回 heuristic。后续 exact/upper-bound Profile 必须先取得目标 Provider/Model 的 tokenizer、chat template 和托管 API golden vector 依据。
+官方 tokenizer 资源固定到 `deepseek-ai/DeepSeek-V4-Flash` revision `60d8d70770c6776ff598c94bb586a859a38244f1`，以 gzip 形式嵌入 Plugin，运行时不联网；来源、SHA-256 与 MIT License 记录在 `github.com/ingot-agent/plugins/usage-default/assets/`。未配置匹配 route 的模型返回包装 `usage.ErrUnsupportedModel`，不静默退回 heuristic。后续 exact/upper-bound Profile 必须先取得目标 Provider/Model 的 tokenizer、chat template 和托管 API golden vector 依据。
 
 ## 6. CountInput 流程
 

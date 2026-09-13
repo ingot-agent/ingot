@@ -67,26 +67,17 @@ gofmt -w path/to/changed_file.go
 
 ### 3. Run the complete test suite
 
-Targeted tests are useful during development, but every module must pass with
-the race detector before a commit is considered ready. Run the same module
-discovery used by CI from the repository root:
+Targeted tests are useful during development, but the Core module must pass
+with the race detector before a commit is considered ready. Run the same
+command used by CI from the repository root:
 
 ```bash
-while IFS= read -r -d '' mod_file; do
-  module_dir="$(dirname "$mod_file")"
-  (
-    cd "$module_dir"
-    GOWORK=off go test -race ./...
-  )
-done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
-
+GOWORK=off go test -race ./...
 git diff --check
 ```
 
-Running only `go test ./...` at the repository root is not sufficient because
-the plugins are independent nested Go modules. If the complete suite cannot
-run or does not pass, document the blocker clearly and do not present the
-change as ready to merge.
+If the complete suite cannot run or does not pass, document the blocker clearly
+and do not present the change as ready to merge.
 
 ### 4. Commit clearly
 
@@ -132,9 +123,11 @@ has been coordinated with the reviewers.
 
 ## Contributing a plugin
 
-An official plugin under `plugins/` is an independent Go module with its own
-`go.mod`, `ingot.plugin.toml`, component implementation, and tests. A new plugin
-must satisfy the same manifest and component rules as any third-party plugin.
+Official plugins live in the standalone
+[`ingot-agent/plugins`](https://github.com/ingot-agent/plugins) repository. Each
+plugin is an independent Go module with its own `go.mod`, `ingot.plugin.toml`,
+component implementation, and tests, and must satisfy the same manifest and
+component rules as any third-party plugin.
 
 Adding a plugin to an official profile is a separate product decision. Profile
 membership may select the plugin, but it must not grant different Builder or

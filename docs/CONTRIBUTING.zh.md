@@ -52,21 +52,14 @@ gofmt -w path/to/changed_file.go
 
 ### 3. 执行完整测试
 
-开发过程中可以运行定向测试，但每个 Module 都必须在开启 race detector 的情况下通过，变更才能视为可提交。请在仓库根目录执行与 CI 相同的 Module 发现流程：
+开发过程中可以运行定向测试，但 Core Module 必须在开启 race detector 的情况下通过，变更才能视为可提交。请在仓库根目录执行与 CI 相同的命令：
 
 ```bash
-while IFS= read -r -d '' mod_file; do
-  module_dir="$(dirname "$mod_file")"
-  (
-    cd "$module_dir"
-    GOWORK=off go test -race ./...
-  )
-done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
-
+GOWORK=off go test -race ./...
 git diff --check
 ```
 
-仅在仓库根目录运行 `go test ./...` 并不充分，因为各插件是独立的嵌套 Go Module。如果完整测试无法执行或未能通过，必须清楚记录阻塞原因，不得把变更描述为已经可以合并。
+如果完整测试无法执行或未能通过，必须清楚记录阻塞原因，不得把变更描述为已经可以合并。
 
 ### 4. 清晰地提交
 
@@ -104,7 +97,7 @@ docs: clarify plugin composition
 
 ## 贡献插件
 
-`plugins/` 下的官方插件是独立 Go Module，拥有自己的 `go.mod`、`ingot.plugin.toml`、Component 实现和测试。新插件必须遵循与所有第三方插件相同的 Manifest 与 Component 规则。
+官方插件位于独立的 [`ingot-agent/plugins`](https://github.com/ingot-agent/plugins) 仓库。每个插件都是独立 Go Module，拥有自己的 `go.mod`、`ingot.plugin.toml`、Component 实现和测试，并且必须遵循与所有第三方插件相同的 Manifest 与 Component 规则。
 
 把插件加入官方 Profile 是一项独立的产品决策。Profile 可以选择插件，但不能赋予它不同的 Builder 或运行时行为。
 

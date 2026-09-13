@@ -11,16 +11,12 @@ import (
 )
 
 func TestInitCreatesM2HomeWithoutWritingCurrentDirectory(t *testing.T) {
-	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
 	project := t.TempDir()
 	t.Chdir(project)
 	home := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	command := CLI{Stdout: &stdout, Stderr: &stderr}
-	code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal", "--bundle", filepath.Join(repositoryRoot, "plugins")})
+	code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal"})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
@@ -43,14 +39,10 @@ func TestInitCreatesM2HomeWithoutWritingCurrentDirectory(t *testing.T) {
 }
 
 func TestProjectInitRequiresExplicitDirectory(t *testing.T) {
-	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
 	home := t.TempDir()
 	project := filepath.Join(t.TempDir(), "project")
 	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := command.Run(context.Background(), []string{"--home", home, "init", "--bundle", filepath.Join(repositoryRoot, "plugins")}); code != 0 {
+	if code := command.Run(context.Background(), []string{"--home", home, "init"}); code != 0 {
 		t.Fatal(code)
 	}
 	var stdout, stderr bytes.Buffer
@@ -72,18 +64,14 @@ func TestProjectInitRequiresExplicitDirectory(t *testing.T) {
 }
 
 func TestRemovedApplyAndUnknownDispatchAreUsageErrors(t *testing.T) {
-	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
 	project := t.TempDir()
 	t.Chdir(project)
 	home := t.TempDir()
 	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal", "--bundle", filepath.Join(repositoryRoot, "plugins")}); code != 0 {
+	if code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal"}); code != 0 {
 		t.Fatalf("init exit=%d", code)
 	}
-	for _, arguments := range [][]string{{"--home", home, "apply"}, {"--home", home, "web"}} {
+	for _, arguments := range [][]string{{"--home", home, "apply"}, {"--home", home, "web"}, {"--home", home, "bundle"}} {
 		var stderr bytes.Buffer
 		command = CLI{Stdout: &bytes.Buffer{}, Stderr: &stderr}
 		if code := command.Run(context.Background(), arguments); code != 2 {
@@ -92,24 +80,5 @@ func TestRemovedApplyAndUnknownDispatchAreUsageErrors(t *testing.T) {
 		if !strings.Contains(stderr.String(), "removed") && !strings.Contains(stderr.String(), "unknown command") {
 			t.Fatalf("stderr=%s", stderr.String())
 		}
-	}
-}
-
-func TestBundleUpdateRejectsApply(t *testing.T) {
-	repositoryRoot, err := filepath.Abs(filepath.Join("..", ".."))
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := t.TempDir()
-	t.Chdir(project)
-	home := t.TempDir()
-	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal", "--bundle", filepath.Join(repositoryRoot, "plugins")}); code != 0 {
-		t.Fatal(code)
-	}
-	var stderr bytes.Buffer
-	command = CLI{Stdout: &bytes.Buffer{}, Stderr: &stderr}
-	if code := command.Run(context.Background(), []string{"--home", home, "bundle", "update", "--apply", "--bundle", filepath.Join(repositoryRoot, "plugins")}); code != 2 {
-		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 }

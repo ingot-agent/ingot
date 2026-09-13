@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/ingot-agent/ingot/internal/builder"
-	"github.com/ingot-agent/ingot/internal/bundle"
 	"github.com/ingot-agent/ingot/internal/image"
 	officialprofiles "github.com/ingot-agent/ingot/internal/profiles"
 )
@@ -19,9 +18,6 @@ import (
 type InitOptions struct {
 	// Profile selects the official default plugin set: "default" or "minimal".
 	Profile string
-	// BundlePath is a legacy local plugin distribution used only when explicitly
-	// supplied. The default path uses released module versions from the profile.
-	BundlePath string
 	// Force rewrites managed configuration even when its content is unchanged.
 	Force bool
 }
@@ -40,7 +36,6 @@ type InitResult struct {
 	Profile            string       `json:"profile"`
 	ProfileRecipePath  string       `json:"profile_recipe_path"`
 	BuilderConfigPath  string       `json:"builder_config_path"`
-	BundledPath        string       `json:"bundled_path,omitempty"`
 	WroteProfileRecipe bool         `json:"wrote_profile_recipe"`
 	WroteBuilderConfig bool         `json:"wrote_builder_config"`
 	Plugins            []InitPlugin `json:"plugins"`
@@ -61,10 +56,8 @@ type ProjectInitResult struct {
 	Plugins     []InitPlugin `json:"plugins"`
 }
 
-// Init establishes the initial usable state of an ingot home. By default it
-// writes a managed recipe containing exact released Official Plugin module
-// versions. An explicitly supplied BundlePath retains the legacy local-source
-// path for development and migration compatibility.
+// Init establishes the initial usable state of an ingot home. It writes a
+// managed recipe containing exact released Official Plugin module versions.
 //
 // Init does not write any runtime configuration: Plugins own their persistent
 // configuration inside their own Runtime state scope and start Unconfigured.
@@ -86,32 +79,7 @@ func (home *Home) Init(options InitOptions) (InitResult, error) {
 		ProfileRecipePath: profileRecipePath,
 		BuilderConfigPath: home.BuilderConfigPath(),
 	}
-	var desiredData []byte
-	var plugins []InitPlugin
-	if options.BundlePath != "" {
-		legacyProfile, err := bundle.LookupProfile(officialProfile.Name)
-		if err != nil {
-			return InitResult{}, err
-		}
-		sourceDir, err := bundle.Locate(options.BundlePath)
-		if err != nil {
-			return InitResult{}, err
-		}
-		result.BundledPath = filepath.Join(home.Root, bundle.BundledDirectory)
-		entries, err := bundle.Materialize(sourceDir, home.Root, legacyProfile)
-		if err != nil {
-			return InitResult{}, fmt.Errorf("materialize official plugin bundle: %w", err)
-		}
-		desiredData, plugins, err = renderProfileRecipe(entries, result.BundledPath, filepath.Dir(profileRecipePath), profileRecipePath, true)
-		if err != nil {
-			return InitResult{}, err
-		}
-	} else {
-		desiredData, plugins, err = renderReleasedProfileRecipe(officialProfile, profileRecipePath, true)
-		if err != nil {
-			return InitResult{}, err
-		}
-	}
+	desiredData, plugins, err := renderReleasedProfileRecipe(officialProfile, profileRecipePath, true)
 	if err != nil {
 		return InitResult{}, err
 	}
@@ -265,65 +233,4 @@ func writeIfMissing(path string, data []byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// pathForBundledPlugin is the recipe path locator for one materialized
-// official plugin. It is relative to the recipe directory and uses slash
-// separators.
-func pathForBundledPlugin(bundledPath, recipeDirectory, directory string) (string, error) {
-	absolute := filepath.Join(bundledPath, directory)
-	relative, err := filepath.Rel(recipeDirectory, absolute)
-	if err != nil {
-		return filepath.Clean(absolute), nil
-	}
-	return filepath.ToSlash(relative), nil
-}
-
-func renderProfileRecipe(entries []bundle.Entry, bundledPath, recipeDirectory, recipePath string, managed bool) ([]byte, []InitPlugin, error) {
-	plugins := make([]builder.DesiredPlugin, len(entries))
-	locators := make([]string, len(entries))
-	result := make([]InitPlugin, 0, len(entries))
-	names := make(map[string]bool, len(entries))
-	modules := make(map[string]bool, len(entries))
-	for i, entry := range entries {
-		if names[entry.Name] {
-			return nil, nil, fmt.Errorf("bundled plugin set has duplicate name %q", entry.Name)
-		}
-		if modules[entry.Module] {
-			return nil, nil, fmt.Errorf("bundled plugin set has duplicate module %q", entry.Module)
-		}
-		names[entry.Name], modules[entry.Module] = true, true
-		locator, err := pathForBundledPlugin(bundledPath, recipeDirectory, entry.Directory)
-		if err != nil {
-			return nil, nil, err
-		}
-		locators[i] = locator
-		plugins[i] = builder.DesiredPlugin{Module: entry.Module, Path: locator}
-		result = append(result, InitPlugin{Directory: entry.Directory, Module: entry.Module, Name: entry.Name})
-	}
-	desired := builder.NewDesired(recipePath, plugins)
-	if err := desired.Validate(); err != nil {
-		return nil, nil, err
-	}
-	data, err := renderDesiredTOML(entries, locators, managed)
-	return data, result, err
-}
-
-// renderDesiredTOML renders a commented, human-editable plugins.toml for the
-// official plugin set, preserving semantic identity.
-func renderDesiredTOML(entries []bundle.Entry, locators []string, managed bool) ([]byte, error) {
-	var output bytes.Buffer
-	output.WriteString("# ingot desired plugin set.\n")
-	if managed {
-		output.WriteString("# Managed by `ingot init`; local edits may be replaced.\n")
-	} else {
-		output.WriteString("# Generated by `ingot project init`. Edit with `ingot plugin ...` or by hand.\n")
-	}
-	output.WriteString("# the bundled sources are local dev sources managed by ingot under bundled-plugins/.\n")
-	output.WriteString("plugins_version = 1\n")
-	for index, entry := range entries {
-		_, _ = fmt.Fprintf(&output, "\n# %s — %s\n", entry.Name, entry.Directory)
-		_, _ = fmt.Fprintf(&output, "[[plugins]]\nmodule = %s\npath = %s\n", strconv.Quote(entry.Module), strconv.Quote(locators[index]))
-	}
-	return output.Bytes(), nil
 }

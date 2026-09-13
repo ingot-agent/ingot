@@ -7,13 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strings"
 	"testing"
 
 	"github.com/ingot-agent/ingot/internal/layout"
-	"golang.org/x/mod/modfile"
-	"golang.org/x/mod/semver"
 )
 
 const tomlSum = "h1:mye9XuhQ6gvn5h28+VilKrrPoQVanw5PMw/TB0t5Ec4="
@@ -281,146 +278,6 @@ replace github.com/ingot-agent/sdk => ` + filepath.ToSlash(sdkRoot) + "\n"
 	providerComponent.DependencyList = append(providerComponent.DependencyList, &Dependency{Name: "Self", Type: dependency.Type, Target: originalTarget, Cardinality: CardinalityMany})
 	if err := graph.resolve(); err == nil || !strings.Contains(err.Error(), "INGOT-GRAPH-SELF-LOOP") {
 		t.Fatalf("expected self-loop error, got %v", err)
-	}
-}
-
-func TestOfficialMultimodalSkeletonHasOneAssetProvider(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration test")
-	}
-	root := t.TempDir()
-	_, sourceFile, _, _ := runtime.Caller(0)
-	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", ".."))
-	sdkRoot := filepath.Clean(filepath.Join(repositoryRoot, "..", "sdk"))
-	abiRoot := filepath.Clean(filepath.Join(repositoryRoot, "..", "ingot-abi"))
-	for _, candidate := range []string{filepath.Join(sdkRoot, "go.mod"), filepath.Join(abiRoot, "go.mod")} {
-		if _, err := os.Stat(candidate); err != nil {
-			t.Skipf("local multimodal contract checkout not found: %v", err)
-		}
-	}
-	type pluginSpec struct {
-		directory  string
-		module     string
-		name       string
-		state      bool
-		components []LockedComponent
-	}
-	plugins := []pluginSpec{
-		{directory: "asset-local", module: "github.com/ingot-agent/asset-local", name: "asset.local", state: true},
-		{directory: "http-default", module: "github.com/ingot-agent/http-default", name: "http.default"},
-		{directory: "model-openai-compatible", module: "github.com/ingot-agent/model-openai-compatible", name: "model.openai-compatible"},
-		{directory: "model-runtime", module: "github.com/ingot-agent/model-runtime", name: "model.runtime"},
-		{directory: "tool-runtime", module: "github.com/ingot-agent/tool-runtime", name: "tool.runtime"},
-		{directory: "prompt-default", module: "github.com/ingot-agent/prompt-default", name: "prompt.default"},
-		{directory: "session-sqlite", module: "github.com/ingot-agent/session-sqlite", name: "session.sqlite", state: true},
-		{directory: "agent-default", module: "github.com/ingot-agent/agent-default", name: "agent.default", components: []LockedComponent{
-			{Name: "observation", Package: "./observation"},
-			{Name: "default", Package: "."},
-		}},
-	}
-	var goMod strings.Builder
-	goMod.WriteString("module ingot.local/multimodal-skeleton\n\ngo 1.24.0\n\nrequire (\n")
-	pluginModules := make(map[string]struct{}, len(plugins))
-	for _, plugin := range plugins {
-		fmt.Fprintf(&goMod, "\t%s v0.0.0\n", plugin.module)
-		pluginModules[plugin.module] = struct{}{}
-	}
-	fmt.Fprintf(&goMod, "\t%s %s\n\tgithub.com/ingot-agent/sdk v0.2.9\n\t%s %s\n", IngotABIModulePath, IngotABIVersion, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion)
-	indirectRequirements := make(map[string]string)
-	for _, plugin := range plugins {
-		path := filepath.Join(repositoryRoot, "plugins", plugin.directory, "go.mod")
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		moduleFile, err := modfile.Parse(path, content, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, requirement := range moduleFile.Require {
-			if requirement.Mod.Path == IngotABIModulePath || requirement.Mod.Path == "github.com/ingot-agent/sdk" || requirement.Mod.Path == RuntimeSupportTOMLModule {
-				continue
-			}
-			if _, direct := pluginModules[requirement.Mod.Path]; direct {
-				continue
-			}
-			current := indirectRequirements[requirement.Mod.Path]
-			if current == "" || semver.Compare(requirement.Mod.Version, current) > 0 {
-				indirectRequirements[requirement.Mod.Path] = requirement.Mod.Version
-			}
-		}
-	}
-	indirectPaths := make([]string, 0, len(indirectRequirements))
-	for path := range indirectRequirements {
-		indirectPaths = append(indirectPaths, path)
-	}
-	sort.Strings(indirectPaths)
-	for _, path := range indirectPaths {
-		fmt.Fprintf(&goMod, "\t%s %s // indirect\n", path, indirectRequirements[path])
-	}
-	goMod.WriteString(")\n\n")
-	for _, plugin := range plugins {
-		fmt.Fprintf(&goMod, "replace %s => %s\n", plugin.module, filepath.ToSlash(filepath.Join(repositoryRoot, "plugins", plugin.directory)))
-	}
-	fmt.Fprintf(&goMod, "replace %s => %s\nreplace github.com/ingot-agent/sdk => %s\n", IngotABIModulePath, filepath.ToSlash(abiRoot), filepath.ToSlash(sdkRoot))
-	writeTestFile(t, filepath.Join(root, "go.mod"), goMod.String())
-	var goSum strings.Builder
-	for _, plugin := range plugins {
-		raw, err := os.ReadFile(filepath.Join(repositoryRoot, "plugins", plugin.directory, "go.sum"))
-		if err == nil {
-			goSum.Write(raw)
-		}
-	}
-	goSum.WriteString(fmt.Sprintf("%s %s %s\n%s %s/go.mod %s\n", RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlSum, RuntimeSupportTOMLModule, RuntimeSupportTOMLVersion, tomlGoModSum))
-	writeTestFile(t, filepath.Join(root, "go.sum"), goSum.String())
-
-	digest := "sha256:" + strings.Repeat("0", 64)
-	lock := &Lock{
-		LockVersion: 3, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
-		Runtime:     RuntimeLock{ModulePath: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-		Toolchain:   ToolchainLock{Version: runtime.Version()},
-		Target:      TargetLock{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: defaultTuning(runtime.GOARCH)},
-		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"},
-		Build:       BuildLock{Trimpath: true, BuildVCS: false, Tags: []string{}, LDFlags: []string{}, GCFlags: []string{}, ASMFlags: []string{}},
-		Modules: []LockedModule{
-			{Path: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-			{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: tomlSum, GoModSum: tomlGoModSum},
-		},
-	}
-	for _, plugin := range plugins {
-		components := plugin.components
-		if len(components) == 0 {
-			components = []LockedComponent{{Name: "default", Package: "."}}
-		}
-		locked := LockedPlugin{ID: plugin.module, Name: plugin.name, SourceKind: "dev", ManifestDigest: digest, RootPackage: ".", Components: components}
-		if plugin.state {
-			locked.HasState = true
-			locked.StateSchemaVersion = 1
-			locked.StateMinReaderVersion = 1
-		}
-		lock.Plugins = append(lock.Plugins, locked)
-		lock.Replacements = append(lock.Replacements, Replacement{ModulePath: plugin.module, SyntheticVersion: "v0.0.0", DevPath: filepath.Join(repositoryRoot, "plugins", plugin.directory), ContentSHA256: digest})
-	}
-	sort.Slice(lock.Replacements, func(i, j int) bool { return lock.Replacements[i].ModulePath < lock.Replacements[j].ModulePath })
-	graph, err := LoadGraph(context.Background(), root, lock, LoadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assetProviders := 0
-	for _, component := range graph.Components {
-		for _, dependency := range component.DependencyList {
-			if (component.PluginName != "agent.default" || dependency.Name != "Assets") &&
-				(component.PluginName != "model.openai-compatible" || dependency.Name != "Assets") {
-				continue
-			}
-			if len(dependency.Providers) != 1 || dependency.Providers[0].Component.PluginName != "asset.local" || dependency.Providers[0].Export.Name != "Store" {
-				t.Fatalf("%s Assets providers=%#v", component.PluginName, dependency.Providers)
-			}
-			assetProviders++
-		}
-	}
-	if assetProviders != 2 {
-		t.Fatalf("resolved %d asset consumer dependencies, want 2", assetProviders)
 	}
 }
 

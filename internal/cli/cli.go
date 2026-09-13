@@ -57,7 +57,6 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
 		flags.SetOutput(cli.Stderr)
 		profile := flags.String("profile", "default", "official plugin profile")
-		bundlePath := flags.String("bundle", "", "legacy local official plugins directory")
 		force := flags.Bool("force", false, "rewrite managed Home configuration")
 		if err := flags.Parse(rest); err != nil {
 			return 2
@@ -65,7 +64,7 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		if flags.NArg() != 0 {
 			return cli.usageError("init takes no positional arguments")
 		}
-		result, err := home.Init(ingothome.InitOptions{Profile: *profile, BundlePath: *bundlePath, Force: *force})
+		result, err := home.Init(ingothome.InitOptions{Profile: *profile, Force: *force})
 		if err == nil {
 			err = writeJSON(cli.Stdout, result)
 		}
@@ -155,8 +154,6 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return cli.result(err)
 	case "plugin":
 		return cli.runPlugin(ctx, home, rest)
-	case "bundle":
-		return cli.runBundle(ctx, home, rest)
 	case "supervise":
 		return cli.runSupervise(ctx, home, rest)
 	case "apply", "rollback":
@@ -183,45 +180,6 @@ func (cli CLI) parseRecipeFlags(name string, arguments []string, build bool) (in
 		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, cli.usageError(name + " does not accept --locked or --tag")
 	}
 	return ingothome.RecipeOptions{Use: *use, Lock: *lock, Locked: *locked, Tag: *tag}, builder.ResolveOptions{}, 0
-}
-
-func (cli CLI) runBundle(ctx context.Context, home *ingothome.Home, arguments []string) int {
-	if len(arguments) == 0 {
-		return cli.usageError("bundle requires a subcommand: check or update")
-	}
-	command, rest := arguments[0], arguments[1:]
-	flags := flag.NewFlagSet("bundle "+command, flag.ContinueOnError)
-	flags.SetOutput(cli.Stderr)
-	bundlePath := flags.String("bundle", "", "official plugins distribution directory (default: locate relative to the executable)")
-	apply := flags.Bool("apply", false, "legacy flag removed in M2")
-	if err := flags.Parse(rest); err != nil {
-		return 2
-	}
-	if flags.NArg() != 0 {
-		return cli.usageError("bundle " + command + " takes no positional arguments")
-	}
-	switch command {
-	case "check":
-		if *apply {
-			return cli.usageError("bundle check does not accept --apply")
-		}
-		status, err := home.CheckBundle(ctx, *bundlePath)
-		if err == nil {
-			err = writeJSON(cli.Stdout, status)
-		}
-		return cli.result(err)
-	case "update":
-		if *apply {
-			return cli.usageError("bundle update --apply was removed in M2")
-		}
-		result, err := home.UpdateBundle(ctx, ingothome.BundleUpdateOptions{BundlePath: *bundlePath, Apply: *apply})
-		if err == nil {
-			err = writeJSON(cli.Stdout, result)
-		}
-		return cli.result(err)
-	default:
-		return cli.usageError("unknown bundle subcommand " + strconv.Quote(command))
-	}
 }
 
 func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []string) int {
@@ -433,5 +391,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|bundle ...|plugin ...>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...>")
 }

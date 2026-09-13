@@ -71,7 +71,7 @@ Host 渲染并回传 interaction.Response
 Plugin 写入自己的 state.Scope
 ```
 
-现有链路已经具备（`plugins/app-webui/app/operations.go:207` 提供
+现有链路已经具备（`github.com/ingot-agent/plugins/app-webui/app/operations.go` 提供
 `operation.Request.Interaction`；`host/interaction.go:425-429` 渲染 `Sensitive`
 且敏感字段的 Default 不下发），因此：
 
@@ -94,7 +94,7 @@ Plugin 写入自己的 state.Scope
 Plugin 自行拆分多次请求，也不是退回「编辑配置文件」。
 
 扩展必须向后兼容，涉及 `sdk/interaction/interaction.go` 的
-`FieldKind`/`ValueKind`，以及 `plugins/app-webui/host/interaction.go` 中
+`FieldKind`/`ValueKind`，以及 `github.com/ingot-agent/plugins/app-webui/host/interaction.go` 中
 `validateDefault`、`validateAnswer`、`projectField` 三处 switch 与前端渲染。
 
 ### 5. Operation 不区分「配置类」

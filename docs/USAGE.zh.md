@@ -16,8 +16,7 @@ go build -o ingot ./cmd/ingot
 
 `init` 在 `~/.ingot` 初始化 schema v2 Home，并在 `~/.ingot/profiles/` 下维护所选官方
 Profile recipe。Recipe 会把官方插件精确固定到已发布的模块版本。它不会写入当前目录，
-也不会创建 Runtime。显式使用 `init --bundle PATH` 仅保留给 M3 迁移期间的本地源码兼容
-路径。
+也不会创建 Runtime。
 
 只有显式指定项目目录时才创建项目自己的 Recipe：
 

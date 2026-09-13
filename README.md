@@ -72,7 +72,7 @@ the build system and plugin packages.
 
 ## More than a coding agent
 
-The bundled profile produces a capable terminal-based coding agent, but that is
+The default profile produces a capable terminal-based coding agent, but that is
 one composition of ingot, not its architectural limit.
 
 For a customer-service agent, for example, replace `app.backend` with a network
@@ -131,7 +131,8 @@ module versions under `profiles/` in the managed Home, then writes
 See the [Usage Guide](./docs/USAGE.md) for installation options and the full
 workflow.
 
-For the browser workspace, replace the CLI with [app.backend](./plugins/app-webui/README.md).
+For the browser workspace, replace the CLI with
+[app.backend](https://github.com/ingot-agent/plugins/tree/main/app-webui).
 Its Vue + Tailwind frontend is embedded in the native Runtime Image and includes
 conversations, streaming, approvals, attachments, execution details, and operations.
 It is intended for trusted local, single-user use.
@@ -186,7 +187,7 @@ statically wired `interaction.ExecutionBinder` with the explicit invocation
 scope to derive a bound Channel. Observation correlation may enrich tracing or
 presentation, but it never supplies or overrides Session routing.
 
-The bundled coding agent is the reference consumer of this model: a Workspace
+The default coding-agent profile is the reference consumer of this model: a Workspace
 Binding maps each Session to one immutable local working root, `tool.shell`
 obtains its working directory only from the session-scoped `workspace.Resolver`,
 and `session.sqlite` persists both Session and Workspace capabilities. The
@@ -285,7 +286,6 @@ ingot [--home PATH] <command>
 
 init        Initialize a home with an official released plugin profile
 project     Explicitly initialize a project recipe with `project init <dir>`
-bundle      Check or update the official plugin bundle
 resolve     Resolve plugins.toml and refresh plugins.lock
 build       Resolve/build a content-addressed Image, optionally with --tag
 image       list | inspect | verify | tag | import | export | pin | remove
@@ -325,26 +325,20 @@ See the [Usage Guide](./docs/USAGE.md) or
 - `internal/image` — manifest v3, catalog, references, verification, and bundles.
 - `internal/managedruntime` — persistent Runtime registry and bindings.
 - `internal/process` — per-Process supervision, control, reconciliation, and logs.
-- `internal/bundle` — legacy local plugin bundle compatibility during M3 migration.
 - `internal/profiles` — exact released Official Plugin profile definitions.
 - `internal/builder` — resolution, type analysis, component graph, code
   generation, reproducible build, and image validation.
-- `plugins/` — official plugins; every directory is an independent Go module.
 - `scripts/` — Unix and PowerShell installation scripts.
 
-For local development, place the ingot ABI repository beside this
-repository; the included `go.work` selects it with a workspace replacement.
+Official plugins are developed and released from the standalone
+[`ingot-agent/plugins`](https://github.com/ingot-agent/plugins) repository.
 
 ## Development
 
-Run the Builder, integration, SDK, and plugin tests from this directory:
+Run the Core test suite from this directory:
 
 ```sh
-go test -race ./...
-for plugin_dir in plugins/*; do
-  (cd "$plugin_dir" && go test -race ./...)
-done
-(cd ../sdk && go test -race ./...)
+GOWORK=off go test -race ./...
 ```
 
 The repository `go.work` selects the Core module only. Official profile builds

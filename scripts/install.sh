@@ -1,24 +1,19 @@
 #!/usr/bin/env sh
-# install.sh — install ingot and its official plugin set, then prepare a
-# ready-to-use agent in one command.
+# install.sh — install ingot, then prepare a ready-to-use agent in one command.
 #
-# The ingot binary embeds no plugin sources: the official plugins are
-# distributed as directory trees next to the binary (this repository keeps
-# them under plugins/) and `ingot init` locates them during installation.
-# This script installs both the binary and the plugin tree in a standard
-# layout:
+# Official profiles pin released plugin modules from github.com/ingot-agent/plugins;
+# no plugin source tree is bundled with or copied by this installer.
 #
 #   <prefix>/bin/ingot
-#   <prefix>/share/ingot/plugins/<plugin>/...
 #
-# After installation the script initializes a new home or refreshes the
-# official bundle in an existing home, collects model provider settings (from
+# After installation the script initializes or refreshes a Home, collects model
+# provider settings (from
 # the INGOT_* environment variables or interactively), builds a named image,
 # creates the `default` Runtime, and offers to start the web UI.
 #
 # Usage:
 #   ./scripts/install.sh                          # -> /usr/local, one-command setup
-#   ./scripts/install.sh --prefix ~/.local        # -> ~/.local/bin, ~/.local/share/ingot
+#   ./scripts/install.sh --prefix ~/.local        # -> ~/.local/bin
 #   DESTDIR=./pkg ./scripts/install.sh            # staged packaging (no init/build)
 #   INGOT_API_KEY=sk-... INGOT_BASE_URL=https://api.example.com/v1 \
 #     INGOT_MODEL=gpt-4o-mini ./scripts/install.sh   # non-interactive
@@ -31,10 +26,9 @@ usage: ./scripts/install.sh [options]
 options:
   --prefix DIR       install prefix (default: /usr/local)
   --bindir DIR       binary directory (default: <prefix>/bin)
-  --sharedir DIR     plugin share directory (default: <prefix>/share/ingot)
   --destdir DIR      staging root prepended to all paths (default: empty)
   --home PATH        ingot home directory (default: ~/.ingot)
-  --profile NAME     bundle profile: default (web UI) or minimal (default: default)
+  --profile NAME     official profile: default (web UI) or minimal (default: default)
   --no-configure     skip model provider configuration
   --no-apply         legacy alias: skip image build and Runtime creation
   --no-open          do not open the web UI after start
@@ -50,9 +44,8 @@ EOF
 
 prefix=/usr/local
 bindir=
-sharedir=
 destdir=
-home=
+ingot_home=
 profile=default
 no_configure=false
 no_apply=false
@@ -70,11 +63,6 @@ while [ "$#" -gt 0 ]; do
 			bindir=$2
 			shift 2
 			;;
-		--sharedir)
-			[ "$#" -ge 2 ] || { echo "install.sh: --sharedir requires a value" >&2; exit 2; }
-			sharedir=$2
-			shift 2
-			;;
 		--destdir)
 			[ "$#" -ge 2 ] || { echo "install.sh: --destdir requires a value" >&2; exit 2; }
 			destdir=$2
@@ -82,7 +70,7 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--home)
 			[ "$#" -ge 2 ] || { echo "install.sh: --home requires a value" >&2; exit 2; }
-			home=$2
+			ingot_home=$2
 			shift 2
 			;;
 		--profile)
@@ -115,8 +103,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$bindir" ] || bindir="$prefix/bin"
-[ -n "$sharedir" ] || sharedir="$prefix/share/ingot"
-[ -n "$home" ] || home="${INGOT_HOME:-$(printf '%s' "${HOME:-$USERPROFILE}/.ingot")}"
+[ -n "$ingot_home" ] || ingot_home="${INGOT_HOME:-$(printf '%s' "${HOME:-$USERPROFILE}/.ingot")}"
 [ "$profile" = "default" ] || [ "$profile" = "minimal" ] || {
 	echo "install.sh: unknown profile $profile (available: default, minimal)" >&2
 	exit 2
@@ -125,37 +112,26 @@ done
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 command -v go >/dev/null 2>&1 || { echo "install.sh: go 1.24+ is required to build ingot" >&2; exit 1; }
 [ -f "$root/go.mod" ] || { echo "install.sh: cannot locate the ingot source tree at $root" >&2; exit 1; }
-[ -d "$root/plugins" ] || { echo "install.sh: the official plugin set (plugins/) is missing from $root" >&2; exit 1; }
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/ingot-install.XXXXXX")
 trap 'rm -rf "$temporary"' EXIT
 
 echo "==> building ingot"
-(cd "$root" && go build -trimpath -o "$temporary/ingot" ./cmd/ingot)
+(cd "$root" && GOWORK=off go build -trimpath -o "$temporary/ingot" ./cmd/ingot)
 
 echo "==> installing to $destdir$bindir"
-mkdir -p "$destdir$bindir" "$destdir$sharedir/plugins"
+mkdir -p "$destdir$bindir"
 install -m 0755 "$temporary/ingot" "$destdir$bindir/ingot"
-
-echo "==> installing official plugins to $destdir$sharedir/plugins"
-# Copy the whole plugin tree; VCS/editor metadata never enters the bundle
-# identity, but exclude it anyway to keep the install clean.
-if command -v rsync >/dev/null 2>&1; then
-	rsync -a --exclude '.git' --exclude '.hg' --exclude '.svn' --exclude '.idea' --exclude '.vscode' "$root/plugins/" "$destdir$sharedir/plugins/"
-else
-	(cd "$root" && tar -cf - plugins) | (cd "$destdir$sharedir" && tar -xf -)
-fi
 
 echo
 echo "ingot installed:"
 echo "  binary:  $destdir$bindir/ingot"
-echo "  plugins: $destdir$sharedir/plugins"
 echo
 
 # A staged packaging run (DESTDIR) cannot touch the real home; stop here.
 if [ -n "$destdir" ]; then
 	echo "Staged packaging complete (DESTDIR set). To prepare a usable home:"
-	echo "  $bindir/ingot --home \"$home\" init --profile $profile"
+	echo "  $bindir/ingot --home \"$ingot_home\" init --profile $profile"
 	exit 0
 fi
 
@@ -165,20 +141,20 @@ ingot_bin="$bindir/ingot"
 # ---------------------------------------------------------------------------
 # 1. init
 # ---------------------------------------------------------------------------
-echo "==> initializing or refreshing ingot home $home (profile: $profile)"
-mkdir -p "$home"
-"$ingot_bin" --home "$home" init --profile "$profile"
+echo "==> initializing or refreshing ingot home $ingot_home (profile: $profile)"
+mkdir -p "$ingot_home"
+"$ingot_bin" --home "$ingot_home" init --profile "$profile"
 
 image_ref=local/ingot:default
 runtime_name=default
-profile_recipe="$home/profiles/${profile}.toml"
-profile_lock="$home/profiles/${profile}.lock"
+profile_recipe="$ingot_home/profiles/${profile}.toml"
+profile_lock="$ingot_home/profiles/${profile}.lock"
 if $no_apply; then
 	echo "==> skipping image build and Runtime creation (--no-apply legacy alias)"
 else
 	echo "==> building runtime image (first build downloads modules and may take a few minutes)"
 	build_attempts=0
-	until "$ingot_bin" --home "$home" build --use "$profile_recipe" --lock "$profile_lock" --tag "$image_ref"; do
+	until "$ingot_bin" --home "$ingot_home" build --use "$profile_recipe" --lock "$profile_lock" --tag "$image_ref"; do
 		build_attempts=$((build_attempts + 1))
 		if [ "$build_attempts" -ge 2 ]; then
 			echo "install.sh: build failed twice; re-run this script after checking network access" >&2
@@ -187,10 +163,10 @@ else
 		echo "==> retrying build"
 		sleep 2
 	done
-	if "$ingot_bin" --home "$home" runtime inspect "$runtime_name" >/dev/null 2>&1; then
-		"$ingot_bin" --home "$home" runtime switch "$runtime_name" "$image_ref"
+	if "$ingot_bin" --home "$ingot_home" runtime inspect "$runtime_name" >/dev/null 2>&1; then
+		"$ingot_bin" --home "$ingot_home" runtime switch "$runtime_name" "$image_ref"
 	else
-		"$ingot_bin" --home "$home" runtime create "$runtime_name" --image "$image_ref" -- web
+		"$ingot_bin" --home "$ingot_home" runtime create "$runtime_name" --image "$image_ref" -- web
 	fi
 fi
 
@@ -200,8 +176,8 @@ fi
 # Plugins own their persistent configuration inside the Runtime Home; there is
 # no shared runtime config.toml. The model provider is configured by writing
 # the provider plugin's own state file before the first run.
-provider_dir="$home/runtimes/$runtime_name/state/model.openai-compatible"
-runtime_dir="$home/runtimes/$runtime_name/state/model.runtime"
+provider_dir="$ingot_home/runtimes/$runtime_name/state/model.openai-compatible"
+runtime_dir="$ingot_home/runtimes/$runtime_name/state/model.runtime"
 config="$provider_dir/config.toml"
 defaults="$runtime_dir/config.toml"
 configured=false
@@ -297,11 +273,11 @@ launch_web() {
 }
 
 if ! $no_apply; then
-	launch_web "$home"
+	launch_web "$ingot_home"
 else
 	echo
 	echo "Agent home is ready. Next steps:"
-	echo "  $ingot_bin --home \"$home\" build --use \"$profile_recipe\" --lock \"$profile_lock\" --tag $image_ref"
-	echo "  $ingot_bin --home \"$home\" runtime create $runtime_name --image $image_ref -- web"
-	echo "  $ingot_bin --home \"$home\" runtime start $runtime_name"
+	echo "  $ingot_bin --home \"$ingot_home\" build --use \"$profile_recipe\" --lock \"$profile_lock\" --tag $image_ref"
+	echo "  $ingot_bin --home \"$ingot_home\" runtime create $runtime_name --image $image_ref -- web"
+	echo "  $ingot_bin --home \"$ingot_home\" runtime start $runtime_name"
 fi
