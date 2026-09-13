@@ -2,21 +2,21 @@
 
 - 状态：Frozen
 - 里程碑：M0（定稿）/ M1（落地）
-- 相关：`sdk/operation/operation.go`、`plugins/app-webui/app/operations.go`、`plugins/app-webui/app/http.go`、`web/app-webui/src/views/OperationsView.vue`
+- 相关：`sdk/operation/operation.go`、`github.com/ingot-agent/plugins/app-webui/app/operations.go`、`github.com/ingot-agent/plugins/app-webui/app/http.go`、`github.com/ingot-agent/plugins/app-webui/web/src/views/OperationsView.vue`
 
 ## 背景
 
 Operation 由 Host 聚合后统一展示：
 
 ```go
-// plugins/app-webui/app/server.go:39
+// github.com/ingot-agent/plugins/app-webui/app/server.go
 Operations []operation.Operation
 ```
 
 `operationController` 以 name 为 map key：
 
 ```go
-// plugins/app-webui/app/operations.go:42-46
+// github.com/ingot-agent/plugins/app-webui/app/operations.go
 if _, exists := c.entries[definition.Name]; exists {
     return nil, fmt.Errorf("duplicate operation %q: ...", definition.Name)
 }

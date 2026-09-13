@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: Go test
+    name: Core tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -26,58 +26,46 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: '**/go.sum'
+          cache-dependency-path: go.sum
 
-      - name: Test all Go modules
+      - name: Test Core module
         shell: bash
-        run: |
-          set -euo pipefail
+        run: GOWORK=off go test -race ./...
 
-          while IFS= read -r -d '' mod_file; do
-            module_dir="$(dirname "$mod_file")"
-            echo "::group::go test -race ${module_dir}/..."
-            (
-              cd "$module_dir"
-              GOWORK=off go test -race ./...
-            )
-            echo "::endgroup::"
-          done < <(find . -type f -name go.mod -not -path '*/vendor/*' -print0 | sort -z)
-
-  webui:
-    name: Web UI
+  official-profile-smoke:
+    name: Released official profile smoke
+    needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: web/app-webui
+    timeout-minutes: 30
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-          cache-dependency-path: '**/go.sum'
-      - name: Set up Node
-        uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: web/app-webui/package-lock.json
-      - run: npm ci
-      - run: npm run lint
-      - run: npm test
-      - name: Check types and embedded build freshness
-        run: npm run check:dist
-      - run: npx playwright install --with-deps chromium
-      - name: Browser regression against the Go HTTP and SSE boundary
-        run: npm run test:e2e
-      - name: Upload browser diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v6
-        with:
-          name: webui-browser-results
-          path: |
-            web/app-webui/playwright-report/
-            web/app-webui/test-results/
-          retention-days: 7
+          cache-dependency-path: go.sum
+
+      - name: Resolve and build the default released profile
+        shell: bash
+        env:
+          GOWORK: off
+          GOTOOLCHAIN: local
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/ingot"
+          ingot_home="$RUNNER_TEMP/ingot-home"
+          project="$RUNNER_TEMP/ingot-project"
+
+          go build -trimpath -o "$binary" ./cmd/ingot
+          "$binary" --home "$ingot_home" init --profile default
+          "$binary" --home "$ingot_home" project init "$project" --profile default
+          "$binary" --home "$ingot_home" resolve \
+            --use "$project/plugins.toml" \
+            --lock "$project/plugins.lock"
+          "$binary" --home "$ingot_home" build \
+            --use "$project/plugins.toml" \
+            --lock "$project/plugins.lock" \
+            --tag local/ingot:m3-released-profile-smoke

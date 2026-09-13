@@ -72,7 +72,7 @@ go build -o ingot ./cmd/ingot
 插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
 `app.backend.config` Operation（或直接编辑插件自己的 `state/` 文件）设置模型 Provider。
 
-`ingot init` 会把官方插件物化到 `bundled-plugins/`，写入 `builder.toml`，并在 Managed Home 的 `profiles/` 下维护所选 Profile recipe；它不会写入当前目录。只有显式执行 `ingot project init .` 才会创建项目自己的 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
+`ingot init` 会把官方 Profile 精确固定到已发布的插件模块版本，写入 `builder.toml`，并在 Managed Home 的 `profiles/` 下维护所选 Profile recipe；它不会写入当前目录。只有显式执行 `ingot project init .` 才会创建项目自己的 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
 
 ## 构建期组合如何工作
 
@@ -157,7 +157,6 @@ ingot build --tag acme/agent:dev
 | `profiles/<name>.lock` | 构建该 Managed Profile 时生成的解析 lock。 |
 | `<project>/plugins.toml` | 期望的插件组合。 |
 | `<project>/plugins.lock` | target-neutral 解析结果、源码哈希与 Module 图。 |
-| `bundled-plugins/` | 物化后的官方插件源码。 |
 | `images/catalog.json` | mutable tag 与 pin。 |
 | `images/<ImageID>/` | 不可变运行时可执行文件与 manifest v3。 |
 | `runtimes/<name>/state/<plugin>/` | 按 Runtime 隔离的 Plugin State。 |
@@ -169,7 +168,6 @@ ingot [--home PATH] <command>
 
 init        使用官方插件 Profile 初始化 home
 project     使用 `project init <目录>` 显式初始化项目 Recipe
-bundle      检查或更新官方插件 Bundle
 resolve     解析 plugins.toml 并刷新 plugins.lock
 build       解析并构建内容寻址 Image，可通过 --tag 命名
 image       list | inspect | verify | tag | import | export | pin | remove
@@ -207,27 +205,22 @@ plugin      add | remove | update | reorder | list | inspect
 - `internal/image` —— manifest v3、catalog、引用、验证与离线 bundle。
 - `internal/managedruntime` —— 持久 Runtime registry 与 concrete binding。
 - `internal/process` —— per-Process supervisor、control、reconciliation 与日志。
-- `internal/bundle` —— 官方插件 Profile 与源码物化。
+- `internal/profiles` —— 精确固定已发布 Official Plugin 版本的 Profile 定义。
 - `internal/builder` —— 解析、类型分析、Component Graph、代码生成、可复现构建与镜像校验。
-- `plugins/` —— 官方插件集；每个目录都是独立 Go Module。
 - `scripts/` —— Unix 和 PowerShell 安装脚本。
 
-本地开发时，将 ingot ABI 仓库放在本仓库同级目录；仓库内的 `go.work` 会通过 workspace replacement 选择它。
+官方插件在独立的 [`ingot-agent/plugins`](https://github.com/ingot-agent/plugins) 仓库中开发和发布。
 
 ## 开发
 
-在当前目录运行 Builder、集成、SDK 与插件测试：
+在当前目录运行 Core 测试：
 
 ```sh
-go test -race ./...
-for plugin_dir in plugins/*; do
-  (cd "$plugin_dir" && go test -race ./...)
-done
-(cd ../sdk && go test -race ./...)
+GOWORK=off go test -race ./...
 ```
 
-本仓库 `go.work` 使用本地 SDK 与 ingot ABI checkout 编译官方插件，
-便于跨仓库重构开发与验证；正式发布的 Plugin module 使用已发布的 SDK 版本。
+本仓库 `go.work` 只包含 Core Module。官方 Profile 构建以 `GOWORK=off` 解析已发布插件；
+插件本地开发在独立的 `ingot-agent/plugins` 仓库中完成。
 
 ## 路线图
 

@@ -5,8 +5,8 @@ dist
 .idea/
 *.iml
 
-# Web UI development artifacts (embedded webdist is tracked)
-node_modules/
+# Ignore disposable artifacts left by pre-M3 Web UI checkouts.
+web/app-webui/node_modules/
 web/app-webui/test-results/
 web/app-webui/playwright-report/
 

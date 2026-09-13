@@ -10,18 +10,14 @@ import (
 	"strings"
 
 	"github.com/ingot-agent/ingot/internal/builder"
-	"github.com/ingot-agent/ingot/internal/bundle"
 	"github.com/ingot-agent/ingot/internal/image"
+	officialprofiles "github.com/ingot-agent/ingot/internal/profiles"
 )
 
 // InitOptions configures ingot init.
 type InitOptions struct {
 	// Profile selects the official default plugin set: "default" or "minimal".
 	Profile string
-	// BundlePath points directly at the official plugins distribution
-	// directory (the --bundle flag). When empty, the distribution is located
-	// relative to the executable.
-	BundlePath string
 	// Force rewrites managed configuration even when its content is unchanged.
 	Force bool
 }
@@ -30,6 +26,7 @@ type InitOptions struct {
 type InitPlugin struct {
 	Directory string `json:"directory"`
 	Module    string `json:"module"`
+	Version   string `json:"version,omitempty"`
 	Name      string `json:"name"`
 }
 
@@ -39,7 +36,6 @@ type InitResult struct {
 	Profile            string       `json:"profile"`
 	ProfileRecipePath  string       `json:"profile_recipe_path"`
 	BuilderConfigPath  string       `json:"builder_config_path"`
-	BundledPath        string       `json:"bundled_path"`
 	WroteProfileRecipe bool         `json:"wrote_profile_recipe"`
 	WroteBuilderConfig bool         `json:"wrote_builder_config"`
 	Plugins            []InitPlugin `json:"plugins"`
@@ -60,13 +56,8 @@ type ProjectInitResult struct {
 	Plugins     []InitPlugin `json:"plugins"`
 }
 
-// Init establishes the initial usable state of an ingot home:
-//
-//  1. it locates the official plugin set (explicit BundlePath or relative to
-//     the executable) and materializes it under <home>/bundled-plugins/
-//     (idempotent);
-//  2. it writes a managed profile recipe under <home>/profiles/;
-//  3. it writes the default builder.toml configuration scaffold.
+// Init establishes the initial usable state of an ingot home. It writes a
+// managed recipe containing exact released Official Plugin module versions.
 //
 // Init does not write any runtime configuration: Plugins own their persistent
 // configuration inside their own Runtime state scope and start Unconfigured.
@@ -74,30 +65,21 @@ type ProjectInitResult struct {
 // managed state and is refreshed when its expected content changes. Init does
 // not resolve, build, or create a Runtime.
 func (home *Home) Init(options InitOptions) (InitResult, error) {
-	profile, err := bundle.LookupProfile(options.Profile)
-	if err != nil {
-		return InitResult{}, err
-	}
-	sourceDir, err := bundle.Locate(options.BundlePath)
+	officialProfile, err := officialprofiles.Lookup(options.Profile)
 	if err != nil {
 		return InitResult{}, err
 	}
 	if err := home.initializeSchema(); err != nil {
 		return InitResult{}, err
 	}
-	profileRecipePath := home.ProfileRecipePath(profile.Name)
+	profileRecipePath := home.ProfileRecipePath(officialProfile.Name)
 	result := InitResult{
 		Home:              home.Root,
-		Profile:           profile.Name,
+		Profile:           officialProfile.Name,
 		ProfileRecipePath: profileRecipePath,
 		BuilderConfigPath: home.BuilderConfigPath(),
-		BundledPath:       filepath.Join(home.Root, bundle.BundledDirectory),
 	}
-	entries, err := bundle.Materialize(sourceDir, home.Root, profile)
-	if err != nil {
-		return InitResult{}, fmt.Errorf("materialize official plugin bundle: %w", err)
-	}
-	desiredData, plugins, err := renderProfileRecipe(entries, result.BundledPath, filepath.Dir(profileRecipePath), profileRecipePath, true)
+	desiredData, plugins, err := renderReleasedProfileRecipe(officialProfile, profileRecipePath, true)
 	if err != nil {
 		return InitResult{}, err
 	}
@@ -135,7 +117,7 @@ func (home *Home) InitProject(ctx context.Context, options ProjectInitOptions) (
 	if options.Directory == "" {
 		return ProjectInitResult{}, fmt.Errorf("project directory is required")
 	}
-	profile, err := bundle.LookupProfile(options.Profile)
+	profile, err := officialprofiles.Lookup(options.Profile)
 	if err != nil {
 		return ProjectInitResult{}, err
 	}
@@ -168,11 +150,7 @@ func (home *Home) InitProject(ctx context.Context, options ProjectInitOptions) (
 	} else if err != nil && !os.IsNotExist(err) {
 		return ProjectInitResult{}, err
 	}
-	entries, err := bundle.ManagedEntries(home.Root, profile)
-	if err != nil {
-		return ProjectInitResult{}, fmt.Errorf("read managed plugin profile: %w", err)
-	}
-	data, plugins, err := renderProfileRecipe(entries, filepath.Join(home.Root, bundle.BundledDirectory), projectDirectory, pluginsPath, false)
+	data, plugins, err := renderReleasedProfileRecipe(profile, pluginsPath, false)
 	if err != nil {
 		return ProjectInitResult{}, err
 	}
@@ -180,6 +158,46 @@ func (home *Home) InitProject(ctx context.Context, options ProjectInitOptions) (
 		return ProjectInitResult{}, err
 	}
 	return ProjectInitResult{Project: projectDirectory, Profile: profile.Name, PluginsPath: pluginsPath, Plugins: plugins}, nil
+}
+
+func renderReleasedProfileRecipe(profile *officialprofiles.Profile, recipePath string, managed bool) ([]byte, []InitPlugin, error) {
+	plugins := make([]builder.DesiredPlugin, len(profile.Plugins))
+	result := make([]InitPlugin, 0, len(profile.Plugins))
+	names := make(map[string]bool, len(profile.Plugins))
+	modules := make(map[string]bool, len(profile.Plugins))
+	for index, entry := range profile.Plugins {
+		if names[entry.Name] {
+			return nil, nil, fmt.Errorf("official profile has duplicate name %q", entry.Name)
+		}
+		if modules[entry.Module] {
+			return nil, nil, fmt.Errorf("official profile has duplicate module %q", entry.Module)
+		}
+		names[entry.Name], modules[entry.Module] = true, true
+		plugins[index] = builder.DesiredPlugin{Module: entry.Module, Version: entry.Version}
+		result = append(result, InitPlugin{Directory: entry.Directory, Module: entry.Module, Version: entry.Version, Name: entry.Name})
+	}
+	desired := builder.NewDesired(recipePath, plugins)
+	if err := desired.Validate(); err != nil {
+		return nil, nil, err
+	}
+	return renderReleasedDesiredTOML(profile.Plugins, managed), result, nil
+}
+
+func renderReleasedDesiredTOML(entries []officialprofiles.Plugin, managed bool) []byte {
+	var output bytes.Buffer
+	output.WriteString("# ingot desired plugin set.\n")
+	if managed {
+		output.WriteString("# Managed by `ingot init`; local edits may be replaced.\n")
+	} else {
+		output.WriteString("# Generated by `ingot project init`. Edit with `ingot plugin ...` or by hand.\n")
+	}
+	output.WriteString("# Official profiles pin released Go module versions; resolution runs with GOWORK=off.\n")
+	output.WriteString("plugins_version = 1\n")
+	for _, entry := range entries {
+		_, _ = fmt.Fprintf(&output, "\n# %s — %s\n", entry.Name, entry.Directory)
+		_, _ = fmt.Fprintf(&output, "[[plugins]]\nmodule = %s\nversion = %s\n", strconv.Quote(entry.Module), strconv.Quote(entry.Version))
+	}
+	return output.Bytes()
 }
 
 func writeManagedProfileRecipe(path string, data []byte, force bool) (bool, error) {
@@ -215,65 +233,4 @@ func writeIfMissing(path string, data []byte) (bool, error) {
 		return false, err
 	}
 	return true, nil
-}
-
-// pathForBundledPlugin is the recipe path locator for one materialized
-// official plugin. It is relative to the recipe directory and uses slash
-// separators.
-func pathForBundledPlugin(bundledPath, recipeDirectory, directory string) (string, error) {
-	absolute := filepath.Join(bundledPath, directory)
-	relative, err := filepath.Rel(recipeDirectory, absolute)
-	if err != nil {
-		return filepath.Clean(absolute), nil
-	}
-	return filepath.ToSlash(relative), nil
-}
-
-func renderProfileRecipe(entries []bundle.Entry, bundledPath, recipeDirectory, recipePath string, managed bool) ([]byte, []InitPlugin, error) {
-	plugins := make([]builder.DesiredPlugin, len(entries))
-	locators := make([]string, len(entries))
-	result := make([]InitPlugin, 0, len(entries))
-	names := make(map[string]bool, len(entries))
-	modules := make(map[string]bool, len(entries))
-	for i, entry := range entries {
-		if names[entry.Name] {
-			return nil, nil, fmt.Errorf("bundled plugin set has duplicate name %q", entry.Name)
-		}
-		if modules[entry.Module] {
-			return nil, nil, fmt.Errorf("bundled plugin set has duplicate module %q", entry.Module)
-		}
-		names[entry.Name], modules[entry.Module] = true, true
-		locator, err := pathForBundledPlugin(bundledPath, recipeDirectory, entry.Directory)
-		if err != nil {
-			return nil, nil, err
-		}
-		locators[i] = locator
-		plugins[i] = builder.DesiredPlugin{Module: entry.Module, Path: locator}
-		result = append(result, InitPlugin{Directory: entry.Directory, Module: entry.Module, Name: entry.Name})
-	}
-	desired := builder.NewDesired(recipePath, plugins)
-	if err := desired.Validate(); err != nil {
-		return nil, nil, err
-	}
-	data, err := renderDesiredTOML(entries, locators, managed)
-	return data, result, err
-}
-
-// renderDesiredTOML renders a commented, human-editable plugins.toml for the
-// official plugin set, preserving semantic identity.
-func renderDesiredTOML(entries []bundle.Entry, locators []string, managed bool) ([]byte, error) {
-	var output bytes.Buffer
-	output.WriteString("# ingot desired plugin set.\n")
-	if managed {
-		output.WriteString("# Managed by `ingot init`; local edits may be replaced.\n")
-	} else {
-		output.WriteString("# Generated by `ingot project init`. Edit with `ingot plugin ...` or by hand.\n")
-	}
-	output.WriteString("# the bundled sources are local dev sources managed by ingot under bundled-plugins/.\n")
-	output.WriteString("plugins_version = 1\n")
-	for index, entry := range entries {
-		_, _ = fmt.Fprintf(&output, "\n# %s — %s\n", entry.Name, entry.Directory)
-		_, _ = fmt.Fprintf(&output, "[[plugins]]\nmodule = %s\npath = %s\n", strconv.Quote(entry.Module), strconv.Quote(locators[index]))
-	}
-	return output.Bytes(), nil
 }

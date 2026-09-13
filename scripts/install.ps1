@@ -1,16 +1,12 @@
-# install.ps1 -- install ingot and its official plugin set, then prepare a
-# ready-to-use agent in one command.
+# install.ps1 -- install ingot, then prepare a ready-to-use agent in one command.
 #
-# The ingot binary embeds no plugin sources: the official plugins are
-# distributed as directory trees next to the binary (this repository keeps
-# them under plugins/) and `ingot init` locates them during installation.
-# This script installs both the binary and the plugin tree:
+# Official profiles pin released plugin modules from github.com/ingot-agent/plugins;
+# no plugin source tree is bundled with or copied by this installer.
 #
 #   <Prefix>\bin\ingot.exe
-#   <Prefix>\share\ingot\plugins\<plugin>\...
 #
-# After installation the script initializes a new home or refreshes the
-# official bundle in an existing home, collects model provider settings (from
+# After installation the script initializes or refreshes a Home, collects model
+# provider settings (from
 # the INGOT_* environment variables or interactively), builds a named image,
 # creates the `default` Runtime, and offers to start the web UI.
 #
@@ -33,8 +29,6 @@ $ErrorActionPreference = 'Stop'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BinaryDir = Join-Path $Prefix 'bin'
-$ShareDir = Join-Path $Prefix 'share\ingot'
-$PluginDir = Join-Path $ShareDir 'plugins'
 
 function Join-StagedInstallPath {
     param(
@@ -107,30 +101,29 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
 if (-not (Test-Path (Join-Path $Root 'go.mod'))) {
     throw "install.ps1: cannot locate the ingot source tree at $Root"
 }
-if (-not (Test-Path (Join-Path $Root 'plugins'))) {
-    throw "install.ps1: the official plugin set (plugins/) is missing from $Root"
-}
-
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("ingot-install-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
     Write-Host '==> building ingot'
     Push-Location $Root
+    $previousGoWork = $env:GOWORK
     try {
+        $env:GOWORK = 'off'
         & go build -trimpath -o (Join-Path $staging 'ingot.exe') .\cmd\ingot
         if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
     } finally {
+        if ($null -eq $previousGoWork) {
+            Remove-Item Env:GOWORK -ErrorAction SilentlyContinue
+        } else {
+            $env:GOWORK = $previousGoWork
+        }
         Pop-Location
     }
 
     $targetBin = Join-StagedInstallPath $DestDir $BinaryDir
-    $targetPlugin = Join-StagedInstallPath $DestDir $PluginDir
     Write-Host "==> installing to $targetBin"
-    New-Item -ItemType Directory -Force -Path $targetBin, $targetPlugin | Out-Null
+    New-Item -ItemType Directory -Force -Path $targetBin | Out-Null
     Copy-Item (Join-Path $staging 'ingot.exe') (Join-Path $targetBin 'ingot.exe') -Force
-
-    Write-Host "==> installing official plugins to $targetPlugin"
-    Copy-Item (Join-Path $Root 'plugins\*') $targetPlugin -Recurse -Force
 
     if (-not $DestDir) {
         if (Add-UserPathEntry $BinaryDir) {
@@ -143,12 +136,11 @@ try {
     Write-Host ''
     Write-Host 'ingot installed:'
     Write-Host "  binary:  $targetBin\ingot.exe"
-    Write-Host "  plugins: $targetPlugin"
     Write-Host ''
 
     if ($DestDir) {
         Write-Host 'Staged packaging complete (DestDir set). To prepare a usable home:'
-        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile --bundle `"$PluginDir`""
+        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile"
         return
     }
 
@@ -169,7 +161,7 @@ try {
     # --- init -----------------------------------------------------------------
     Write-Host "==> initializing or refreshing ingot home $HomeDir (profile: $Profile)"
     New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
-    & $Ingot --home $HomeDir init --profile $Profile --bundle $PluginDir
+    & $Ingot --home $HomeDir init --profile $Profile
     if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
 
     $ImageRef = 'local/ingot:default'

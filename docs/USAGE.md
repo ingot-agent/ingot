@@ -15,10 +15,10 @@ go build -o ingot ./cmd/ingot
 ./ingot init
 ```
 
-`init` initializes schema v2 in `~/.ingot`, materializes the official plugin
-bundle there, and maintains the selected official recipe under
-`~/.ingot/profiles/`. It never writes to the current directory and does not
-create a Runtime.
+`init` initializes schema v2 in `~/.ingot` and maintains the selected Official
+Profile recipe under `~/.ingot/profiles/`. The recipe pins released plugin
+modules to exact versions. It never writes to the current directory and does
+not create a Runtime.
 
 Create a project-owned recipe only with an explicit directory:
 
@@ -51,7 +51,6 @@ Managed machine state:
 ~/.ingot/
   home.json
   builder.toml
-  bundled-plugins/
   profiles/
     <profile>.toml
     <profile>.lock

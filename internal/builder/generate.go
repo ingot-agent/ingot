@@ -105,7 +105,7 @@ func processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIG
 	if err := formatAndWriteGenerated(rootDirectory, "signals_nonwindows_gen.go", []byte(buildTags)); err != nil {
 		return err
 	}
-	if err := formatAndWriteGenerated(rootDirectory, "signals_windows_gen.go", []byte("//go:build windows\n\npackage main\n\nimport (\n\t\"os\"\n\t\"syscall\"\n)\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIGBREAK} }\n")); err != nil {
+	if err := formatAndWriteGenerated(rootDirectory, "signals_windows_gen.go", []byte("//go:build windows\n\npackage main\n\nimport \"os\"\n\nfunc processSignals() []os.Signal { return []os.Signal{os.Interrupt} }\n")); err != nil {
 		return err
 	}
 	writerLockUnix := `//go:build !windows
