@@ -47,3 +47,11 @@ func TestRuntimeNameRejectsTraversal(t *testing.T) {
 		t.Fatal("traversal runtime name accepted")
 	}
 }
+
+func TestLoadReportsMissingRuntime(t *testing.T) {
+	registry := New(filepath.Join(t.TempDir(), "runtimes"))
+	_, err := registry.Load("missing")
+	if err == nil || err.Error() != "INGOT-RUNTIME-REGISTRY-NOT-FOUND: runtime missing does not exist" {
+		t.Fatalf("missing runtime error = %v", err)
+	}
+}

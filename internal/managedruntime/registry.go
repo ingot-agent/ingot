@@ -66,6 +66,11 @@ func (registry Registry) Load(name string) (Runtime, error) {
 	if err := image.ValidateRuntimeName(name); err != nil {
 		return Runtime{}, err
 	}
+	if _, err := os.Stat(registry.RuntimeHome(name)); os.IsNotExist(err) {
+		return Runtime{}, fmt.Errorf("INGOT-RUNTIME-REGISTRY-NOT-FOUND: runtime %s does not exist", name)
+	} else if err != nil {
+		return Runtime{}, err
+	}
 	data, err := os.ReadFile(registry.Path(name))
 	if err != nil {
 		return Runtime{}, err
