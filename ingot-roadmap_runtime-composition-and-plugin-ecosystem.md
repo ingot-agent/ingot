@@ -770,6 +770,9 @@ collection update
 
 ### M4 Done
 
+实现状态：已于 2026-09-14 落地 Collection v1 的本地/HTTPS inspect、纯 Planner、
+显式顺序冲突授权、resolve preflight 与 `plugins.toml + plugins.lock` 原子提交。
+
 社区可以发布一个：
 
 ```text

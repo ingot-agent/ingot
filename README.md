@@ -326,6 +326,8 @@ See the [Usage Guide](./docs/USAGE.md) or
 - `internal/managedruntime` — persistent Runtime registry and bindings.
 - `internal/process` — per-Process supervision, control, reconciliation, and logs.
 - `internal/profiles` — exact released Official Plugin profile definitions.
+- `internal/collection` — strict Collection loading, semantic identity, conflict
+  planning, and deterministic order merging.
 - `internal/builder` — resolution, type analysis, component graph, code
   generation, reproducible build, and image validation.
 - `scripts/` — Unix and PowerShell installation scripts.
@@ -348,6 +350,8 @@ performed in the standalone `ingot-agent/plugins` repository.
 ## Roadmap
 
 - [x] `ingot init` — create a runnable plugin profile and configuration.
+- [x] `ingot collection inspect|plan|apply` — apply reusable exact-version
+  Plugin composition recipes with explicit conflict handling.
 - [ ] `ingot doctor` — validate plugin completeness, configuration, and the
   active image.
 

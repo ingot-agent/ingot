@@ -118,6 +118,45 @@ ingot plugin add --path ../plugin [--use ...] [--lock ...]
 ingot plugin remove|update|reorder ... [--use ...] [--lock ...]
 ```
 
+## Plugin Collections
+
+A Collection is a reusable ordered recipe of exact released Plugin modules. It
+is an input transformation only: after apply, `plugins.toml` remains the sole
+desired-state authority.
+
+```toml
+collection_schema = 1
+id = "github.com/example/ingot-collections/coding"
+version = "v1.0.0"
+
+[metadata]
+name = "Coding Essentials"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/tool-shell"
+version = "v0.1.0"
+```
+
+```text
+ingot collection inspect [--expect-digest sha256:...] <path-or-https-url>
+ingot collection plan [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection apply [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+```
+
+`inspect` does not require an initialized Home. `plan` classifies additions,
+satisfied Plugins, version/source conflicts, and order conflicts without
+resolving modules. A conflicting plan is valid JSON with `applicable: false`.
+
+Collection order is a strict subsequence constraint, not a contiguous block.
+Existing Plugin order is never changed by default. `--accept-order` explicitly
+authorizes the deterministic minimum-reversal reorder shown by the plan; it
+does not authorize version changes or replacement of Local Path sources.
+
+`apply` replans under the project lock, performs a complete resolve preflight,
+and atomically commits `plugins.toml` and `plugins.lock`. Fetch, digest, parse,
+conflict, or resolve failure leaves both files unchanged. M4 does not keep a
+Collection receipt and does not provide Collection remove or update commands.
+
 ## Image Commands
 
 ```text

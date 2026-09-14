@@ -113,6 +113,42 @@ ingot plugin add --path ../plugin
 ingot plugin remove|update|reorder ...
 ```
 
+## Plugin Collections
+
+Collection 是由已发布 Plugin exact module version 组成的可复用有序 Recipe。它只负责
+输入变换；Apply 后唯一权威 desired state 仍然是 `plugins.toml`。
+
+```toml
+collection_schema = 1
+id = "github.com/example/ingot-collections/coding"
+version = "v1.0.0"
+
+[metadata]
+name = "Coding Essentials"
+
+[[plugins]]
+module = "github.com/ingot-agent/plugins/tool-shell"
+version = "v0.1.0"
+```
+
+```text
+ingot collection inspect [--expect-digest sha256:...] <path-or-https-url>
+ingot collection plan [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection apply [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+```
+
+`inspect` 不要求已初始化 Home。`plan` 不解析 module source，只区分 Add、Satisfied、
+VersionConflict、SourceConflict 与 OrderConflict；存在冲突的有效 Plan 仍输出 JSON，
+并通过 `applicable: false` 表示不可应用。
+
+Collection 顺序是严格子序列约束，不要求形成连续块。默认绝不改变已有 Plugin 顺序；
+`--accept-order` 显式授权 Plan 中展示的确定性最小反转重排，但不授权版本变化，也不允许
+Collection 替换 Local Path source。
+
+`apply` 会在项目锁内重新规划、执行完整 resolve preflight，并原子提交 `plugins.toml` 与
+`plugins.lock`。获取、摘要、解析、冲突或 resolve 失败时两个文件均不改变。M4 不保存
+Collection receipt，也不提供 Collection remove/update。
+
 ## Image 命令
 
 ```text

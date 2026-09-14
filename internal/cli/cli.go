@@ -41,6 +41,9 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		cli.usage()
 		return 0
 	}
+	if command == "collection" {
+		return cli.runCollection(ctx, homePath, rest)
+	}
 	var home *ingothome.Home
 	if command == "supervise" {
 		home, err = ingothome.OpenForSupervisor(homePath)
@@ -391,5 +394,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...|collection ...>")
 }
