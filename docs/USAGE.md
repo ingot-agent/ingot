@@ -85,10 +85,11 @@ ingot runtime logs work --follow
 ingot stop work
 ```
 
-The Docker-style convenience command creates and starts in one step:
+The Docker-style convenience command creates and runs in the foreground by
+default. Pass `-d` (or `--detach`) to start it in the background:
 
 ```sh
-ingot run --name work --detach acme/coding-agent:1.0.0 -- web
+ingot run --name work -d acme/coding-agent:1.0.0 -- web
 ```
 
 ## Project Commands

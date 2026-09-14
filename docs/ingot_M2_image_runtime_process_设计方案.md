@@ -173,7 +173,7 @@ M2 的产品体验采用 Docker 式对象流，但不复制其实现：
 
 ```text
 ingot build --use ./coding-agent.toml --tag acme/coding-agent:1.4.0
-ingot run --name work --detach acme/coding-agent:1.4.0 -- web
+ingot run --name work -d acme/coding-agent:1.4.0 -- web
 ingot ps
 ingot runtime logs work --follow
 ingot stop work
@@ -936,13 +936,13 @@ ingot runtime start <name> [--timeout 30s] [-- <temporary-argv>]
 ### 13.8 Docker-style Run
 
 ```text
-ingot run --name <runtime-name> [--detach] <image-ref> [-- <argv>]
+ingot run --name <runtime-name> [-d|--detach] <image-ref> [-- <argv>]
 ```
 
 `run` 是 `runtime create` 加第一次 `runtime run/start` 的便利入口：
 
 - M2 要求显式 `--name`，不生成难以发现的随机 Runtime name；
-- 默认以前台模式运行；`--detach` 使用 detached start；
+- 默认以前台模式运行；`-d` 或 `--detach` 使用 detached start；
 - Runtime 已存在时失败，不隐式 start、switch 或复用已有 State；
 - Runtime create 先完整提交，随后才 spawn Process；startup 失败时保留 Runtime、State、
   log 和 last-exit 供 inspect/retry，不回滚 Runtime create；
@@ -1216,7 +1216,7 @@ mv ~/.ingot ~/.ingot.pre-m2
 ingot init
 ingot project init . --profile default
 ingot build --tag acme/coding-agent:1.0.0
-ingot run --name work --detach acme/coding-agent:1.0.0 -- web
+ingot run --name work -d acme/coding-agent:1.0.0 -- web
 ```
 
 `ingot init` 只初始化/验证 schema v2 Home、物化官方 Bundle，并在
@@ -1299,7 +1299,7 @@ runtime restart <name> [--timeout 30s]
 runtime logs <name> [--process <id>] [--follow]
 runtime delete <name> [--purge]
 
-run --name <runtime-name> [--detach] <image-ref> [-- <argv>]
+run --name <runtime-name> [-d|--detach] <image-ref> [-- <argv>]
 ps
 stop <runtime-name> [--timeout 10s]
 stop --process <process-id> [--timeout 10s]

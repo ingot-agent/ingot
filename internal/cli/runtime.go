@@ -188,7 +188,7 @@ func (cli CLI) runNamed(ctx context.Context, home *ingothome.Home, arguments []s
 	if err != nil {
 		return cli.usageError(err.Error())
 	}
-	remaining, detach, err := extractBoolOption(remaining, "detach")
+	remaining, detach, err := extractBoolOption(remaining, "detach", "-d")
 	if err != nil {
 		return cli.usageError(err.Error())
 	}
