@@ -24,3 +24,4 @@
 | [0004](./0004-operation-identity.md) | Operation 身份与同名处理 | M1 |
 | [0005](./0005-collection.md) | Collection 在管道中的位置 | M4 |
 | [0006](./0006-runtime-environment.md) | Runtime 环境变量收敛 | M1 |
+| [0007](./0007-collection-v1.md) | Collection v1 文件、规划与应用语义 | M4 |
