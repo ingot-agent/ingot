@@ -172,6 +172,14 @@ func TestForegroundRunInjectsRuntimeHomeAndRecordsExit(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogsReportsMissingRuntime(t *testing.T) {
+	home := newM2Home(t)
+	err := home.RuntimeLogs(context.Background(), "missing", "", false, &bytes.Buffer{})
+	if err == nil || err.Error() != "INGOT-RUNTIME-REGISTRY-NOT-FOUND: runtime missing does not exist" {
+		t.Fatalf("missing runtime logs error = %v", err)
+	}
+}
+
 func TestImageBundleRoundTripDeterministic(t *testing.T) {
 	home := newM2Home(t)
 	id := writeM2ImageFixture(t, home, "bundle-binary")
