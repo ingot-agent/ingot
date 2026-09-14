@@ -41,6 +41,9 @@ func Reconcile(ctx context.Context, runtimeHome string) (Observation, error) {
 		return Observation{}, err
 	}
 	supervisorAlive := IdentityAlive(record.SupervisorPID, record.SupervisorBirthID)
+	if supervisorAlive && record.RuntimePID == nil {
+		return Observation{State: record.Phase, Process: record}, nil
+	}
 	runtimeAlive := record.RuntimePID != nil && IdentityAlive(*record.RuntimePID, record.RuntimeBirthID)
 	if supervisorAlive && runtimeAlive {
 		control, controlErr := ReadControl(runtimeHome)
