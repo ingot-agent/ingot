@@ -68,6 +68,36 @@ func TestReconcileCleansStaleRecord(t *testing.T) {
 	}
 }
 
+func TestReconcilePreservesStartingRecordForLiveSupervisor(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(RunDirectory(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	supervisorBirth, err := BirthIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := "logs/00000000-0000-4000-8000-000000000000.log"
+	record := Record{ProcessVersion: 1, ProcessID: "00000000-0000-4000-8000-000000000000", Mode: "detached", Phase: "starting", SupervisorPID: os.Getpid(), SupervisorBirthID: supervisorBirth, ImageID: "sha256:0000000000000000000000000000000000000000000000000000000000000000", ArtifactDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000", Target: image.Target{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: []image.TargetKey{}}, RuntimeGeneration: 1, Argv: []string{}, StartedAt: time.Now().UTC(), LogPath: &logPath}
+	if err := writeJSON(ProcessPath(home), record); err != nil {
+		t.Fatal(err)
+	}
+
+	observation, err := Reconcile(context.Background(), home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.State != "starting" || observation.Process == nil || observation.Process.ProcessID != record.ProcessID {
+		t.Fatalf("observation=%#v", observation)
+	}
+	if _, err := os.Stat(ProcessPath(home)); err != nil {
+		t.Fatalf("starting process record was removed: %v", err)
+	}
+	if _, err := os.Stat(LastExitPath(home)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected last-exit record: %v", err)
+	}
+}
+
 func TestProcessMetadataIsBoundedAndControlIsLoopback(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(RunDirectory(home), 0o700); err != nil {
