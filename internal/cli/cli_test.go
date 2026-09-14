@@ -82,3 +82,18 @@ func TestRemovedApplyAndUnknownDispatchAreUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractBoolOptionAcceptsShortAlias(t *testing.T) {
+	for _, option := range []string{"-d", "--detach"} {
+		remaining, found, err := extractBoolOption([]string{"image", option}, "detach", "-d")
+		if err != nil || !found || len(remaining) != 1 || remaining[0] != "image" {
+			t.Fatalf("option %s: remaining=%v found=%t err=%v", option, remaining, found, err)
+		}
+	}
+	if _, _, err := extractBoolOption([]string{"-d", "--detach"}, "detach", "-d"); err == nil || !strings.Contains(err.Error(), "only once") {
+		t.Fatalf("duplicate detach error = %v", err)
+	}
+	if _, _, err := extractBoolOption([]string{"-d=true"}, "detach", "-d"); err == nil || !strings.Contains(err.Error(), "does not take a value") {
+		t.Fatalf("valued detach error = %v", err)
+	}
+}

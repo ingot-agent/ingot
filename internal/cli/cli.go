@@ -330,12 +330,16 @@ func splitReferenceQuery(value string) (string, string) {
 	return value[:index], value[index+1:]
 }
 
-func extractBoolOption(arguments []string, name string) ([]string, bool, error) {
+func extractBoolOption(arguments []string, name string, aliases ...string) ([]string, bool, error) {
 	option := "--" + name
 	found := false
 	result := make([]string, 0, len(arguments))
 	for _, argument := range arguments {
-		if argument == option {
+		matched := argument == option
+		for _, alias := range aliases {
+			matched = matched || argument == alias
+		}
+		if matched {
 			if found {
 				return nil, false, fmt.Errorf("%s may be specified only once", option)
 			}
@@ -344,6 +348,11 @@ func extractBoolOption(arguments []string, name string) ([]string, bool, error) 
 		}
 		if strings.HasPrefix(argument, option+"=") {
 			return nil, false, fmt.Errorf("%s does not take a value", option)
+		}
+		for _, alias := range aliases {
+			if strings.HasPrefix(argument, alias+"=") {
+				return nil, false, fmt.Errorf("%s does not take a value", alias)
+			}
 		}
 		result = append(result, argument)
 	}

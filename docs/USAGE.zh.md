@@ -82,10 +82,11 @@ ingot runtime logs work --follow
 ingot stop work
 ```
 
-也可以用 Docker 风格便利命令一次创建并启动：
+也可以用 Docker 风格便利命令一次创建并运行。默认以前台模式运行；添加 `-d`（或
+`--detach`）时在后台启动：
 
 ```sh
-ingot run --name work --detach acme/coding-agent:1.0.0 -- web
+ingot run --name work -d acme/coding-agent:1.0.0 -- web
 ```
 
 ## 项目命令
