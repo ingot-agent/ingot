@@ -38,6 +38,9 @@ type ImageManifest = image.Manifest
 
 func (options BuildOptions) defaults() (BuildOptions, error) {
 	if options.Home == "" {
+		options.Home = os.Getenv("INGOT_HOME")
+	}
+	if options.Home == "" {
 		userHome, err := os.UserHomeDir()
 		if err != nil {
 			return options, err

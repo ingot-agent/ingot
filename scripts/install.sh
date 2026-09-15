@@ -27,7 +27,7 @@ options:
   --prefix DIR       install prefix (default: /usr/local)
   --bindir DIR       binary directory (default: <prefix>/bin)
   --destdir DIR      staging root prepended to all paths (default: empty)
-  --home PATH        ingot home directory (default: ~/.ingot)
+  --home PATH        ingot home directory (default: INGOT_HOME, then ~/.ingot)
   --profile NAME     official profile: default (web UI) or minimal (default: default)
   --no-configure     skip model provider configuration
   --no-apply         legacy alias: skip image build and Runtime creation

@@ -15,10 +15,10 @@ go build -o ingot ./cmd/ingot
 ./ingot init
 ```
 
-`init` initializes schema v2 in `~/.ingot` and maintains the selected Official
-Profile recipe under `~/.ingot/profiles/`. The recipe pins released plugin
-modules to exact versions. It never writes to the current directory and does
-not create a Runtime.
+`init` initializes schema v2 in `INGOT_HOME`, or `~/.ingot` when that variable
+is unset, and maintains the selected Official Profile recipe under `profiles/`.
+The recipe pins released plugin modules to exact versions. It never writes to
+the current directory and does not create a Runtime.
 
 Create a project-owned recipe only with an explicit directory:
 
@@ -26,7 +26,8 @@ Create a project-owned recipe only with an explicit directory:
 ingot project init . [--profile default|minimal] [--force]
 ```
 
-Use another managed Home with a global option before the command:
+Use another managed Home with a global option before the command. This option
+overrides `INGOT_HOME`:
 
 ```sh
 ingot --home /path/to/home init

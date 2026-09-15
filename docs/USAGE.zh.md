@@ -14,9 +14,9 @@ go build -o ingot ./cmd/ingot
 ./ingot init
 ```
 
-`init` 在 `~/.ingot` 初始化 schema v2 Home，并在 `~/.ingot/profiles/` 下维护所选官方
-Profile recipe。Recipe 会把官方插件精确固定到已发布的模块版本。它不会写入当前目录，
-也不会创建 Runtime。
+`init` 在 `INGOT_HOME` 指向的目录初始化 schema v2 Home；未设置该变量时使用
+`~/.ingot`。所选官方 Profile recipe 位于 Home 的 `profiles/` 下。Recipe 会把官方插件
+精确固定到已发布的模块版本。它不会写入当前目录，也不会创建 Runtime。
 
 只有显式指定项目目录时才创建项目自己的 Recipe：
 
@@ -24,7 +24,7 @@ Profile recipe。Recipe 会把官方插件精确固定到已发布的模块版�
 ingot project init . [--profile default|minimal] [--force]
 ```
 
-全局 `--home` 必须放在命令之前：
+全局 `--home` 必须放在命令之前，并会覆盖 `INGOT_HOME`：
 
 ```sh
 ingot --home /path/to/home init

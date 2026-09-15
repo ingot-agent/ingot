@@ -18,7 +18,7 @@ param(
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'ingot'),
     [string]$DestDir = '',
     [Alias('Home')]
-    [string]$HomeDir = (Join-Path $env:USERPROFILE '.ingot'),
+    [string]$HomeDir = $(if ($env:INGOT_HOME) { $env:INGOT_HOME } else { Join-Path $env:USERPROFILE '.ingot' }),
     [ValidateSet('default', 'minimal')]
     [string]$Profile = 'default',
     [switch]$NoConfigure,
