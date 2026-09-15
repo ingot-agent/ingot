@@ -32,6 +32,48 @@ jobs:
         shell: bash
         run: GOWORK=off go test -race ./...
 
+  update-platforms:
+    name: Core update tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Test core distribution packages
+        shell: bash
+        run: GOWORK=off go test ./internal/buildinfo ./internal/release ./internal/coreupdate
+
+      - name: Validate Unix installer syntax
+        if: runner.os != 'Windows'
+        shell: sh
+        run: sh -n scripts/install.sh
+
+      - name: Validate PowerShell installer syntax
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path scripts/install.ps1), [ref]$tokens, [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            throw 'install.ps1 contains parser errors'
+          }
+
   official-profile-smoke:
     name: Released official profile smoke
     needs: test

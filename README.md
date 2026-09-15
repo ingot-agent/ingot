@@ -89,34 +89,38 @@ as much as the model call.
 
 ## Quick start
 
-Requires Go 1.24 or newer. One command installs the CLI, initializes the
-home with the default profile (browser workspace: sessions, tools, streaming;
-no filesystem tools, no approval interceptors), collects your model provider
-settings, builds the runtime image, and offers to start the web UI:
+Install the official core binary from GitHub Releases. The installer does not
+require Go and only installs `ingot`; it does not initialize or modify
+`INGOT_HOME`, plugins, Images, or Runtimes.
 
 ```sh
-./scripts/install.sh
-# non-interactive alternative: set the provider first
-INGOT_BASE_URL=https://api.deepseek.com INGOT_API_KEY=sk-... \
-  INGOT_MODEL=deepseek-v4-flash ./scripts/install.sh
+# Linux and macOS; installs to ~/.local/bin by default
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | sh
 ```
 
-Manual steps, equivalent to what the installer does:
+On Windows PowerShell:
+
+```powershell
+$installer = Join-Path $env:TEMP 'install-ingot.ps1'
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer
+Remove-Item $installer
+```
+
+Then initialize and build the agent composition. Building Runtime Images
+requires Go 1.24 or newer even when the core was installed from a Release.
 
 ```sh
-# 1. Build the CLI (or install with ./scripts/install.sh)
-go build -o ingot ./cmd/ingot
+# 1. Initialize a home with the official plugin set
+ingot init
 
-# 2. Initialize a home with the official plugin set
-./ingot init
-
-# 3. Build and name the managed default profile
-./ingot build --use ~/.ingot/profiles/default.toml \
+# 2. Build and name the managed default profile
+ingot build --use ~/.ingot/profiles/default.toml \
   --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
 
-# 4. Create and start an isolated Runtime
-./ingot runtime create default --image local/ingot:default -- web
-./ingot runtime start default   # then open http://127.0.0.1:7316/
+# 3. Create and start an isolated Runtime
+ingot runtime create default --image local/ingot:default -- web
+ingot runtime start default   # then open http://127.0.0.1:7316/
 ```
 
 Plugins start Unconfigured and own their configuration. Set the model provider
@@ -285,6 +289,8 @@ to override both and select another managed Home.
 ```text
 ingot [--home PATH] <command>
 
+version     Report core, Builder, and protocol identities
+update      Check for or install an official core Release
 init        Initialize a home with an official released plugin profile
 project     Explicitly initialize a project recipe with `project init <dir>`
 resolve     Resolve plugins.toml and refresh plugins.lock

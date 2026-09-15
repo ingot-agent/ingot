@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ingot-agent/ingot/internal/coreupdate"
 )
 
 func TestInitCreatesM2HomeWithoutWritingCurrentDirectory(t *testing.T) {
@@ -95,5 +97,97 @@ func TestExtractBoolOptionAcceptsShortAlias(t *testing.T) {
 	}
 	if _, _, err := extractBoolOption([]string{"-d=true"}, "detach", "-d"); err == nil || !strings.Contains(err.Error(), "does not take a value") {
 		t.Fatalf("valued detach error = %v", err)
+	}
+}
+
+func TestVersionCommandsDoNotOpenHome(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "must-not-be-created")
+	for _, arguments := range [][]string{{"--version"}, {"version"}} {
+		var stdout, stderr bytes.Buffer
+		command := CLI{Stdout: &stdout, Stderr: &stderr}
+		t.Setenv("INGOT_HOME", missingHome)
+		if code := command.Run(context.Background(), arguments); code != 0 {
+			t.Fatalf("%v exit=%d stderr=%s", arguments, code, stderr.String())
+		}
+		if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+			t.Fatalf("%v touched INGOT_HOME: %v", arguments, err)
+		}
+	}
+}
+
+func TestStructuredVersionIncludesIndependentIdentities(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	command := CLI{Stdout: &stdout, Stderr: &stderr}
+	if code := command.Run(context.Background(), []string{"version"}); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	var result coreVersionResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.CoreVersion == "" || result.IngotVersion == "" || result.BuilderVersion == "" || result.Target == "" {
+		t.Fatalf("version result = %#v", result)
+	}
+}
+
+func TestVersionRejectsHomeAndArguments(t *testing.T) {
+	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
+	for _, arguments := range [][]string{{"--home", t.TempDir(), "version"}, {"--home", t.TempDir(), "--version"}} {
+		if code := command.Run(context.Background(), arguments); code != 2 {
+			t.Fatalf("%v exit=%d", arguments, code)
+		}
+	}
+	if code := command.Run(context.Background(), []string{"version", "extra"}); code != 2 {
+		t.Fatalf("version extra exit=%d", code)
+	}
+}
+
+func TestUpdateParsingAndHomeBypass(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "must-not-be-created")
+	var received coreupdate.Options
+	called := false
+	var stdout, stderr bytes.Buffer
+	command := CLI{
+		Stdout: &stdout,
+		Stderr: &stderr,
+		updateCore: func(_ context.Context, options coreupdate.Options) (coreupdate.Result, error) {
+			called = true
+			received = options
+			return coreupdate.Result{CurrentVersion: "0.3.1-dev", TargetVersion: "0.3.1", UpdateAvailable: true}, nil
+		},
+	}
+	t.Setenv("INGOT_HOME", missingHome)
+	if code := command.Run(context.Background(), []string{"update", "--check", "--version", "v0.3.1"}); code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	if !called || !received.Check || received.Version != "v0.3.1" || received.Force {
+		t.Fatalf("update options = %#v, called=%t", received, called)
+	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("update touched INGOT_HOME: %v", err)
+	}
+}
+
+func TestUpdateRejectsInvalidFlagCombinations(t *testing.T) {
+	called := false
+	command := CLI{
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+		updateCore: func(context.Context, coreupdate.Options) (coreupdate.Result, error) {
+			called = true
+			return coreupdate.Result{}, nil
+		},
+	}
+	for _, arguments := range [][]string{
+		{"update", "--check", "--force"},
+		{"update", "extra"},
+		{"--home", t.TempDir(), "update"},
+	} {
+		if code := command.Run(context.Background(), arguments); code != 2 {
+			t.Fatalf("%v exit=%d", arguments, code)
+		}
+	}
+	if called {
+		t.Fatal("invalid update arguments called updater")
 	}
 }

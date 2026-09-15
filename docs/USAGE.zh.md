@@ -7,11 +7,52 @@ M2 将项目 Recipe、不可变 Image、持久 Runtime 与单次 Process 明确�
 
 ## 安装与初始化
 
-需要 Go 1.24 或更高版本。
+官方安装器从 GitHub Releases 下载当前平台对应的不可变 Core 归档，校验 SHA-256
+后只安装 `ingot` 可执行文件。安装过程不依赖 Go，也不会创建或修改
+`INGOT_HOME`、插件、Image 或 Runtime。
 
 ```sh
-go build -o ingot ./cmd/ingot
-./ingot init
+# Linux 与 macOS；默认安装到 ~/.local/bin/ingot
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell；默认安装到 %LOCALAPPDATA%\ingot\bin\ingot.exe
+$installer = Join-Path $env:TEMP 'install-ingot.ps1'
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer
+Remove-Item $installer
+```
+
+两个安装器默认选择最新稳定 Release。Unix 使用 `--version`、Windows 使用
+`-Version` 可指定精确版本，包括 prerelease；重装同版本或降级必须显式添加 force：
+
+```sh
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | \
+  sh -s -- --version v0.3.1
+```
+
+```powershell
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer -Version v0.3.1 -Force
+Remove-Item $installer
+```
+
+Unix 参数为 `--prefix`、`--bindir`、`--destdir`、`--version` 和 `--force`；
+PowerShell 对应 `-Prefix`、`-BinaryDir`、`-DestDir`、`-Version` 与 `-Force`。
+已有预发布 Home 会被原样保留；已移除的 Home、Profile、配置与 Runtime 安装参数
+不会被自动替代。
+
+若要从源码构建 Core，则需要 Go 1.24 或更高版本：
+
+```sh
+GOWORK=off go build -o ingot ./cmd/ingot
+```
+
+无论使用哪种安装方式，都需要显式初始化 Home：
+
+```sh
+ingot init
 ```
 
 `init` 在 `INGOT_HOME` 指向的目录初始化 schema v2 Home；未设置该变量时使用
@@ -32,6 +73,41 @@ ingot --home /path/to/home init
 
 旧布局或非空的不兼容 Home 会被拒绝。M2 不迁移预发布阶段的 `current`、顶层
 `state` 或旧 Image manifest。
+
+## Core 版本与更新
+
+Core 更新检查始终由用户显式触发。只有以下 update 命令会访问 GitHub，并继承当前
+进程的 HTTP(S) 代理配置：
+
+```text
+ingot --version
+ingot version
+ingot update --check
+ingot update
+ingot update --version v0.3.1
+ingot update --version v0.3.1 --force
+```
+
+`--version` 输出简短的 Core 版本；`version` 输出 JSON，其中包含 Core 版本与来源、
+构建协议版本和 Builder 版本。这些身份彼此独立演进。
+
+未指定 `--version` 时，`update` 只解析最新稳定 Release，不会选择 prerelease；精确版本
+可以选择 prerelease。降级和同版本重装需要 `--force`；`--check` 绝不修改二进制，且
+不能与 `--force` 同时使用。版本与更新命令拒绝 `--home`，因为它们不会读写 Home。
+
+替换前，updater 会校验归档摘要，并执行候选 Core，将其版本、官方构建标记、源码
+revision、clean 状态和平台 target 与 `release-manifest.json` 对照。Unix 上替换经过锁
+串行化并原子完成；Windows 会保留回滚副本，直到新 Core 启动。Core 更新不会修改
+插件、Image、Runtime 定义、State 或正在运行的 Process。
+
+Release 资产还带有 GitHub artifact attestation。下载资产后，可以使用 GitHub CLI
+校验其 workflow 来源：
+
+```sh
+gh attestation verify ingot-v0.3.1-linux-amd64.tar.gz \
+  --repo ingot-agent/ingot \
+  --signer-workflow ingot-agent/ingot/.github/workflows/release.yml
+```
 
 ## 存储布局
 

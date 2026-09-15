@@ -5,6 +5,10 @@ import (
 	"os"
 
 	"github.com/ingot-agent/ingot/internal/cli"
+	"github.com/ingot-agent/ingot/internal/coreupdate"
 )
 
-func main() { os.Exit((cli.CLI{}).Run(context.Background(), os.Args[1:])) }
+func main() {
+	_ = coreupdate.CleanupPrevious()
+	os.Exit((cli.CLI{}).Run(context.Background(), os.Args[1:]))
+}

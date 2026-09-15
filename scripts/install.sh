@@ -1,55 +1,31 @@
 #!/usr/bin/env sh
-# install.sh — install ingot, then prepare a ready-to-use agent in one command.
-#
-# Official profiles pin released plugin modules from github.com/ingot-agent/plugins;
-# no plugin source tree is bundled with or copied by this installer.
-#
-#   <prefix>/bin/ingot
-#
-# After installation the script initializes or refreshes a Home, collects model
-# provider settings (from
-# the INGOT_* environment variables or interactively), builds a named image,
-# creates the `default` Runtime, and offers to start the web UI.
-#
-# Usage:
-#   ./scripts/install.sh                          # -> /usr/local, one-command setup
-#   ./scripts/install.sh --prefix ~/.local        # -> ~/.local/bin
-#   DESTDIR=./pkg ./scripts/install.sh            # staged packaging (no init/build)
-#   INGOT_API_KEY=sk-... INGOT_BASE_URL=https://api.example.com/v1 \
-#     INGOT_MODEL=gpt-4o-mini ./scripts/install.sh   # non-interactive
+# Install an official ingot core binary from GitHub Releases.
 set -eu
+
+release_base=https://github.com/ingot-agent/ingot/releases
+prefix=
+bindir=
+destdir=
+version=
+force=false
+staged_target=
 
 usage() {
 	cat <<'EOF'
-usage: ./scripts/install.sh [options]
+usage: install.sh [options]
 
 options:
-  --prefix DIR       install prefix (default: /usr/local)
+  --prefix DIR       install prefix (default: ~/.local)
   --bindir DIR       binary directory (default: <prefix>/bin)
-  --destdir DIR      staging root prepended to all paths (default: empty)
-  --home PATH        ingot home directory (default: INGOT_HOME, then ~/.ingot)
-  --profile NAME     official profile: default (web UI) or minimal (default: default)
-  --no-configure     skip model provider configuration
-  --no-apply         legacy alias: skip image build and Runtime creation
-  --no-open          do not open the web UI after start
+  --destdir DIR      staging root prepended to the binary directory
+  --version VERSION  exact release version, with or without a v prefix
+  --force            reinstall the same version or allow a downgrade
   -h, --help         show this help
 
-Model provider settings, when not provided interactively:
-  INGOT_PROVIDER_NAME  provider display name (default: openai)
-  INGOT_BASE_URL       OpenAI-compatible base URL (default: https://api.openai.com/v1)
-  INGOT_API_KEY        API key
-  INGOT_MODEL          model name (default: gpt-4o-mini)
+The installer only installs the ingot core binary. It does not initialize or
+modify INGOT_HOME, plugins, Images, or Runtimes.
 EOF
 }
-
-prefix=/usr/local
-bindir=
-destdir=
-ingot_home=
-profile=default
-no_configure=false
-no_apply=false
-no_open=false
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
@@ -68,26 +44,13 @@ while [ "$#" -gt 0 ]; do
 			destdir=$2
 			shift 2
 			;;
-		--home)
-			[ "$#" -ge 2 ] || { echo "install.sh: --home requires a value" >&2; exit 2; }
-			ingot_home=$2
+		--version)
+			[ "$#" -ge 2 ] || { echo "install.sh: --version requires a value" >&2; exit 2; }
+			version=$2
 			shift 2
 			;;
-		--profile)
-			[ "$#" -ge 2 ] || { echo "install.sh: --profile requires a value" >&2; exit 2; }
-			profile=$2
-			shift 2
-			;;
-		--no-configure)
-			no_configure=true
-			shift
-			;;
-		--no-apply)
-			no_apply=true
-			shift
-			;;
-		--no-open)
-			no_open=true
+		--force)
+			force=true
 			shift
 			;;
 		-h|--help)
@@ -102,182 +65,196 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-[ -n "$bindir" ] || bindir="$prefix/bin"
-[ -n "$ingot_home" ] || ingot_home="${INGOT_HOME:-$(printf '%s' "${HOME:-$USERPROFILE}/.ingot")}"
-[ "$profile" = "default" ] || [ "$profile" = "minimal" ] || {
-	echo "install.sh: unknown profile $profile (available: default, minimal)" >&2
-	exit 2
-}
+if [ -z "$bindir" ]; then
+	if [ -z "$prefix" ]; then
+		[ -n "${HOME:-}" ] || { echo "install.sh: HOME is required unless --prefix or --bindir is set" >&2; exit 1; }
+		prefix=$HOME/.local
+	fi
+	bindir=$prefix/bin
+fi
 
-root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-command -v go >/dev/null 2>&1 || { echo "install.sh: go 1.24+ is required to build ingot" >&2; exit 1; }
-[ -f "$root/go.mod" ] || { echo "install.sh: cannot locate the ingot source tree at $root" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "install.sh: curl is required" >&2; exit 1; }
+command -v tar >/dev/null 2>&1 || { echo "install.sh: tar is required" >&2; exit 1; }
 
 temporary=$(mktemp -d "${TMPDIR:-/tmp}/ingot-install.XXXXXX")
-trap 'rm -rf "$temporary"' EXIT
+trap 'rm -rf "$temporary"; [ -z "$staged_target" ] || rm -f "$staged_target"' EXIT HUP INT TERM
 
-echo "==> building ingot"
-(cd "$root" && GOWORK=off go build -trimpath -o "$temporary/ingot" ./cmd/ingot)
+download() {
+	url=$1
+	destination=$2
+	curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --retry-delay 1 "$url" -o "$destination"
+}
 
-echo "==> installing to $destdir$bindir"
-mkdir -p "$destdir$bindir"
-install -m 0755 "$temporary/ingot" "$destdir$bindir/ingot"
-
-echo
-echo "ingot installed:"
-echo "  binary:  $destdir$bindir/ingot"
-echo
-
-# A staged packaging run (DESTDIR) cannot touch the real home; stop here.
-if [ -n "$destdir" ]; then
-	echo "Staged packaging complete (DESTDIR set). To prepare a usable home:"
-	echo "  $bindir/ingot --home \"$ingot_home\" init --profile $profile"
-	exit 0
-fi
-
-ingot_bin="$bindir/ingot"
-[ -x "$ingot_bin" ] || { echo "install.sh: installed binary not found at $ingot_bin" >&2; exit 1; }
-
-# ---------------------------------------------------------------------------
-# 1. init
-# ---------------------------------------------------------------------------
-echo "==> initializing or refreshing ingot home $ingot_home (profile: $profile)"
-mkdir -p "$ingot_home"
-"$ingot_bin" --home "$ingot_home" init --profile "$profile"
-
-image_ref=local/ingot:default
-runtime_name=default
-profile_recipe="$ingot_home/profiles/${profile}.toml"
-profile_lock="$ingot_home/profiles/${profile}.lock"
-if $no_apply; then
-	echo "==> skipping image build and Runtime creation (--no-apply legacy alias)"
-else
-	echo "==> building runtime image (first build downloads modules and may take a few minutes)"
-	build_attempts=0
-	until "$ingot_bin" --home "$ingot_home" build --use "$profile_recipe" --lock "$profile_lock" --tag "$image_ref"; do
-		build_attempts=$((build_attempts + 1))
-		if [ "$build_attempts" -ge 2 ]; then
-			echo "install.sh: build failed twice; re-run this script after checking network access" >&2
-			exit 1
-		fi
-		echo "==> retrying build"
-		sleep 2
-	done
-	if "$ingot_bin" --home "$ingot_home" runtime inspect "$runtime_name" >/dev/null 2>&1; then
-		"$ingot_bin" --home "$ingot_home" runtime switch "$runtime_name" "$image_ref"
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	elif command -v openssl >/dev/null 2>&1; then
+		openssl dgst -sha256 "$1" | awk '{print $NF}'
 	else
-		"$ingot_bin" --home "$ingot_home" runtime create "$runtime_name" --image "$image_ref" -- web
-	fi
-fi
-
-# ---------------------------------------------------------------------------
-# 2. model provider configuration
-# ---------------------------------------------------------------------------
-# Plugins own their persistent configuration inside the Runtime Home; there is
-# no shared runtime config.toml. The model provider is configured by writing
-# the provider plugin's own state file before the first run.
-provider_dir="$ingot_home/runtimes/$runtime_name/state/model.openai-compatible"
-runtime_dir="$ingot_home/runtimes/$runtime_name/state/model.runtime"
-config="$provider_dir/config.toml"
-defaults="$runtime_dir/config.toml"
-configured=false
-if [ -f "$config" ] && ! grep -q 'api_key = ""' "$config"; then
-	configured=true
-fi
-
-if $no_apply || $no_configure || $configured; then
-	:
-else
-	echo "==> model provider configuration"
-	provider_name=${INGOT_PROVIDER_NAME:-openai}
-	base_url=${INGOT_BASE_URL:-}
-	api_key=${INGOT_API_KEY:-}
-	model=${INGOT_MODEL:-}
-
-	if [ -t 0 ]; then
-		printf 'provider name [%s]: ' "$provider_name"
-		read -r input; [ -n "${input:-}" ] && provider_name=$input
-		printf 'base URL (OpenAI-compatible) [%s]: ' "${base_url:-https://api.openai.com/v1}"
-		read -r input; [ -n "${input:-}" ] && base_url=$input
-		[ -n "$base_url" ] || base_url="https://api.openai.com/v1"
-		if [ -z "$api_key" ]; then
-			printf 'API key: '
-			read -r input
-			api_key=$input
-		fi
-		printf 'model [%s]: ' "$model"
-		read -r input; [ -n "${input:-}" ] && model=$input
-		[ -n "$model" ] || model="gpt-4o-mini"
-	else
-		[ -n "$base_url" ] || base_url="https://api.openai.com/v1"
-		[ -n "$model" ] || model="gpt-4o-mini"
-	fi
-
-	if [ -z "$api_key" ]; then
-		echo "install.sh: no API key provided; skipping configuration" >&2
-		echo "  (set INGOT_API_KEY and re-run, or write $config manually)" >&2
-	elif command -v python3 >/dev/null 2>&1; then
-		# Preferred path: python3 renders TOML values correctly (\ and " escaping).
-		python3 - "$config" "$defaults" "$provider_name" "$base_url" "$api_key" "$model" <<'PY'
-import json, os, sys
-config, defaults, provider, base_url, api_key, model = sys.argv[1:7]
-t = lambda v: json.dumps(v, ensure_ascii=False)  # JSON string escaping is TOML-compatible
-for path in (config, defaults):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-with open(config, 'w', encoding='utf-8') as handle:
-    handle.write('providers = [\n  { name = ' + t(provider) + ', base_url = ' + t(base_url) + ', api_key = ' + t(api_key) + ', models = [' + t(model) + '] },\n]\n')
-with open(defaults, 'w', encoding='utf-8') as handle:
-    handle.write('default_provider = ' + t(provider) + '\ndefault_model = ' + t(model) + '\n')
-PY
-		echo "==> wrote provider ${provider_name} (${model}) to $config"
-	else
-		# Fallback: plain printf works for values without \ " & | characters.
-		case "$provider_name$base_url$api_key$model" in
-			*'\\'*|*'"'*|*'&'*|*'|'*)
-				echo "install.sh: value contains characters the fallback writer cannot handle; write $config manually" >&2
-				;;
-			*)
-				mkdir -p "$provider_dir" "$runtime_dir"
-				printf 'providers = [\n  { name = "%s", base_url = "%s", api_key = "%s", models = ["%s"] },\n]\n' \
-					"$provider_name" "$base_url" "$api_key" "$model" >"$config"
-				printf 'default_provider = "%s"\ndefault_model = "%s"\n' \
-					"$provider_name" "$model" >"$defaults"
-				echo "==> wrote provider ${provider_name} (${model}) to $config"
-				;;
-		esac
-	fi
-fi
-
-# ---------------------------------------------------------------------------
-# 3. start
-# ---------------------------------------------------------------------------
-launch_web() {
-	if [ -t 0 ]; then
-		printf '\nStart the web UI now? [Y/n]: '
-		read -r input
-		case "$input" in
-			n|N|no|NO) return ;;
-		esac
-	fi
-	echo '==> starting web UI in the background'
-	if "$ingot_bin" --home "$1" runtime start "$runtime_name"; then
-		echo "    listening on http://127.0.0.1:7316/"
-		if ! $no_open && [ -n "${DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
-			(xdg-open http://127.0.0.1:7316/ >/dev/null 2>&1 || true) &
-		fi
-	else
-		echo "    web UI did not start; run: $ingot_bin --home \"$1\" runtime logs $runtime_name" >&2
+		echo "install.sh: sha256sum, shasum, or openssl is required" >&2
+		return 1
 	fi
 }
 
-if ! $no_apply; then
-	launch_web "$ingot_home"
+verify_file() {
+	file=$1
+	name=$2
+	expected=$(awk -v name="$name" '$2 == name || $2 == "*" name { print $1; exit }' "$temporary/checksums.txt")
+	[ -n "$expected" ] || { echo "install.sh: no checksum published for $name" >&2; return 1; }
+	actual=$(sha256_file "$file")
+	[ "$actual" = "$expected" ] || { echo "install.sh: SHA-256 mismatch for $name" >&2; return 1; }
+}
+
+canonical_tag() {
+	LC_ALL=C awk -v value="$1" '
+function core_number(part) { return part ~ /^(0|[1-9][0-9]*)$/ }
+BEGIN {
+	if (substr(value, 1, 1) == "v") value = substr(value, 2)
+	if (value == "" || index(value, "+")) exit 1
+	dash = index(value, "-")
+	core = dash ? substr(value, 1, dash - 1) : value
+	pre = dash ? substr(value, dash + 1) : ""
+	if (split(core, parts, ".") != 3) exit 1
+	for (i = 1; i <= 3; i++) if (!core_number(parts[i])) exit 1
+	if (dash) {
+		if (pre == "") exit 1
+		count = split(pre, identifiers, ".")
+		for (i = 1; i <= count; i++) {
+			identifier = identifiers[i]
+			if (identifier !~ /^[0-9A-Za-z-]+$/) exit 1
+			if (identifier ~ /^[0-9]+$/ && length(identifier) > 1 && substr(identifier, 1, 1) == "0") exit 1
+		}
+	}
+	print "v" value
+}' </dev/null
+}
+
+semver_compare() {
+	LC_ALL=C awk -v left="$1" -v right="$2" '
+function numeric(value) { return value ~ /^[0-9]+$/ }
+function compare_numeric(left_number, right_number) {
+	if (length(left_number) < length(right_number)) return -1
+	if (length(left_number) > length(right_number)) return 1
+	if (left_number == right_number) return 0
+	return left_number < right_number ? -1 : 1
+}
+BEGIN {
+	sub(/^v/, "", left); sub(/^v/, "", right)
+	left_core = left; sub(/-.*/, "", left_core)
+	right_core = right; sub(/-.*/, "", right_core)
+	left_pre = index(left, "-") ? substr(left, index(left, "-") + 1) : ""
+	right_pre = index(right, "-") ? substr(right, index(right, "-") + 1) : ""
+	split(left_core, lc, "."); split(right_core, rc, ".")
+	for (i = 1; i <= 3; i++) {
+		comparison = compare_numeric(lc[i], rc[i])
+		if (comparison != 0) { print comparison; exit }
+	}
+	if (left_pre == "" && right_pre == "") { print 0; exit }
+	if (left_pre == "") { print 1; exit }
+	if (right_pre == "") { print -1; exit }
+	ln = split(left_pre, lp, "."); rn = split(right_pre, rp, ".")
+	n = ln > rn ? ln : rn
+	for (i = 1; i <= n; i++) {
+		if (i > ln) { print -1; exit }
+		if (i > rn) { print 1; exit }
+		if (lp[i] == rp[i]) continue
+		lnumeric = numeric(lp[i]); rnumeric = numeric(rp[i])
+		if (lnumeric && rnumeric) { print compare_numeric(lp[i], rp[i]); exit }
+		if (lnumeric) { print -1; exit }
+		if (rnumeric) { print 1; exit }
+		print (lp[i] < rp[i]) ? -1 : 1; exit
+	}
+	print 0
+}' </dev/null
+}
+
+case $(uname -s) in
+	Linux) goos=linux ;;
+	Darwin) goos=darwin ;;
+	*) echo "install.sh: unsupported operating system $(uname -s)" >&2; exit 1 ;;
+esac
+case $(uname -m) in
+	x86_64|amd64) goarch=amd64 ;;
+	arm64|aarch64) goarch=arm64 ;;
+	*) echo "install.sh: unsupported architecture $(uname -m)" >&2; exit 1 ;;
+esac
+
+if [ -z "$version" ]; then
+	download "$release_base/latest/download/VERSION" "$temporary/version-hint"
+	version_hint=$(tr -d '\r\n' <"$temporary/version-hint")
+	tag=$(canonical_tag "$version_hint") || { echo "install.sh: invalid release version $version_hint" >&2; exit 1; }
 else
-	echo
-	echo "Agent home is ready. Next steps:"
-	echo "  $ingot_bin --home \"$ingot_home\" build --use \"$profile_recipe\" --lock \"$profile_lock\" --tag $image_ref"
-	echo "  $ingot_bin --home \"$ingot_home\" runtime create $runtime_name --image $image_ref -- web"
-	echo "  $ingot_bin --home \"$ingot_home\" runtime start $runtime_name"
+	tag=$(canonical_tag "$version") || { echo "install.sh: invalid release version $version" >&2; exit 2; }
+fi
+
+exact_base=$release_base/download/$tag
+download "$exact_base/VERSION" "$temporary/VERSION"
+published_tag=$(tr -d '\r\n' <"$temporary/VERSION")
+[ "$(canonical_tag "$published_tag" 2>/dev/null || true)" = "$published_tag" ] || { echo "install.sh: invalid published release version $published_tag" >&2; exit 1; }
+[ "$published_tag" = "$tag" ] || { echo "install.sh: release VERSION is $published_tag, expected $tag" >&2; exit 1; }
+download "$exact_base/checksums.txt" "$temporary/checksums.txt"
+verify_file "$temporary/VERSION" VERSION
+
+asset=ingot-$tag-$goos-$goarch.tar.gz
+download "$exact_base/$asset" "$temporary/$asset"
+verify_file "$temporary/$asset" "$asset"
+mkdir "$temporary/extract"
+tar -tzf "$temporary/$asset" >"$temporary/archive-entries"
+LC_ALL=C awk '
+BEGIN { binary = 0; license = 0; total = 0; bad = 0 }
+{
+	total++
+	if ($0 == "ingot") binary++
+	else if ($0 == "LICENSE") license++
+	else bad = 1
+}
+END { if (bad || total != 2 || binary != 1 || license != 1) exit 1 }
+' "$temporary/archive-entries" || { echo "install.sh: release archive has unexpected entries" >&2; exit 1; }
+tar -xzf "$temporary/$asset" -C "$temporary/extract" ingot LICENSE
+candidate=$temporary/extract/ingot
+[ -f "$candidate" ] && [ ! -L "$candidate" ] || { echo "install.sh: release archive does not contain a regular ingot binary" >&2; exit 1; }
+chmod 0755 "$candidate"
+release_version=${tag#v}
+candidate_version=$($candidate --version)
+[ "$candidate_version" = "ingot $release_version" ] || { echo "install.sh: candidate reports $candidate_version, expected ingot $release_version" >&2; exit 1; }
+
+target_dir=$destdir$bindir
+target=$target_dir/ingot
+if [ -x "$target" ]; then
+	current_output=$(INGOT_HOME=$temporary/legacy-home "$target" --version 2>/dev/null || true)
+	case "$current_output" in
+		ingot\ *)
+			current_version=${current_output#ingot }
+			if current_tag=$(canonical_tag "$current_version" 2>/dev/null); then
+				comparison=$(semver_compare "$release_version" "${current_tag#v}")
+				if [ "$comparison" -eq 0 ] && ! $force; then
+					echo "ingot $release_version is already installed at $target"
+					exit 0
+				fi
+				if [ "$comparison" -lt 0 ] && ! $force; then
+					echo "install.sh: refusing to downgrade ingot $current_version to $release_version without --force" >&2
+					exit 1
+				fi
+			fi
+			;;
+	esac
+fi
+
+mkdir -p "$target_dir"
+staged_target=$target.tmp.$$
+install -m 0755 "$candidate" "$staged_target"
+mv -f "$staged_target" "$target"
+staged_target=
+
+echo "ingot $release_version installed to $target"
+if [ -z "$destdir" ]; then
+	case :${PATH:-}: in
+		*:$bindir:*) ;;
+		*)
+			echo "$bindir is not in PATH. Add it to your shell configuration:"
+			echo "  export PATH=\"$bindir:\$PATH\""
+			;;
+	esac
 fi
