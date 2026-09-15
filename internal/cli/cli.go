@@ -12,13 +12,16 @@ import (
 	"strings"
 
 	"github.com/ingot-agent/ingot/internal/builder"
+	"github.com/ingot-agent/ingot/internal/buildinfo"
+	"github.com/ingot-agent/ingot/internal/coreupdate"
 
 	ingothome "github.com/ingot-agent/ingot/internal/home"
 )
 
 type CLI struct {
-	Stdout io.Writer
-	Stderr io.Writer
+	Stdout     io.Writer
+	Stderr     io.Writer
+	updateCore func(context.Context, coreupdate.Options) (coreupdate.Result, error)
 }
 
 func (cli CLI) Run(ctx context.Context, arguments []string) int {
@@ -37,9 +40,34 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 		return 2
 	}
 	command, rest := arguments[0], arguments[1:]
+	if command == "--version" {
+		if homePath != "" {
+			return cli.usageError("--version does not accept --home")
+		}
+		if len(rest) != 0 {
+			return cli.usageError("--version takes no arguments")
+		}
+		_, _ = fmt.Fprintf(cli.Stdout, "ingot %s\n", buildinfo.Current().CoreVersion)
+		return 0
+	}
 	if command == "help" || command == "--help" || command == "-h" {
 		cli.usage()
 		return 0
+	}
+	if command == "version" {
+		if homePath != "" {
+			return cli.usageError("version does not accept --home")
+		}
+		if len(rest) != 0 {
+			return cli.usageError("version takes no arguments")
+		}
+		return cli.result(writeJSON(cli.Stdout, versionResult()))
+	}
+	if command == "update" {
+		if homePath != "" {
+			return cli.usageError("update does not accept --home")
+		}
+		return cli.runUpdate(ctx, rest)
 	}
 	if command == "collection" {
 		return cli.runCollection(ctx, homePath, rest)
@@ -164,6 +192,46 @@ func (cli CLI) Run(ctx context.Context, arguments []string) int {
 	default:
 		return cli.usageError("unknown command " + strconv.Quote(command))
 	}
+}
+
+type coreVersionResult struct {
+	buildinfo.Info
+	IngotVersion   string `json:"ingot_version"`
+	BuilderVersion string `json:"builder_version"`
+}
+
+func versionResult() coreVersionResult {
+	return coreVersionResult{
+		Info:           buildinfo.Current(),
+		IngotVersion:   builder.DefaultIngotVersion,
+		BuilderVersion: builder.DefaultBuilderVersion,
+	}
+}
+
+func (cli CLI) runUpdate(ctx context.Context, arguments []string) int {
+	flags := flag.NewFlagSet("update", flag.ContinueOnError)
+	flags.SetOutput(cli.Stderr)
+	check := flags.Bool("check", false, "check for a core update without installing it")
+	version := flags.String("version", "", "exact core version")
+	force := flags.Bool("force", false, "allow reinstalling or downgrading to an exact version")
+	if err := flags.Parse(arguments); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		return cli.usageError("update takes no positional arguments")
+	}
+	if *check && *force {
+		return cli.usageError("update --check does not accept --force")
+	}
+	updateCore := cli.updateCore
+	if updateCore == nil {
+		updateCore = coreupdate.New().Run
+	}
+	result, err := updateCore(ctx, coreupdate.Options{Check: *check, Version: *version, Force: *force})
+	if err == nil {
+		err = writeJSON(cli.Stdout, result)
+	}
+	return cli.result(err)
 }
 
 func (cli CLI) parseRecipeFlags(name string, arguments []string, build bool) (ingothome.RecipeOptions, builder.ResolveOptions, int) {
@@ -403,5 +471,5 @@ func (cli CLI) result(err error) int {
 }
 func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
 func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...|collection ...>")
+	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <version|update|init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...|collection ...>")
 }

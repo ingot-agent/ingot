@@ -1,0 +1,303 @@
+name: Release Core
+
+# Repository prerequisites: enable immutable releases and protect v* tag
+# creation. This workflow validates tag contents and main ancestry, but those
+# repository-level policies cannot be configured from GITHUB_TOKEN.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      commit: ${{ steps.release.outputs.commit }}
+      source_date: ${{ steps.release.outputs.source_date }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Validate tag and source version
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "invalid release tag: $tag" >&2
+            exit 1
+          fi
+          version="${tag#v}"
+          if [[ "$version" == *-* ]]; then
+            IFS=. read -r -a prerelease_identifiers <<<"${version#*-}"
+            for identifier in "${prerelease_identifiers[@]}"; do
+              if [[ "$identifier" =~ ^[0-9]+$ && ${#identifier} -gt 1 && "$identifier" == 0* ]]; then
+                echo "invalid numeric prerelease identifier: $identifier" >&2
+                exit 1
+              fi
+            done
+          fi
+          release_core="${version%%-*}"
+          development_version="$(GOWORK=off go run ./internal/releasetool --print-development-version)"
+          if [[ "$development_version" != "$release_core-dev" ]]; then
+            echo "source version $development_version does not match release line $release_core" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "commit=$GITHUB_SHA" >>"$GITHUB_OUTPUT"
+          echo "source_date=$(git show -s --format=%ct "$GITHUB_SHA")" >>"$GITHUB_OUTPUT"
+          if [[ "$version" == *-* ]]; then
+            echo "prerelease=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Test Core module
+        shell: bash
+        run: GOWORK=off go test -race ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build core
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          output="dist/ingot-${GOOS}-${GOARCH}"
+          if [[ "$GOOS" == windows ]]; then
+            output+=".exe"
+          fi
+          GOWORK=off go build -trimpath -buildvcs=false \
+            -ldflags "-s -w -X github.com/ingot-agent/ingot/internal/buildinfo.CoreVersion=${VERSION} -X github.com/ingot-agent/ingot/internal/buildinfo.Official=true -X github.com/ingot-agent/ingot/internal/buildinfo.Revision=${COMMIT} -X github.com/ingot-agent/ingot/internal/buildinfo.Modified=false" \
+            -o "$output" ./cmd/ingot
+
+      - name: Upload platform binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/ingot-*
+          if-no-files-found: error
+
+  package:
+    name: Package release assets
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Download platform binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist/bin
+          merge-multiple: true
+
+      - name: Build release assets
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+          SOURCE_DATE: ${{ needs.validate.outputs.source_date }}
+        run: |
+          set -euo pipefail
+          GOWORK=off go run ./internal/releasetool \
+            --version "$VERSION" \
+            --commit "$COMMIT" \
+            --source-date "$SOURCE_DATE" \
+            --input dist/bin \
+            --output dist/release
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release/*
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.os }}
+    needs: [validate, package]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release
+
+      - name: Run Unix core
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          goos=linux
+          [[ "$RUNNER_OS" == macOS ]] && goos=darwin
+          case "$(uname -m)" in
+            x86_64|amd64) goarch=amd64 ;;
+            arm64|aarch64) goarch=arm64 ;;
+            *) echo "unsupported runner architecture $(uname -m)" >&2; exit 1 ;;
+          esac
+          mkdir dist/smoke
+          archive="ingot-v${VERSION}-${goos}-${goarch}.tar.gz"
+          expected="$(awk -v name="$archive" '$2 == name { print $1; exit }' dist/release/checksums.txt)"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual="$(sha256sum "dist/release/$archive" | awk '{print $1}')"
+          else
+            actual="$(shasum -a 256 "dist/release/$archive" | awk '{print $1}')"
+          fi
+          test -n "$expected"
+          test "$actual" = "$expected"
+          tar -xzf "dist/release/$archive" -C dist/smoke
+          test "$(dist/smoke/ingot --version)" = "ingot ${VERSION}"
+          identity="$(dist/smoke/ingot version)"
+          compact_identity="$(printf '%s' "$identity" | tr -d '[:space:]')"
+          printf '%s' "$compact_identity" | grep -F '"core_version":"'"$VERSION"'"'
+          printf '%s' "$compact_identity" | grep -F '"official":true'
+          printf '%s' "$compact_identity" | grep -F '"revision":"'"$COMMIT"'"'
+          printf '%s' "$compact_identity" | grep -F '"modified":false'
+          printf '%s' "$compact_identity" | grep -F '"target":"'"$goos/$goarch"'"'
+
+      - name: Run Windows core
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          $runnerArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          if ($runnerArchitecture -eq [Runtime.InteropServices.Architecture]::X64) {
+            $architecture = 'amd64'
+          } elseif ($runnerArchitecture -eq [Runtime.InteropServices.Architecture]::Arm64) {
+            $architecture = 'arm64'
+          } else {
+            throw "unsupported runner architecture $runnerArchitecture"
+          }
+          $archive = "ingot-v$env:VERSION-windows-$architecture.zip"
+          $checksumLine = Get-Content dist/release/checksums.txt | Where-Object { $_ -match "^[0-9a-f]{64}  $([regex]::Escape($archive))$" }
+          if (-not $checksumLine) { throw "missing checksum for $archive" }
+          $expected = ($checksumLine -split '\s+')[0]
+          $actualHash = (Get-FileHash -Algorithm SHA256 "dist/release/$archive").Hash.ToLowerInvariant()
+          if ($actualHash -ne $expected) { throw "checksum mismatch for $archive" }
+          Expand-Archive "dist/release/$archive" dist/smoke
+          $actual = (& dist/smoke/ingot.exe --version | Out-String).Trim()
+          if ($actual -ne "ingot $env:VERSION") { throw "unexpected version: $actual" }
+          $identity = (& dist/smoke/ingot.exe version | Out-String | ConvertFrom-Json)
+          if ($identity.core_version -ne $env:VERSION -or -not $identity.official -or
+              $identity.revision -ne $env:COMMIT -or $identity.modified -or
+              $identity.target -ne "windows/$architecture") {
+            throw "unexpected identity: $($identity | ConvertTo-Json -Compress)"
+          }
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release
+
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/release/*
+
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          arguments=(--verify-tag --generate-notes --title "$tag")
+          if [[ "$PRERELEASE" == true ]]; then
+            arguments+=(--prerelease --latest=false)
+          else
+            arguments+=(--latest)
+          fi
+          gh release create "$tag" dist/release/* --repo "$GITHUB_REPOSITORY" "${arguments[@]}"

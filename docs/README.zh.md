@@ -51,22 +51,37 @@ ingot 把变化放在构建期，把生产运行时固定下来：
 
 ## 快速开始
 
-需要 Go 1.24 或更高版本。
+从 GitHub Releases 安装官方 Core 二进制。安装器本身不依赖 Go，并且只安装
+`ingot`，不会初始化或修改 `INGOT_HOME`、插件、Image 或 Runtime。
 
 ```sh
-# 1. 构建 CLI（也可使用 ./scripts/install.sh 安装）
-go build -o ingot ./cmd/ingot
+# Linux 与 macOS；默认安装到 ~/.local/bin
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | sh
+```
 
-# 2. 使用官方插件集初始化 ingot home
-./ingot init
+Windows PowerShell：
 
-# 3. 构建并命名 Home 管理的默认 Profile
-./ingot build --use ~/.ingot/profiles/default.toml \
+```powershell
+$installer = Join-Path $env:TEMP 'install-ingot.ps1'
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer
+Remove-Item $installer
+```
+
+然后初始化并构建 Agent 组合。即使 Core 来自 Release，本地执行 `ingot build`
+仍需要 Go 1.24 或更高版本。
+
+```sh
+# 1. 使用官方插件集初始化 ingot home
+ingot init
+
+# 2. 构建并命名 Home 管理的默认 Profile
+ingot build --use ~/.ingot/profiles/default.toml \
   --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
 
-# 4. 创建并启动隔离 Runtime（默认 profile 为 app.backend）
-./ingot runtime create default --image local/ingot:default -- web
-./ingot runtime start default
+# 3. 创建并启动隔离 Runtime（默认 profile 为 app.backend）
+ingot runtime create default --image local/ingot:default -- web
+ingot runtime start default
 ```
 
 插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
@@ -167,6 +182,8 @@ Managed Home。
 ```text
 ingot [--home PATH] <command>
 
+version     输出 Core、Builder 与协议身份
+update      检查或安装官方 Core Release
 init        使用官方插件 Profile 初始化 home
 project     使用 `project init <目录>` 显式初始化项目 Recipe
 resolve     解析 plugins.toml 并刷新 plugins.lock

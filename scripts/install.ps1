@@ -1,129 +1,249 @@
-# install.ps1 -- install ingot, then prepare a ready-to-use agent in one command.
-#
-# Official profiles pin released plugin modules from github.com/ingot-agent/plugins;
-# no plugin source tree is bundled with or copied by this installer.
-#
-#   <Prefix>\bin\ingot.exe
-#
-# After installation the script initializes or refreshes a Home, collects model
-# provider settings (from
-# the INGOT_* environment variables or interactively), builds a named image,
-# creates the `default` Runtime, and offers to start the web UI.
-#
-# Usage:
-#   .\scripts\install.ps1                                   # -> $env:LocalAppData\ingot
-#   .\scripts\install.ps1 -Prefix D:\ingot                  # explicit prefix
-#   $env:INGOT_API_KEY='sk-...'; .\scripts\install.ps1      # non-interactive
+# Install an official ingot core binary from GitHub Releases.
 param(
     [string]$Prefix = (Join-Path $env:LOCALAPPDATA 'ingot'),
+    [string]$BinaryDir = '',
     [string]$DestDir = '',
-    [Alias('Home')]
-    [string]$HomeDir = $(if ($env:INGOT_HOME) { $env:INGOT_HOME } else { Join-Path $env:USERPROFILE '.ingot' }),
-    [ValidateSet('default', 'minimal')]
-    [string]$Profile = 'default',
-    [switch]$NoConfigure,
-    [switch]$NoApply
+    [string]$Version = '',
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
-
-$Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$BinaryDir = Join-Path $Prefix 'bin'
+$ReleaseBase = 'https://github.com/ingot-agent/ingot/releases'
+$StagedTarget = $null
+if (-not $BinaryDir) {
+    $BinaryDir = Join-Path $Prefix 'bin'
+}
 
 function Join-StagedInstallPath {
-    param(
-        [string]$StagingRoot,
-        [string]$InstallPath
-    )
-
-    if ([string]::IsNullOrEmpty($StagingRoot)) {
-        return $InstallPath
-    }
-    if (-not [IO.Path]::IsPathRooted($InstallPath)) {
-        return Join-Path $StagingRoot $InstallPath
-    }
-
-    # DESTDIR is a filesystem root prepended to the install prefix. Windows
-    # drive-qualified paths cannot be concatenated directly, so drop the
-    # drive root before joining (D:\stage + D:\ingot\bin ->
-    # D:\stage\ingot\bin).
+    param([string]$StagingRoot, [string]$InstallPath)
+    if (-not $StagingRoot) { return $InstallPath }
+    if (-not [IO.Path]::IsPathRooted($InstallPath)) { return Join-Path $StagingRoot $InstallPath }
     $root = [IO.Path]::GetPathRoot($InstallPath)
     $relative = $InstallPath.Substring($root.Length).TrimStart('\', '/')
-    if ([string]::IsNullOrEmpty($relative)) {
-        return $StagingRoot
-    }
+    if (-not $relative) { return $StagingRoot }
     return Join-Path $StagingRoot $relative
 }
 
 function Add-UserPathEntry {
-    param(
-        [string]$PathEntry
-    )
-
+    param([string]$PathEntry)
     $normalized = [IO.Path]::GetFullPath($PathEntry).TrimEnd('\', '/')
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $userEntries = if ([string]::IsNullOrEmpty($userPath)) {
-        @()
-    } else {
-        @($userPath -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
+    $present = $entries | Where-Object { $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase) }
+    if (-not $present) {
+        $updated = if ($userPath) { "$userPath;$normalized" } else { $normalized }
+        [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
     }
-    $alreadyInUserPath = $userEntries | Where-Object {
-        $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase)
+    $processEntries = @($env:Path -split ';' | Where-Object { $_ })
+    $processPresent = $processEntries | Where-Object { $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase) }
+    if (-not $processPresent) {
+        $env:Path = if ($env:Path) { "$env:Path;$normalized" } else { $normalized }
     }
+    return [bool]$present
+}
 
-    if (-not $alreadyInUserPath) {
-        $updatedUserPath = if ([string]::IsNullOrEmpty($userPath)) {
-            $normalized
-        } else {
-            "$userPath;$normalized"
-        }
-        [Environment]::SetEnvironmentVariable('Path', $updatedUserPath, 'User')
-    }
+function Get-ReleaseFile {
+    param([string]$Uri, [string]$Destination)
+    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Destination
+}
 
-    $processEntries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $alreadyInProcessPath = $processEntries | Where-Object {
-        $_.Trim().TrimEnd('\', '/').Equals($normalized, [StringComparison]::OrdinalIgnoreCase)
-    }
-    if (-not $alreadyInProcessPath) {
-        $env:Path = if ([string]::IsNullOrEmpty($env:Path)) {
-            $normalized
-        } else {
-            "$env:Path;$normalized"
+function Get-PublishedChecksum {
+    param([string]$ChecksumsPath, [string]$Name)
+    foreach ($line in Get-Content $ChecksumsPath) {
+        if ($line -match '^([0-9a-f]{64})\s+\*?(.+)$' -and $Matches[2] -eq $Name) {
+            return $Matches[1]
         }
     }
-
-    return [bool]$alreadyInUserPath
+    throw "install.ps1: no checksum published for $Name"
 }
 
-if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    throw 'install.ps1: go 1.24+ is required to build ingot'
+function Assert-Checksum {
+    param([string]$Path, [string]$Name, [string]$ChecksumsPath)
+    $expected = Get-PublishedChecksum $ChecksumsPath $Name
+    $actual = (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "install.ps1: SHA-256 mismatch for $Name"
+    }
 }
-if (-not (Test-Path (Join-Path $Root 'go.mod'))) {
-    throw "install.ps1: cannot locate the ingot source tree at $Root"
+
+function Convert-SemVer {
+    param([string]$Value)
+    $normalized = if ($Value.StartsWith('v', [StringComparison]::Ordinal)) { $Value.Substring(1) } else { $Value }
+    if ($normalized -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$') {
+        throw "install.ps1: invalid semantic version $Value"
+    }
+    $major = $Matches[1]
+    $minor = $Matches[2]
+    $patch = $Matches[3]
+    $pre = if ($Matches[4]) { @($Matches[4] -split '\.') } else { @() }
+    foreach ($identifier in $pre) {
+        if ($identifier -match '^[0-9]+$' -and $identifier.Length -gt 1 -and $identifier.StartsWith('0')) {
+            throw "install.ps1: invalid semantic version $Value"
+        }
+    }
+    return [pscustomobject]@{
+        Major = $major
+        Minor = $minor
+        Patch = $patch
+        Pre = $pre
+        Normalized = $normalized
+    }
 }
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) ("ingot-install-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $staging | Out-Null
-try {
-    Write-Host '==> building ingot'
-    Push-Location $Root
-    $previousGoWork = $env:GOWORK
+
+function Compare-NumericIdentifier {
+    param([string]$Left, [string]$Right)
+    if ($Left.Length -lt $Right.Length) { return -1 }
+    if ($Left.Length -gt $Right.Length) { return 1 }
+    return [Math]::Sign([string]::CompareOrdinal($Left, $Right))
+}
+
+function Compare-SemVer {
+    param([string]$Left, [string]$Right)
+    $leftVersion = Convert-SemVer $Left
+    $rightVersion = Convert-SemVer $Right
+    foreach ($field in @('Major', 'Minor', 'Patch')) {
+        $comparison = Compare-NumericIdentifier $leftVersion.$field $rightVersion.$field
+        if ($comparison -ne 0) { return $comparison }
+    }
+    if ($leftVersion.Pre.Count -eq 0 -and $rightVersion.Pre.Count -eq 0) { return 0 }
+    if ($leftVersion.Pre.Count -eq 0) { return 1 }
+    if ($rightVersion.Pre.Count -eq 0) { return -1 }
+    $count = [Math]::Max($leftVersion.Pre.Count, $rightVersion.Pre.Count)
+    for ($index = 0; $index -lt $count; $index++) {
+        if ($index -ge $leftVersion.Pre.Count) { return -1 }
+        if ($index -ge $rightVersion.Pre.Count) { return 1 }
+        $leftPart = $leftVersion.Pre[$index]
+        $rightPart = $rightVersion.Pre[$index]
+        if ($leftPart -ceq $rightPart) { continue }
+        $leftNumeric = [regex]::IsMatch($leftPart, '^[0-9]+$')
+        $rightNumeric = [regex]::IsMatch($rightPart, '^[0-9]+$')
+        if ($leftNumeric -and $rightNumeric) { return (Compare-NumericIdentifier $leftPart $rightPart) }
+        if ($leftNumeric) { return -1 }
+        if ($rightNumeric) { return 1 }
+        return [Math]::Sign([string]::CompareOrdinal($leftPart, $rightPart))
+    }
+    return 0
+}
+
+function Convert-ToReleaseTag {
+    param([string]$Value)
+    $parsed = Convert-SemVer $Value
+    return "v$($parsed.Normalized)"
+}
+
+function Expand-CoreArchive {
+    param([string]$ArchivePath, [string]$Destination)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
-        $env:GOWORK = 'off'
-        & go build -trimpath -o (Join-Path $staging 'ingot.exe') .\cmd\ingot
-        if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
-    } finally {
-        if ($null -eq $previousGoWork) {
-            Remove-Item Env:GOWORK -ErrorAction SilentlyContinue
-        } else {
-            $env:GOWORK = $previousGoWork
+        $entries = @{}
+        foreach ($entry in $archive.Entries) {
+            $modeType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
+            if (($entry.FullName -ne 'ingot.exe' -and $entry.FullName -ne 'LICENSE') -or
+                $entry.Name -ne $entry.FullName -or $entries.ContainsKey($entry.FullName) -or
+                $modeType -ne 0x8000) {
+                throw "install.ps1: unsafe release archive entry $($entry.FullName)"
+            }
+            if ($entry.Length -le 0 -or
+                ($entry.FullName -eq 'ingot.exe' -and $entry.Length -gt 201326592) -or
+                ($entry.FullName -eq 'LICENSE' -and $entry.Length -gt 1048576)) {
+                throw "install.ps1: invalid release archive entry $($entry.FullName)"
+            }
+            $entries[$entry.FullName] = $entry
         }
-        Pop-Location
+        if ($entries.Count -ne 2 -or -not $entries.ContainsKey('ingot.exe') -or -not $entries.ContainsKey('LICENSE')) {
+            throw 'install.ps1: release archive must contain exactly ingot.exe and LICENSE'
+        }
+        New-Item -ItemType Directory -Path $Destination | Out-Null
+        $candidate = Join-Path $Destination 'ingot.exe'
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entries['ingot.exe'], $candidate)
+        [IO.Compression.ZipFileExtensions]::ExtractToFile($entries['LICENSE'], (Join-Path $Destination 'LICENSE'))
+        return $candidate
+    } finally {
+        $archive.Dispose()
+    }
+}
+
+if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::X64) {
+    $Architecture = 'amd64'
+} elseif ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64) {
+    $Architecture = 'arm64'
+} else {
+    throw "install.ps1: unsupported architecture $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+}
+
+$Staging = Join-Path ([IO.Path]::GetTempPath()) ("ingot-install-" + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $Staging | Out-Null
+try {
+    if ($Version) {
+        $Tag = Convert-ToReleaseTag $Version
+    } else {
+        $Hint = Join-Path $Staging 'version-hint'
+        Get-ReleaseFile "$ReleaseBase/latest/download/VERSION" $Hint
+        $VersionHint = ([IO.File]::ReadAllText($Hint)).Trim()
+        $Tag = Convert-ToReleaseTag $VersionHint
+    }
+    $ExactBase = "$ReleaseBase/download/$Tag"
+    $VersionPath = Join-Path $Staging 'VERSION'
+    $ChecksumsPath = Join-Path $Staging 'checksums.txt'
+    Get-ReleaseFile "$ExactBase/VERSION" $VersionPath
+    $PublishedTag = ([IO.File]::ReadAllText($VersionPath)).Trim()
+    if ((Convert-ToReleaseTag $PublishedTag) -ne $PublishedTag) { throw "install.ps1: invalid published release version $PublishedTag" }
+    if ($PublishedTag -ne $Tag) { throw "install.ps1: release VERSION is $PublishedTag, expected $Tag" }
+    Get-ReleaseFile "$ExactBase/checksums.txt" $ChecksumsPath
+    Assert-Checksum $VersionPath 'VERSION' $ChecksumsPath
+
+    $Asset = "ingot-$Tag-windows-$Architecture.zip"
+    $ArchivePath = Join-Path $Staging $Asset
+    Get-ReleaseFile "$ExactBase/$Asset" $ArchivePath
+    Assert-Checksum $ArchivePath $Asset $ChecksumsPath
+    $Extracted = Join-Path $Staging 'extract'
+    $Candidate = Expand-CoreArchive $ArchivePath $Extracted
+    if (-not (Test-Path -LiteralPath $Candidate -PathType Leaf)) { throw 'install.ps1: release archive does not contain ingot.exe' }
+    $ReleaseVersion = (Convert-SemVer $Tag).Normalized
+    $CandidateVersion = (& $Candidate --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $CandidateVersion -ne "ingot $ReleaseVersion") {
+        throw "install.ps1: candidate reports $CandidateVersion, expected ingot $ReleaseVersion"
     }
 
-    $targetBin = Join-StagedInstallPath $DestDir $BinaryDir
-    Write-Host "==> installing to $targetBin"
-    New-Item -ItemType Directory -Force -Path $targetBin | Out-Null
-    Copy-Item (Join-Path $staging 'ingot.exe') (Join-Path $targetBin 'ingot.exe') -Force
+    $TargetDirectory = Join-StagedInstallPath $DestDir $BinaryDir
+    $Target = Join-Path $TargetDirectory 'ingot.exe'
+    if (Test-Path -LiteralPath $Target -PathType Leaf) {
+        $PreviousHome = $env:INGOT_HOME
+        try {
+            $env:INGOT_HOME = Join-Path $Staging 'legacy-home'
+            $CurrentOutput = (& $Target --version 2>$null | Out-String).Trim()
+        } catch {
+            $CurrentOutput = ''
+        } finally {
+            if ($null -eq $PreviousHome) { Remove-Item Env:INGOT_HOME -ErrorAction SilentlyContinue } else { $env:INGOT_HOME = $PreviousHome }
+        }
+        if ($CurrentOutput -match '^ingot (.+)$') {
+            $CurrentVersion = $Matches[1]
+            try {
+                $Comparison = Compare-SemVer $ReleaseVersion $CurrentVersion
+                if ($Comparison -eq 0 -and -not $Force) {
+                    Write-Host "ingot $ReleaseVersion is already installed at $Target"
+                    return
+                }
+                if ($Comparison -lt 0 -and -not $Force) {
+                    throw "install.ps1: refusing to downgrade ingot $CurrentVersion to $ReleaseVersion without -Force"
+                }
+            } catch {
+                if ($_.Exception.Message -notlike 'install.ps1: invalid semantic version*') { throw }
+            }
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path $TargetDirectory | Out-Null
+    $StagedTarget = "$Target.tmp.$PID"
+    Copy-Item -LiteralPath $Candidate -Destination $StagedTarget -Force
+    if (Test-Path -LiteralPath $Target -PathType Leaf) {
+        [IO.File]::Replace($StagedTarget, $Target, $null, $true)
+    } else {
+        [IO.File]::Move($StagedTarget, $Target)
+    }
+    $StagedTarget = $null
 
     if (-not $DestDir) {
         if (Add-UserPathEntry $BinaryDir) {
@@ -132,110 +252,8 @@ try {
             Write-Host "==> added $BinaryDir to the current user's PATH"
         }
     }
-
-    Write-Host ''
-    Write-Host 'ingot installed:'
-    Write-Host "  binary:  $targetBin\ingot.exe"
-    Write-Host ''
-
-    if ($DestDir) {
-        Write-Host 'Staged packaging complete (DestDir set). To prepare a usable home:'
-        Write-Host "  $BinaryDir\ingot.exe --home `"$HomeDir`" init --profile $Profile"
-        return
-    }
-
-    $Ingot = Join-Path $BinaryDir 'ingot.exe'
-    $defaultHomeDir = Join-Path $env:USERPROFILE '.ingot'
-    $normalizedHomeDir = [IO.Path]::GetFullPath($HomeDir).TrimEnd('\', '/')
-    $normalizedDefaultHomeDir = [IO.Path]::GetFullPath($defaultHomeDir).TrimEnd('\', '/')
-    $homeArgument = if ($normalizedHomeDir.Equals($normalizedDefaultHomeDir, [StringComparison]::OrdinalIgnoreCase)) {
-        ''
-    } else {
-        "--home `"$HomeDir`""
-    }
-    $ProfileRecipe = Join-Path $HomeDir "profiles/$Profile.toml"
-    $ProfileLock = Join-Path $HomeDir "profiles/$Profile.lock"
-    $buildCommand = if ($homeArgument) { "ingot $homeArgument build --use `"$ProfileRecipe`" --lock `"$ProfileLock`" --tag local/ingot:default" } else { "ingot build --use `"$ProfileRecipe`" --lock `"$ProfileLock`" --tag local/ingot:default" }
-    $startCommand = if ($homeArgument) { "ingot $homeArgument runtime start default" } else { 'ingot runtime start default' }
-
-    # --- init -----------------------------------------------------------------
-    Write-Host "==> initializing or refreshing ingot home $HomeDir (profile: $Profile)"
-    New-Item -ItemType Directory -Force -Path $HomeDir | Out-Null
-    & $Ingot --home $HomeDir init --profile $Profile
-    if ($LASTEXITCODE -ne 0) { throw 'ingot init failed' }
-
-    $ImageRef = 'local/ingot:default'
-    $RuntimeName = 'default'
-    if ($NoApply) {
-        Write-Host '==> skipping image build and Runtime creation (legacy NoApply switch)'
-    } else {
-        Write-Host '==> building runtime image (first build downloads modules and may take a few minutes)'
-        $buildAttempts = 0
-        while ($true) {
-            & $Ingot --home $HomeDir build --use $ProfileRecipe --lock $ProfileLock --tag $ImageRef
-            if ($LASTEXITCODE -eq 0) { break }
-            $buildAttempts++
-            if ($buildAttempts -ge 2) { throw 'build failed twice; re-run this script after checking network access' }
-            Write-Host '==> retrying build'
-            Start-Sleep -Seconds 2
-        }
-        & $Ingot --home $HomeDir runtime inspect $RuntimeName *> $null
-        if ($LASTEXITCODE -eq 0) {
-            & $Ingot --home $HomeDir runtime switch $RuntimeName $ImageRef
-        } else {
-            & $Ingot --home $HomeDir runtime create $RuntimeName --image $ImageRef -- web
-        }
-        if ($LASTEXITCODE -ne 0) { throw 'runtime create/switch failed' }
-    }
-
-    # --- model provider configuration -----------------------------------------
-    # Plugins own their persistent configuration inside the Runtime Home; there
-    # is no shared runtime config.toml. The model provider is configured by
-    # writing the provider plugin's own state file before the first run.
-    $ProviderDir = Join-Path $HomeDir "runtimes/$RuntimeName/state/model.openai-compatible"
-    $RuntimeDir = Join-Path $HomeDir "runtimes/$RuntimeName/state/model.runtime"
-    $Config = Join-Path $ProviderDir 'config.toml'
-    $Defaults = Join-Path $RuntimeDir 'config.toml'
-    $Configured = $false
-    if ((Test-Path $Config) -and -not (Select-String -Path $Config -Pattern 'api_key = ""' -Quiet)) {
-        $Configured = $true
-    }
-    if (-not $NoApply -and -not $NoConfigure -and -not $Configured) {
-        Write-Host '==> model provider configuration'
-        $ProviderName = if ($env:INGOT_PROVIDER_NAME) { $env:INGOT_PROVIDER_NAME } else { 'openai' }
-        $BaseUrl = if ($env:INGOT_BASE_URL) { $env:INGOT_BASE_URL } else { 'https://api.openai.com/v1' }
-        $ApiKey = if ($env:INGOT_API_KEY) { $env:INGOT_API_KEY } else { '' }
-        $Model = if ($env:INGOT_MODEL) { $env:INGOT_MODEL } else { 'gpt-4o-mini' }
-
-        if (-not $ApiKey) {
-            $ApiKey = Read-Host 'API key'
-        }
-        if ($ApiKey) {
-            # Escape for a TOML basic string: \ and " only.
-            $esc = { param($s) $s.Replace('\', '\\').Replace('"', '\"') }
-            New-Item -ItemType Directory -Force -Path $ProviderDir | Out-Null
-            New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
-            $providerToml = "providers = [`n  { name = `"$(& $esc $ProviderName)`", base_url = `"$(& $esc $BaseUrl)`", api_key = `"$(& $esc $ApiKey)`", models = [`"$(& $esc $Model)`"] },`n]`n"
-            $defaultsToml = "default_provider = `"$(& $esc $ProviderName)`"`ndefault_model = `"$(& $esc $Model)`"`n"
-            [IO.File]::WriteAllText($Config, $providerToml)
-            [IO.File]::WriteAllText($Defaults, $defaultsToml)
-            Write-Host "==> wrote provider $ProviderName ($Model) to $Config"
-        } else {
-            Write-Warning 'no API key provided; skipping configuration'
-            Write-Warning "write $Config manually, then run: $Ingot --home `"$HomeDir`" runtime start $RuntimeName"
-        }
-    }
-
-    Write-Host ''
-    Write-Host 'Agent home is ready. Next steps:'
-    if ($NoApply) {
-        Write-Host "1. $buildCommand"
-        Write-Host '2. Create the Runtime: ingot runtime create default --image local/ingot:default -- web'
-        Write-Host "3. $startCommand"
-    } else {
-        Write-Host 'Start the Web UI with the following command:'
-        Write-Host $startCommand
-    }
+    Write-Host "ingot $ReleaseVersion installed to $Target"
 } finally {
-    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    if ($StagedTarget) { Remove-Item -LiteralPath $StagedTarget -Force -ErrorAction SilentlyContinue }
+    Remove-Item -Recurse -Force $Staging -ErrorAction SilentlyContinue
 }

@@ -8,11 +8,56 @@ never dispatched implicitly.
 
 ## Install And Initialize
 
-Requires Go 1.24 or newer.
+The official installers download the matching immutable core archive from
+GitHub Releases, verify its SHA-256 digest, and install only the `ingot`
+executable. Installation does not require Go and never creates or modifies
+`INGOT_HOME`, plugins, Images, or Runtimes.
 
 ```sh
-go build -o ingot ./cmd/ingot
-./ingot init
+# Linux and macOS; default destination: ~/.local/bin/ingot
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | sh
+```
+
+```powershell
+# Windows PowerShell; default destination: %LOCALAPPDATA%\ingot\bin\ingot.exe
+$installer = Join-Path $env:TEMP 'install-ingot.ps1'
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer
+Remove-Item $installer
+```
+
+Both installers select the latest stable Release by default. Select an exact
+version, including a prerelease, with `--version` on Unix or `-Version` on
+Windows. Reinstalling the same version or downgrading requires the explicit
+force option:
+
+```sh
+curl -fsSL https://github.com/ingot-agent/ingot/releases/latest/download/install.sh | \
+  sh -s -- --version v0.3.1
+```
+
+```powershell
+Invoke-WebRequest https://github.com/ingot-agent/ingot/releases/latest/download/install.ps1 -OutFile $installer
+& $installer -Version v0.3.1 -Force
+Remove-Item $installer
+```
+
+Unix options are `--prefix`, `--bindir`, `--destdir`, `--version`, and
+`--force`. Their PowerShell equivalents are `-Prefix`, `-BinaryDir`,
+`-DestDir`, `-Version`, and `-Force`. Existing pre-release Homes are left
+untouched; the removed Home, profile, configuration, and Runtime installer
+flags have no automatic replacement.
+
+To build the core from source instead, Go 1.24 or newer is required:
+
+```sh
+GOWORK=off go build -o ingot ./cmd/ingot
+```
+
+After either installation method, initialize Home explicitly:
+
+```sh
+ingot init
 ```
 
 `init` initializes schema v2 in `INGOT_HOME`, or `~/.ingot` when that variable
@@ -35,6 +80,47 @@ ingot --home /path/to/home init
 
 An old or non-empty incompatible Home is rejected. M2 does not migrate the
 pre-release `current`, top-level `state`, or old Image manifest layouts.
+
+## Core Version And Updates
+
+Core update checks are always explicit. These commands are the only update
+operations that contact GitHub, and they inherit the process HTTP(S) proxy
+configuration:
+
+```text
+ingot --version
+ingot version
+ingot update --check
+ingot update
+ingot update --version v0.3.1
+ingot update --version v0.3.1 --force
+```
+
+`--version` prints a short human-readable core version. `version` emits JSON
+with the core version and provenance, build protocol version, and Builder
+version; these identities evolve independently.
+
+Without `--version`, `update` resolves the latest stable Release and never
+selects a prerelease. An exact version may select a prerelease. Downgrades and
+same-version reinstalls require `--force`; `--check` never changes the binary
+and cannot be combined with `--force`. Version and update commands reject
+`--home` because they do not read or write Home.
+
+Before replacement, the updater verifies the archive digest and executes the
+candidate to verify its version, official-build flag, source revision, clean
+state, and platform target against `release-manifest.json`. Replacement is
+serialized and atomic on Unix; Windows keeps a rollback copy until the new
+core starts. Core updates do not modify plugins, Images, Runtime definitions,
+state, or live Processes.
+
+Release assets also carry GitHub artifact attestations. After downloading an
+asset, users with GitHub CLI can verify its workflow provenance:
+
+```sh
+gh attestation verify ingot-v0.3.1-linux-amd64.tar.gz \
+  --repo ingot-agent/ingot \
+  --signer-workflow ingot-agent/ingot/.github/workflows/release.yml
+```
 
 ## Storage Layout
 
