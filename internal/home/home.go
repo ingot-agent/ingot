@@ -86,6 +86,9 @@ func OpenForSupervisor(root string) (*Home, error) {
 
 func openPath(root string) (*Home, error) {
 	if root == "" {
+		root = os.Getenv("INGOT_HOME")
+	}
+	if root == "" {
 		userHome, err := os.UserHomeDir()
 		if err != nil {
 			return nil, err

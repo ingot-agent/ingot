@@ -265,8 +265,9 @@ build fails before an Image is committed.
 
 ## The ingot home
 
-Managed machine state lives in `~/.ingot` by default; project recipes remain in
-the project directory. Use `--home PATH` to select another managed Home.
+Managed machine state uses `INGOT_HOME` when set and otherwise lives in
+`~/.ingot`; project recipes remain in the project directory. Use `--home PATH`
+to override both and select another managed Home.
 
 | Path | Role |
 |---|---|

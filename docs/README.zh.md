@@ -147,8 +147,9 @@ ingot build --tag acme/agent:dev
 
 ## ingot home
 
-机器级 Managed State 默认位于 `~/.ingot`，项目 Recipe 保留在项目目录；可使用
-`--home PATH` 指定其他 Managed Home。
+机器级 Managed State 优先使用 `INGOT_HOME` 指向的目录，未设置时默认位于
+`~/.ingot`；项目 Recipe 保留在项目目录。可使用 `--home PATH` 覆盖两者并指定其他
+Managed Home。
 
 | 路径 | 作用 |
 |---|---|

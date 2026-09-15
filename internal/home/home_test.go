@@ -34,6 +34,42 @@ func newM2Home(t *testing.T) *Home {
 	return home
 }
 
+func TestOpenPathHomePrecedence(t *testing.T) {
+	environmentHome := filepath.Join(t.TempDir(), "environment-home")
+	t.Setenv("INGOT_HOME", environmentHome)
+
+	home, err := openPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Root != environmentHome {
+		t.Fatalf("environment home = %q, want %q", home.Root, environmentHome)
+	}
+
+	explicitHome := filepath.Join(t.TempDir(), "explicit-home")
+	home, err = openPath(explicitHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if home.Root != explicitHome {
+		t.Fatalf("explicit home = %q, want %q", home.Root, explicitHome)
+	}
+
+	t.Setenv("INGOT_HOME", "")
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = openPath("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(userHome, ".ingot")
+	if home.Root != want {
+		t.Fatalf("fallback home = %q, want %q", home.Root, want)
+	}
+}
+
 func TestOpenRejectsUninitializedAndLegacyHome(t *testing.T) {
 	if _, err := Open(t.TempDir()); err == nil || !strings.Contains(err.Error(), "INGOT-HOME-SCHEMA-MISSING") {
 		t.Fatalf("empty home error = %v", err)
