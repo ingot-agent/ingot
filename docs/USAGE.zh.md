@@ -49,26 +49,28 @@ PowerShell 对应 `-Prefix`、`-BinaryDir`、`-DestDir`、`-Version` 与 `-Force
 GOWORK=off go build -o ingot ./cmd/ingot
 ```
 
-无论使用哪种安装方式，都需要显式初始化 Home：
+无论使用哪种安装方式，都需要显式初始化 Managed Home：
 
 ```sh
-ingot init
+ingot setup
 ```
 
-`init` 在 `INGOT_HOME` 指向的目录初始化 schema v2 Home；未设置该变量时使用
+`setup` 在 `INGOT_HOME` 指向的目录初始化 schema v2 Home；未设置该变量时使用
 `~/.ingot`。所选官方 Profile recipe 位于 Home 的 `profiles/` 下。Recipe 会把官方插件
-精确固定到已发布的模块版本。它不会写入当前目录，也不会创建 Runtime。
+精确固定到已发布的模块版本。`setup` 不会写入当前目录，也不会创建 Runtime。
 
-只有显式指定项目目录时才创建项目自己的 Recipe：
+在当前目录创建项目自己的 Recipe，也可以显式指定其他目录：
 
 ```sh
-ingot project init . [--profile default|minimal] [--force]
+ingot init [DIR] [--profile default|minimal] [--force]
 ```
 
-全局 `--home` 必须放在命令之前，并会覆盖 `INGOT_HOME`：
+`init` 同时确保 Managed Home 已存在；除非传入 `--force`，否则不会覆盖已有项目 Recipe。
+
+全局 `--home` 会覆盖 `INGOT_HOME`：
 
 ```sh
-ingot --home /path/to/home init
+ingot --home /path/to/home setup
 ```
 
 旧布局或非空的不兼容 Home 会被拒绝。M2 不迁移预发布阶段的 `current`、顶层
@@ -88,12 +90,12 @@ ingot update --version v0.3.1
 ingot update --version v0.3.1 --force
 ```
 
-`--version` 输出简短的 Core 版本；`version` 输出 JSON，其中包含 Core 版本与来源、
-构建协议版本和 Builder 版本。这些身份彼此独立演进。
+`--version` 输出简短的 Core 版本；`version` 输出 Core 版本与来源、构建协议版本和
+Builder 版本。需要稳定机器输出时使用全局 `--json`。这些身份彼此独立演进。
 
 未指定 `--version` 时，`update` 只解析最新稳定 Release，不会选择 prerelease；精确版本
 可以选择 prerelease。降级和同版本重装需要 `--force`；`--check` 绝不修改二进制，且
-不能与 `--force` 同时使用。版本与更新命令拒绝 `--home`，因为它们不会读写 Home。
+不能与 `--force` 同时使用。版本与更新命令不会读写 Home。
 
 替换前，updater 会校验归档摘要，并执行候选 Core，将其版本、官方构建标记、源码
 revision、clean 状态和平台 target 与 `release-manifest.json` 对照。Unix 上替换经过锁
@@ -149,45 +151,62 @@ State 永远属于 Runtime，不属于 Image。
 ## 标准流程
 
 ```sh
-ingot init
-ingot project init .
-ingot build --tag acme/coding-agent:1.0.0
-ingot runtime create work --image acme/coding-agent:1.0.0 -- web
-ingot runtime start work
-ingot runtime logs work --follow
+ingot setup
+ingot init .
+ingot up -- web
+```
+
+`up` 会构建最近的项目 Recipe，把结果绑定到 `default` Runtime，将 `--` 后的 argv
+持久化为该 Runtime 的默认命令，停止旧 Process，再以前台模式启动新 Process。添加
+`-d` 可在后台启动：
+
+```sh
+ingot up -d -- web
+ingot logs -f
+ingot stop
+```
+
+命名 Runtime 便于并行调试，无需为每次构建发明 Image tag：
+
+```sh
+ingot up work -d -- web
+ingot logs work -f
 ingot stop work
 ```
 
-也可以用 Docker 风格便利命令一次创建并运行。默认以前台模式运行；添加 `-d`（或
-`--detach`）时在后台启动：
-
-```sh
-ingot run --name work -d acme/coding-agent:1.0.0 -- web
-```
+Runtime binding 始终保存 concrete Image 与 Artifact digest。`default` 只是生命周期命令
+省略可选 Runtime 参数时选中的默认 Runtime 名称，不是 mutable Image 引用。
+如果 `up` 无法停止旧 Process，会返回错误，并保留新构建的 Image 与 desired Runtime
+binding，同时显示 `restart_required`；它不会在仍运行旧 Process 时把 binding 悄悄回滚。
 
 ## 项目命令
 
-Recipe 命令默认只读取当前目录的 `plugins.toml` 与相邻 `plugins.lock`，不向父目录搜索，
-也不回退到 Home。Home 中由 Ingot 管理的官方 Profile recipe 必须像安装脚本一样通过
-`--use` 显式选择。
+Recipe 命令从当前目录向上搜索，并使用最近的 `plugins.toml`；默认 lock 是相邻的
+`plugins.lock`。使用 `-f/--file` 与 `--lock` 可指定路径，使用 `--profile` 可选择 Home
+管理的 Profile。`--profile` 不能与 `--file` 或 `--lock` 同时使用。
 
 ```text
-ingot resolve [--use recipe.toml] [--lock recipe.lock]
-ingot build [--use recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
-ingot status [--use recipe.toml] [--lock recipe.lock]
-ingot inspect [--use recipe.toml] [--lock recipe.lock] [plugin]
+ingot project resolve [-f recipe.toml] [--lock recipe.lock]
+ingot project status [-f recipe.toml] [--lock recipe.lock]
+ingot project show [-f recipe.toml] [--lock recipe.lock]
+ingot build [runtime] [-f recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
+ingot up [runtime] [-d] [-f recipe.toml] [--lock recipe.lock] [--locked] [-- argv...]
 ```
 
 普通 build 会刷新缺失或 stale 的 lock。`--locked` 要求 lock 与全部源码事实完全匹配，
-且绝不改写 lock。`--tag` 只在构建成功后移动当前主机 target slot。
+且绝不改写 lock。`--tag` 会在构建成功后额外移动当前主机 target slot。
 
-Plugin mutation 使用同一套 `--use/--lock` 规则：
+`build` 始终把结果绑定到且只绑定到一个 Runtime。Runtime 默认为 `default`；不存在时
+自动创建，已存在时切换 binding。`build` 不启动或重启 Process。重复构建同一个 Image
+不会递增 Runtime generation。切换正在运行的 Runtime 时旧 Process 保持运行，并显示
+`restart_required`，直到显式重启。
+
+Plugin mutation 使用同一套项目选择规则：
 
 ```text
-ingot plugin list|inspect ...
-ingot plugin add module@version
-ingot plugin add --path ../plugin
-ingot plugin remove|update|reorder ...
+ingot plugin ls|show ... [-f ...] [--lock ...]
+ingot plugin add <module[@query]|path> [-f ...] [--lock ...]
+ingot plugin rm|update|move ... [-f ...] [--lock ...]
 ```
 
 ## Plugin Collections
@@ -210,8 +229,8 @@ version = "v0.1.0"
 
 ```text
 ingot collection inspect [--expect-digest sha256:...] <path-or-https-url>
-ingot collection plan [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
-ingot collection apply [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection plan [-f ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection apply [-f ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
 ```
 
 `inspect` 不要求已初始化 Home。`plan` 不解析 module source，只区分 Add、Satisfied、
@@ -251,23 +270,26 @@ ZIP；import 会在提交前校验路径、entry 数量、大小、Build Input i
 ## Runtime 命令
 
 ```text
-ingot runtime create <name> --image <ref> [-- <default-argv>]
-ingot runtime list
-ingot runtime inspect <name>
+ingot run <name> <image> [-d] [-- <default-argv>]
+ingot runtime create <name> <image> [-- <default-argv>]
+ingot runtime ls
+ingot runtime show [name]
 ingot runtime switch <name> <ref>
-ingot runtime rollback <name>
-ingot runtime command set <name> -- <argv...>
-ingot runtime command clear <name>
-ingot runtime run <name> [-- <temporary-argv>]
-ingot runtime start <name> [--timeout 30s] [-- <temporary-argv>]
-ingot runtime restart <name> [--timeout 30s]
-ingot runtime logs <name> [--process <id>] [--follow]
-ingot runtime delete <name> [--purge]
+ingot runtime rollback [name]
+ingot runtime command set [name] -- <argv...>
+ingot runtime command clear [name]
+ingot runtime rm <name> [--purge]
+ingot start [name] [--foreground] [-- <temporary-argv>]
+ingot restart [name]
+ingot logs [name] [--process <id>] [-f]
 ```
 
 `switch` 原子更新 desired/rollback binding，但不会重启 live Process。当实际 Image 或
-Runtime generation 与期望值不同时，`runtime inspect` 输出 `restart_required: true`。
+Runtime generation 与期望值不同时，`runtime show` 输出 `restart_required: true`。
 `rollback` 只交换 binding，不复制或解释 State。
+
+生命周期和检查命令省略可选 Runtime 名称时默认使用 `default`。`run` 用于从已构建的
+Image 引用创建 Runtime；普通的构建并重启流程应使用 `up`。
 
 每个 Runtime 都有独立 Runtime Home。Generated Image 在构造任何 Plugin 之前获取
 `run/writer.lock`，因此 standalone 与 managed launch 遵守同一单 writer 契约。
@@ -276,7 +298,8 @@ Runtime generation 与期望值不同时，`runtime inspect` 输出 `restart_req
 
 ```text
 ingot ps
-ingot stop <runtime> [--timeout 10s]
+ingot ps -a
+ingot stop [runtime] [--timeout 10s]
 ingot stop --process <process-id> [--timeout 10s]
 ```
 
@@ -300,5 +323,23 @@ GC 保留全部 tag variant、pin、Runtime desired/rollback、live Process actu
 
 ## 输出与退出码
 
-除前台 Runtime stdio 与原始日志流外，命令成功时输出稳定 JSON。Usage error 返回 `2`；
-domain、I/O 与 verification error 返回 `1`；前台运行原样传播 Runtime exit code。
+命令默认输出简洁的人类可读文本；需要稳定机器输出时传入全局 `--json`。前台 `run`、
+前台 `up`、`start --foreground` 与原始 `logs` 会拒绝 `--json`，因为 stdout 属于 Runtime
+或日志流。
+
+Usage error 返回 `2`；domain、I/O 与 verification error 返回 `1`；前台运行原样传播
+Runtime exit code。
+
+## Shell 自动补全
+
+Cobra 可生成 Bash、Zsh、Fish 与 PowerShell 补全脚本：
+
+```sh
+ingot completion bash
+ingot completion zsh
+ingot completion fish
+ingot completion powershell
+```
+
+动态补全会提示已有 Runtime 名称、Image 引用、Plugin 与 Profile。补全严格只读：不会
+初始化 Home、恢复 transaction、解析 module、构建 Image 或访问网络。

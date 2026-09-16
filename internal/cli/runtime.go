@@ -1,213 +1,469 @@
 package cli
 
 import (
-	"context"
-	"os"
-	"strconv"
+	"fmt"
+	"io"
+	"text/tabwriter"
 	"time"
 
 	ingothome "github.com/ingot-agent/ingot/internal/home"
+	processmgr "github.com/ingot-agent/ingot/internal/process"
+	"github.com/spf13/cobra"
 )
 
-func (cli CLI) runRuntime(ctx context.Context, home *ingothome.Home, arguments []string) int {
-	if len(arguments) == 0 {
-		return cli.usageError("runtime requires a subcommand")
+func (app *application) newRunCommand() *cobra.Command {
+	var detach bool
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:     "run <runtime> <image> [-- argv...]",
+		Short:   "Create and run a named Runtime from an existing Image",
+		GroupID: "common",
+		RunE: func(command *cobra.Command, args []string) error {
+			before, argv, _, err := splitArgsAtDash(command, args, 2, 2)
+			if err != nil {
+				return err
+			}
+			if !detach {
+				if err := app.rejectJSON("run"); err != nil {
+					return err
+				}
+			}
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			view, err := home.RuntimeCreate(command.Context(), before[0], before[1], argv)
+			if err != nil {
+				return err
+			}
+			if detach {
+				record, err := home.RuntimeStart(command.Context(), view.Name, nil, timeout)
+				if err != nil {
+					return err
+				}
+				output := struct {
+					Runtime ingothome.RuntimeView `json:"runtime"`
+					Process *processmgr.Record    `json:"process"`
+				}{Runtime: view, Process: record}
+				return app.output(output, func(writer io.Writer) error {
+					_, err := fmt.Fprintf(writer, "Created and started %s (process %s)\n", view.Name, record.ProcessID)
+					return err
+				})
+			}
+			_, _ = fmt.Fprintf(app.stderr, "Created %s; starting in the foreground\n", view.Name)
+			code, err := home.RuntimeRun(command.Context(), view.Name, nil, app.stdin, app.stdout, app.stderr)
+			if err != nil {
+				return err
+			}
+			if code != 0 {
+				return runtimeExit(code)
+			}
+			return nil
+		},
 	}
-	command, rest := arguments[0], arguments[1:]
-	switch command {
-	case "create":
-		before, argv := splitDashDash(rest)
-		remaining, imageRef, _, err := extractStringOption(before, "image")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) != 1 || imageRef == "" {
-			return cli.usageError("runtime create requires name and --image")
-		}
-		view, err := home.RuntimeCreate(ctx, remaining[0], imageRef, argv)
-		if err == nil {
-			err = writeJSON(cli.Stdout, view)
-		}
-		return cli.result(err)
-	case "list":
-		if len(rest) != 0 {
-			return cli.usageError("runtime list takes no arguments")
-		}
-		views, err := home.RuntimeList(ctx)
-		if err == nil {
-			err = writeJSON(cli.Stdout, views)
-		}
-		return cli.result(err)
-	case "inspect":
-		if len(rest) != 1 {
-			return cli.usageError("runtime inspect requires a name")
-		}
-		view, err := home.RuntimeInspect(ctx, rest[0])
-		if err == nil {
-			err = writeJSON(cli.Stdout, view)
-		}
-		return cli.result(err)
-	case "switch":
-		if len(rest) != 2 {
-			return cli.usageError("runtime switch requires name and image reference")
-		}
-		view, err := home.RuntimeSwitch(ctx, rest[0], rest[1])
-		if err == nil {
-			err = writeJSON(cli.Stdout, view)
-		}
-		return cli.result(err)
-	case "rollback":
-		if len(rest) != 1 {
-			return cli.usageError("runtime rollback requires a name")
-		}
-		view, err := home.RuntimeRollback(ctx, rest[0])
-		if err == nil {
-			err = writeJSON(cli.Stdout, view)
-		}
-		return cli.result(err)
-	case "command":
-		if len(rest) < 2 {
-			return cli.usageError("runtime command requires set|clear and a name")
-		}
-		action := rest[0]
-		if action == "clear" {
-			if len(rest) != 2 {
-				return cli.usageError("runtime command clear requires a name")
-			}
-			view, err := home.RuntimeCommand(ctx, rest[1], []string{})
-			if err == nil {
-				err = writeJSON(cli.Stdout, view)
-			}
-			return cli.result(err)
-		}
-		if action == "set" {
-			before, argv := splitDashDash(rest[1:])
-			if len(before) != 1 {
-				return cli.usageError("runtime command set requires name -- argv")
-			}
-			view, err := home.RuntimeCommand(ctx, before[0], argv)
-			if err == nil {
-				err = writeJSON(cli.Stdout, view)
-			}
-			return cli.result(err)
-		}
-		return cli.usageError("runtime command requires set or clear")
-	case "run":
-		before, argv := splitDashDash(rest)
-		if len(before) != 1 {
-			return cli.usageError("runtime run requires a name")
-		}
-		temporary := argv
-		if argv == nil {
-			temporary = nil
-		}
-		code, err := home.RuntimeRun(ctx, before[0], temporary, os.Stdin, cli.Stdout, cli.Stderr)
-		if err != nil {
-			return cli.result(err)
-		}
-		return code
-	case "start":
-		before, argv := splitDashDash(rest)
-		remaining, timeoutValue, hasTimeout, err := extractStringOption(before, "timeout")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) != 1 {
-			return cli.usageError("runtime start requires a name")
-		}
-		timeout := 30 * time.Second
-		if hasTimeout {
-			timeout, err = time.ParseDuration(timeoutValue)
+	command.Flags().BoolVarP(&detach, "detach", "d", false, "run in the background")
+	command.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "startup timeout")
+	command.ValidArgsFunction = app.completeRunArguments
+	return command
+}
+
+func (app *application) newStartCommand() *cobra.Command {
+	var foreground bool
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:     "start [runtime] [-- argv...]",
+		Short:   "Start an existing Runtime",
+		GroupID: "common",
+		RunE: func(command *cobra.Command, args []string) error {
+			before, argv, hasArgv, err := splitRuntimeArgv(command, args)
 			if err != nil {
-				return cli.usageError(err.Error())
+				return err
 			}
-		}
-		temporary := argv
-		if argv == nil {
-			temporary = nil
-		}
-		record, err := home.RuntimeStart(ctx, remaining[0], temporary, timeout)
-		if err == nil {
-			err = writeJSON(cli.Stdout, record)
-		}
-		return cli.result(err)
-	case "restart":
-		remaining, timeoutValue, hasTimeout, err := extractStringOption(rest, "timeout")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) != 1 {
-			return cli.usageError("runtime restart requires a name")
-		}
-		timeout := 30 * time.Second
-		if hasTimeout {
-			timeout, err = time.ParseDuration(timeoutValue)
+			name := defaultRuntimeName
+			if len(before) == 1 {
+				name = before[0]
+			}
+			temporary := []string(nil)
+			if hasArgv {
+				temporary = argv
+			}
+			home, err := ingothome.Open(app.homePath)
 			if err != nil {
-				return cli.usageError(err.Error())
+				return err
 			}
-		}
-		record, err := home.RuntimeRestart(ctx, remaining[0], timeout)
-		if err == nil {
-			err = writeJSON(cli.Stdout, record)
-		}
-		return cli.result(err)
-	case "logs":
-		remaining, processID, _, err := extractStringOption(rest, "process")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		remaining, follow, err := extractBoolOption(remaining, "follow")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) != 1 {
-			return cli.usageError("runtime logs requires a name")
-		}
-		return cli.result(home.RuntimeLogs(ctx, remaining[0], processID, follow, cli.Stdout))
-	case "delete":
-		remaining, purge, err := extractBoolOption(rest, "purge")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) != 1 {
-			return cli.usageError("runtime delete requires a name")
-		}
-		err = home.RuntimeDelete(ctx, remaining[0], purge)
-		if err == nil {
-			err = writeJSON(cli.Stdout, map[string]any{"deleted": remaining[0], "purged": purge})
-		}
-		return cli.result(err)
-	default:
-		return cli.usageError("unknown runtime subcommand " + strconv.Quote(command))
+			if foreground {
+				if err := app.rejectJSON("start --foreground"); err != nil {
+					return err
+				}
+				code, err := home.RuntimeRun(command.Context(), name, temporary, app.stdin, app.stdout, app.stderr)
+				if err != nil {
+					return err
+				}
+				if code != 0 {
+					return runtimeExit(code)
+				}
+				return nil
+			}
+			record, err := home.RuntimeStart(command.Context(), name, temporary, timeout)
+			if err != nil {
+				return err
+			}
+			return app.output(record, func(writer io.Writer) error {
+				_, err := fmt.Fprintf(writer, "Started %s (process %s)\n", name, record.ProcessID)
+				return err
+			})
+		},
+	}
+	command.Flags().BoolVar(&foreground, "foreground", false, "run attached to this terminal")
+	command.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "startup timeout")
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newStopCommand() *cobra.Command {
+	var processID string
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:     "stop [runtime]",
+		Short:   "Gracefully stop a Runtime process",
+		GroupID: "common",
+		Args:    rangeArgs(0, 1),
+		RunE: func(command *cobra.Command, args []string) error {
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			name := defaultRuntimeName
+			if len(args) == 1 {
+				name = args[0]
+			}
+			if processID != "" {
+				if len(args) != 0 {
+					return usageErrorf("stop --process does not accept a Runtime name")
+				}
+				err = home.StopProcess(command.Context(), processID, timeout)
+			} else {
+				err = home.RuntimeStop(command.Context(), name, "", timeout)
+			}
+			if err != nil {
+				return err
+			}
+			output := map[string]any{"stopped": true, "runtime": name, "process_id": processID}
+			return app.output(output, func(writer io.Writer) error {
+				target := name
+				if processID != "" {
+					target = processID
+				}
+				_, err := fmt.Fprintf(writer, "Stopped %s\n", target)
+				return err
+			})
+		},
+	}
+	command.Flags().StringVar(&processID, "process", "", "stop a specific process ID")
+	command.Flags().DurationVar(&timeout, "timeout", 10*time.Second, "shutdown timeout")
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newRestartCommand() *cobra.Command {
+	var timeout time.Duration
+	command := &cobra.Command{
+		Use:     "restart [runtime]",
+		Short:   "Restart an existing Runtime in the background",
+		GroupID: "common",
+		Args:    rangeArgs(0, 1),
+		RunE: func(command *cobra.Command, args []string) error {
+			name := optionalRuntimeName(args)
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			record, err := home.RuntimeRestart(command.Context(), name, timeout)
+			if err != nil {
+				return err
+			}
+			return app.output(record, func(writer io.Writer) error {
+				_, err := fmt.Fprintf(writer, "Restarted %s (process %s)\n", name, record.ProcessID)
+				return err
+			})
+		},
+	}
+	command.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "shutdown and startup timeout")
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newLogsCommand() *cobra.Command {
+	var processID string
+	var follow bool
+	command := &cobra.Command{
+		Use:     "logs [runtime]",
+		Short:   "Print detached Runtime logs",
+		GroupID: "common",
+		Args:    rangeArgs(0, 1),
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := app.rejectJSON("logs"); err != nil {
+				return err
+			}
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			return home.RuntimeLogs(command.Context(), optionalRuntimeName(args), processID, follow, app.stdout)
+		},
+	}
+	command.Flags().StringVar(&processID, "process", "", "select a process log")
+	command.Flags().BoolVarP(&follow, "follow", "f", false, "follow log output")
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newPSCommand() *cobra.Command {
+	var all bool
+	command := &cobra.Command{
+		Use:     "ps",
+		Short:   "List Runtime processes",
+		GroupID: "common",
+		Args:    exactArgs(0),
+		RunE: func(command *cobra.Command, _ []string) error {
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			var views []ingothome.RuntimeView
+			if all {
+				views, err = home.RuntimeList(command.Context())
+			} else {
+				views, err = home.Processes(command.Context())
+			}
+			if err != nil {
+				return err
+			}
+			return app.output(views, func(writer io.Writer) error { return writeRuntimeTable(writer, views) })
+		},
+	}
+	command.Flags().BoolVarP(&all, "all", "a", false, "include stopped Runtimes")
+	return command
+}
+
+func (app *application) newRuntimeCommand() *cobra.Command {
+	command := &cobra.Command{Use: "runtime", Short: "Manage Runtime bindings and state", GroupID: "resources"}
+	command.AddCommand(
+		app.newRuntimeListCommand(), app.newRuntimeShowCommand(), app.newRuntimeCreateCommand(),
+		app.newRuntimeSwitchCommand(), app.newRuntimeRollbackCommand(), app.newRuntimeCommandCommand(), app.newRuntimeRemoveCommand(),
+	)
+	return command
+}
+
+func (app *application) newRuntimeListCommand() *cobra.Command {
+	return &cobra.Command{
+		Use: "ls", Aliases: []string{"list"}, Short: "List all Runtimes", Args: exactArgs(0),
+		RunE: func(command *cobra.Command, _ []string) error {
+			home, err := ingothome.Open(app.homePath)
+			if err != nil {
+				return err
+			}
+			views, err := home.RuntimeList(command.Context())
+			if err != nil {
+				return err
+			}
+			return app.output(views, func(writer io.Writer) error { return writeRuntimeTable(writer, views) })
+		},
 	}
 }
 
-func (cli CLI) runNamed(ctx context.Context, home *ingothome.Home, arguments []string) int {
-	before, argv := splitDashDash(arguments)
-	remaining, name, _, err := extractStringOption(before, "name")
-	if err != nil {
-		return cli.usageError(err.Error())
-	}
-	remaining, detach, err := extractBoolOption(remaining, "detach", "-d")
-	if err != nil {
-		return cli.usageError(err.Error())
-	}
-	if name == "" || len(remaining) != 1 {
-		return cli.usageError("run requires --name and one image reference")
-	}
-	if _, err := home.RuntimeCreate(ctx, name, remaining[0], argv); err != nil {
-		return cli.result(err)
-	}
-	if detach {
-		record, err := home.RuntimeStart(ctx, name, nil, 30*time.Second)
-		if err == nil {
-			err = writeJSON(cli.Stdout, record)
+func (app *application) newRuntimeShowCommand() *cobra.Command {
+	command := &cobra.Command{Use: "show [runtime]", Aliases: []string{"inspect"}, Short: "Show a Runtime", Args: rangeArgs(0, 1)}
+	command.RunE = func(command *cobra.Command, args []string) error {
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
 		}
-		return cli.result(err)
+		view, err := home.RuntimeInspect(command.Context(), optionalRuntimeName(args))
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error { return writeRuntimeDetail(writer, view) })
 	}
-	code, err := home.RuntimeRun(ctx, name, nil, os.Stdin, cli.Stdout, cli.Stderr)
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newRuntimeCreateCommand() *cobra.Command {
+	command := &cobra.Command{Use: "create <runtime> <image> [-- argv...]", Short: "Create a stopped Runtime"}
+	command.RunE = func(command *cobra.Command, args []string) error {
+		before, argv, _, err := splitArgsAtDash(command, args, 2, 2)
+		if err != nil {
+			return err
+		}
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		view, err := home.RuntimeCreate(command.Context(), before[0], before[1], argv)
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Created %s -> %s\n", view.Name, shortDigest(view.DesiredImage.ImageID))
+			return err
+		})
+	}
+	command.ValidArgsFunction = app.completeRunArguments
+	return command
+}
+
+func (app *application) newRuntimeSwitchCommand() *cobra.Command {
+	command := &cobra.Command{Use: "switch <runtime> <image>", Short: "Change a Runtime Image", Args: exactArgs(2)}
+	command.RunE = func(command *cobra.Command, args []string) error {
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		view, err := home.RuntimeSwitch(command.Context(), args[0], args[1])
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Switched %s -> %s\n", view.Name, shortDigest(view.DesiredImage.ImageID))
+			return err
+		})
+	}
+	command.ValidArgsFunction = app.completeRuntimeThenImage
+	return command
+}
+
+func (app *application) newRuntimeRollbackCommand() *cobra.Command {
+	command := &cobra.Command{Use: "rollback [runtime]", Short: "Swap desired and rollback Images", Args: rangeArgs(0, 1)}
+	command.RunE = func(command *cobra.Command, args []string) error {
+		name := optionalRuntimeName(args)
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		view, err := home.RuntimeRollback(command.Context(), name)
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Rolled back %s -> %s\n", name, shortDigest(view.DesiredImage.ImageID))
+			return err
+		})
+	}
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func (app *application) newRuntimeCommandCommand() *cobra.Command {
+	command := &cobra.Command{Use: "command", Short: "Set or clear the default Runtime command"}
+	set := &cobra.Command{Use: "set [runtime] -- argv...", Short: "Set the default command"}
+	set.RunE = func(command *cobra.Command, args []string) error {
+		before, argv, hasArgv, err := splitRuntimeArgv(command, args)
+		if err != nil {
+			return err
+		}
+		if !hasArgv || len(argv) == 0 {
+			return usageErrorf("runtime command set requires argv after --")
+		}
+		name := optionalRuntimeName(before)
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		view, err := home.RuntimeCommand(command.Context(), name, argv)
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Updated command for %s\n", name)
+			return err
+		})
+	}
+	set.ValidArgsFunction = app.completeRuntimeNames(false)
+	clear := &cobra.Command{Use: "clear [runtime]", Short: "Clear the default command", Args: rangeArgs(0, 1)}
+	clear.RunE = func(command *cobra.Command, args []string) error {
+		name := optionalRuntimeName(args)
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		view, err := home.RuntimeCommand(command.Context(), name, []string{})
+		if err != nil {
+			return err
+		}
+		return app.output(view, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Cleared command for %s\n", name)
+			return err
+		})
+	}
+	clear.ValidArgsFunction = app.completeRuntimeNames(false)
+	command.AddCommand(set, clear)
+	return command
+}
+
+func (app *application) newRuntimeRemoveCommand() *cobra.Command {
+	var purge bool
+	command := &cobra.Command{Use: "rm <runtime>", Aliases: []string{"remove", "delete"}, Short: "Delete a stopped Runtime", Args: exactArgs(1)}
+	command.RunE = func(command *cobra.Command, args []string) error {
+		home, err := ingothome.Open(app.homePath)
+		if err != nil {
+			return err
+		}
+		if err := home.RuntimeDelete(command.Context(), args[0], purge); err != nil {
+			return err
+		}
+		output := map[string]any{"deleted": args[0], "purged": purge}
+		return app.output(output, func(writer io.Writer) error {
+			_, err := fmt.Fprintf(writer, "Deleted %s\n", args[0])
+			return err
+		})
+	}
+	command.Flags().BoolVar(&purge, "purge", false, "delete Runtime state and logs")
+	command.ValidArgsFunction = app.completeRuntimeNames(false)
+	return command
+}
+
+func optionalRuntimeName(args []string) string {
+	if len(args) == 0 {
+		return defaultRuntimeName
+	}
+	return args[0]
+}
+
+func splitArgsAtDash(command *cobra.Command, args []string, minimum, maximum int) ([]string, []string, bool, error) {
+	index := command.ArgsLenAtDash()
+	if index < 0 {
+		if len(args) < minimum || len(args) > maximum {
+			return nil, nil, false, usageErrorf("requires between %d and %d argument(s) before --", minimum, maximum)
+		}
+		return args, nil, false, nil
+	}
+	if index < minimum || index > maximum {
+		return nil, nil, false, usageErrorf("requires between %d and %d argument(s) before --", minimum, maximum)
+	}
+	return args[:index], append([]string{}, args[index:]...), true, nil
+}
+
+func writeRuntimeTable(writer io.Writer, views []ingothome.RuntimeView) error {
+	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(table, "NAME\tSTATE\tIMAGE\tPROCESS\tRESTART")
+	for _, view := range views {
+		processID := "-"
+		if view.Process != nil {
+			processID = view.Process.ProcessID
+		}
+		_, _ = fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%t\n", view.Name, view.State, shortDigest(view.DesiredImage.ImageID), processID, view.RestartRequired)
+	}
+	return table.Flush()
+}
+
+func writeRuntimeDetail(writer io.Writer, view ingothome.RuntimeView) error {
+	_, err := fmt.Fprintf(writer, "Name: %s\nState: %s\nImage: %s\nTarget: %s\nGeneration: %d\nRestart required: %t\nCommand: %q\n", view.Name, view.State, view.DesiredImage.ImageID, view.DesiredImage.Target.Platform(), view.Generation, view.RestartRequired, view.DefaultArgv)
 	if err != nil {
-		return cli.result(err)
+		return err
 	}
-	return code
+	if view.Process != nil {
+		_, err = fmt.Fprintf(writer, "Process: %s (%s)\n", view.Process.ProcessID, view.Process.Mode)
+	}
+	return err
 }

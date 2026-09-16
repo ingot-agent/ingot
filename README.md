@@ -111,29 +111,27 @@ Then initialize and build the agent composition. Building Runtime Images
 requires Go 1.24 or newer even when the core was installed from a Release.
 
 ```sh
-# 1. Initialize a home with the official plugin set
-ingot init
+# 1. Initialize managed Home
+ingot setup
 
-# 2. Build and name the managed default profile
-ingot build --use ~/.ingot/profiles/default.toml \
-  --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
+# 2. Initialize a project recipe in the current directory
+ingot init .
 
-# 3. Create and start an isolated Runtime
-ingot runtime create default --image local/ingot:default -- web
-ingot runtime start default   # then open http://127.0.0.1:7316/
+# 3. Build and start the default Runtime in the background
+ingot up -d -- web   # then open http://127.0.0.1:7316/
 ```
 
 Plugins start Unconfigured and own their configuration. Set the model provider
 through the `app.backend.config` operation (or by editing the plugin's own
 `state/` file) once the runtime is running.
 
-`ingot init` writes the selected official profile with exact released plugin
-module versions under `profiles/` in the managed Home, then writes
-`builder.toml`. It never writes to the current directory. Use
-`ingot project init .` when you explicitly want a project-owned `plugins.toml`. Pass
-`--profile minimal` for the smallest runnable graph (terminal CLI, no tools).
-See the [Usage Guide](./docs/USAGE.md) for installation options and the full
-workflow.
+`ingot setup` writes the selected official profile with exact released plugin
+module versions under `profiles/` in managed Home, then writes `builder.toml`.
+`ingot init [DIR]` creates a project-owned `plugins.toml` and also ensures Home
+exists. Pass `--profile minimal` for the smallest runnable graph (terminal CLI,
+no tools). `ingot up [NAME]` builds, binds, and restarts one Runtime; omitting
+the name selects `default`. See the [Usage Guide](./docs/USAGE.md) for
+installation options and the full workflow.
 
 For the browser workspace, replace the CLI with
 [app.backend](https://github.com/ingot-agent/plugins/tree/main/app-webui).
@@ -240,9 +238,9 @@ To add or replace a plugin:
 
 ```sh
 ingot plugin add github.com/example/my-plugin@v1.2.3
-ingot plugin add --path ../my-local-plugin
-ingot plugin remove tool.ask
-ingot build --tag acme/agent:dev
+ingot plugin add ../my-local-plugin
+ingot plugin rm tool.ask
+ingot up
 ```
 
 If the new composition has a missing, duplicate, or cyclic capability, the
@@ -263,9 +261,10 @@ build fails before an Image is committed.
   inputs; `ArtifactDigest` identifies the final executable bytes.
 - **Reproducibility checks** — rebuilding an existing `ImageID` must reproduce
   its artifact digest instead of silently replacing different bytes.
-- **Explicit deployment** — mutable tags name immutable target variants;
-  Runtimes resolve them to concrete digests and switch desired Images atomically
-  without changing a live Process.
+- **Concrete Runtime binding** — builds bind exactly one Runtime to immutable
+  Image and Artifact digests. Mutable tags never make an existing Runtime
+  follow a later Image, and changing a binding does not silently restart a live
+  Process.
 
 ## The ingot home
 
@@ -287,22 +286,25 @@ to override both and select another managed Home.
 ## Commands at a glance
 
 ```text
-ingot [--home PATH] <command>
+ingot [--home PATH] [--json] <command>
 
+setup       Initialize or refresh managed Home
+init        Initialize a project recipe in [DIR]
+build       Build and bind one Runtime (default: `default`)
+up          Build, bind, and restart one Runtime
+start       Start an existing Runtime
+stop        Gracefully stop a Runtime Process
+restart     Restart a Runtime in the background
+logs / ps   Inspect detached logs and Processes
+run         Create and run a named Runtime from an existing Image
+project     status | show | resolve
+plugin      add | rm | update | move | ls | show
+collection  inspect | plan | apply
+image       ls | show | verify | tag | import | export | pin | rm
+runtime     create | show | switch | rollback | command | rm
+completion  Generate Bash, Zsh, Fish, or PowerShell completion
 version     Report core, Builder, and protocol identities
-update      Check for or install an official core Release
-init        Initialize a home with an official released plugin profile
-project     Explicitly initialize a project recipe with `project init <dir>`
-resolve     Resolve plugins.toml and refresh plugins.lock
-build       Resolve/build a content-addressed Image, optionally with --tag
-image       list | inspect | verify | tag | import | export | pin | remove
-runtime     create | inspect | switch | rollback | run | start | stop | logs
-run         Create and start a named Runtime
-ps / stop   Observe or gracefully stop managed Processes
-status      Show project desired, locked, and built state as JSON
-inspect     Inspect the environment or one plugin as JSON
-gc          Sweep Images using tag, pin, Runtime, and Process roots
-plugin      add | remove | update | reorder | list | inspect
+update / gc Maintain the core binary and immutable Images
 ```
 
 See the [Usage Guide](./docs/USAGE.md) or
@@ -315,6 +317,7 @@ See the [Usage Guide](./docs/USAGE.md) or
 - [Usage Guide](./docs/USAGE.md) · [使用说明](./docs/USAGE.zh.md)
 - [Architecture design v0.3](./docs/ingot_架构设计_v0.3.md) (Chinese)
 - [M2 Image / Runtime / Process design](./docs/ingot_M2_image_runtime_process_设计方案.md) (Chinese)
+- [Core installation and update mechanism v0.1](./docs/ingot_Core_安装与更新机制_v0.1.md) (Chinese)
 - [M0 architecture freeze ADRs: Image identity, Runtime Home, Plugin Configuration, Operation identity, Collection, Runtime environment](./docs/adr/) (Chinese)
 - [Plugin manifest design](./docs/ingot.plugin.toml_设计方案_v0.1.md) (Chinese)
 - [`plugins.toml` design](./docs/ingot_plugins.toml_v0.1_设计方案.md) (Chinese)
@@ -356,7 +359,7 @@ performed in the standalone `ingot-agent/plugins` repository.
 
 ## Roadmap
 
-- [x] `ingot init` — create a runnable plugin profile and configuration.
+- [x] `ingot setup` and `ingot init` — initialize managed Home and project recipes.
 - [x] `ingot collection inspect|plan|apply` — apply reusable exact-version
   Plugin composition recipes with explicit conflict handling.
 - [ ] `ingot doctor` — validate plugin completeness, configuration, and the

@@ -51,6 +51,38 @@ func (home *Home) RuntimeCreate(ctx context.Context, name, imageRef string, argv
 	return RuntimeView{Runtime: entry, State: "stopped"}, nil
 }
 
+func (home *Home) ensureRuntimeBindingUnlocked(ctx context.Context, name string, binding image.Binding) (RuntimeView, bool, bool, error) {
+	if err := image.ValidateRuntimeName(name); err != nil {
+		return RuntimeView{}, false, false, err
+	}
+	if err := binding.Validate(); err != nil {
+		return RuntimeView{}, false, false, err
+	}
+	registry := home.registry()
+	if _, err := os.Stat(registry.RuntimeHome(name)); os.IsNotExist(err) {
+		entry, err := registry.Create(name, binding, []string{}, time.Now())
+		if err != nil {
+			return RuntimeView{}, false, false, err
+		}
+		return RuntimeView{Runtime: entry, State: "stopped"}, true, true, nil
+	} else if err != nil {
+		return RuntimeView{}, false, false, err
+	}
+	current, err := home.runtimeInspectUnlocked(ctx, name)
+	if err != nil {
+		return RuntimeView{}, false, false, err
+	}
+	if current.State == "external" {
+		return RuntimeView{}, false, false, fmt.Errorf("INGOT-RUNTIME-REGISTRY-EXTERNAL: runtime %s has an external writer", name)
+	}
+	_, changed, err := registry.Switch(name, binding, time.Now())
+	if err != nil {
+		return RuntimeView{}, false, false, err
+	}
+	view, err := home.runtimeInspectUnlocked(ctx, name)
+	return view, false, changed, err
+}
+
 func (home *Home) RuntimeInspect(ctx context.Context, name string) (RuntimeView, error) {
 	release, err := home.acquire(ctx)
 	if err != nil {

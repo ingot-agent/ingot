@@ -3,194 +3,153 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/ingot-agent/ingot/internal/builder"
 	"github.com/ingot-agent/ingot/internal/buildinfo"
 	"github.com/ingot-agent/ingot/internal/coreupdate"
-
-	ingothome "github.com/ingot-agent/ingot/internal/home"
+	"github.com/spf13/cobra"
 )
 
+const defaultRuntimeName = "default"
+
 type CLI struct {
+	Stdin      io.Reader
 	Stdout     io.Writer
 	Stderr     io.Writer
 	updateCore func(context.Context, coreupdate.Options) (coreupdate.Result, error)
 }
 
+type application struct {
+	stdin      io.Reader
+	stdout     io.Writer
+	stderr     io.Writer
+	homePath   string
+	jsonOutput bool
+	updateCore func(context.Context, coreupdate.Options) (coreupdate.Result, error)
+}
+
+type commandError struct {
+	code int
+	err  error
+}
+
+func (err commandError) Error() string {
+	if err.err == nil {
+		return ""
+	}
+	return err.err.Error()
+}
+
+func (err commandError) Unwrap() error { return err.err }
+
+func usageErrorf(format string, arguments ...any) error {
+	return commandError{code: 2, err: fmt.Errorf(format, arguments...)}
+}
+
+func runtimeExit(code int) error { return commandError{code: code} }
+
 func (cli CLI) Run(ctx context.Context, arguments []string) int {
-	if cli.Stdout == nil {
-		cli.Stdout = os.Stdout
+	app := &application{stdin: cli.Stdin, stdout: cli.Stdout, stderr: cli.Stderr, updateCore: cli.updateCore}
+	if app.stdin == nil {
+		app.stdin = os.Stdin
 	}
-	if cli.Stderr == nil {
-		cli.Stderr = os.Stderr
+	if app.stdout == nil {
+		app.stdout = os.Stdout
 	}
-	homePath, arguments, err := parseGlobalHome(arguments)
-	if err != nil {
-		return cli.usageError(err.Error())
+	if app.stderr == nil {
+		app.stderr = os.Stderr
 	}
-	if len(arguments) == 0 {
-		cli.usage()
+	root := app.rootCommand()
+	root.SetArgs(arguments)
+	_, err := root.ExecuteContextC(ctx)
+	if err == nil {
+		return 0
+	}
+	var commandErr commandError
+	if errors.As(err, &commandErr) {
+		if commandErr.err != nil {
+			_, _ = fmt.Fprintln(app.stderr, commandErr.err)
+		}
+		return commandErr.code
+	}
+	if strings.HasPrefix(err.Error(), "unknown command") {
+		_, _ = fmt.Fprintln(app.stderr, err)
 		return 2
 	}
-	command, rest := arguments[0], arguments[1:]
-	if command == "--version" {
-		if homePath != "" {
-			return cli.usageError("--version does not accept --home")
-		}
-		if len(rest) != 0 {
-			return cli.usageError("--version takes no arguments")
-		}
-		_, _ = fmt.Fprintf(cli.Stdout, "ingot %s\n", buildinfo.Current().CoreVersion)
-		return 0
+	_, _ = fmt.Fprintln(app.stderr, err)
+	return 1
+}
+
+func (app *application) rootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "ingot",
+		Short:         "Build immutable agent images and run them",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		Version:       buildinfo.Current().CoreVersion,
+		RunE: func(command *cobra.Command, _ []string) error {
+			return command.Help()
+		},
 	}
-	if command == "help" || command == "--help" || command == "-h" {
-		cli.usage()
-		return 0
-	}
-	if command == "version" {
-		if homePath != "" {
-			return cli.usageError("version does not accept --home")
-		}
-		if len(rest) != 0 {
-			return cli.usageError("version takes no arguments")
-		}
-		return cli.result(writeJSON(cli.Stdout, versionResult()))
-	}
-	if command == "update" {
-		if homePath != "" {
-			return cli.usageError("update does not accept --home")
-		}
-		return cli.runUpdate(ctx, rest)
-	}
-	if command == "collection" {
-		return cli.runCollection(ctx, homePath, rest)
-	}
-	var home *ingothome.Home
-	if command == "supervise" {
-		home, err = ingothome.OpenForSupervisor(homePath)
-	} else if command == "init" {
-		home, err = ingothome.OpenForInit(homePath)
-	} else {
-		home, err = ingothome.Open(homePath)
-	}
-	if err != nil {
-		return cli.result(err)
-	}
-	switch command {
-	case "init":
-		flags := flag.NewFlagSet("init", flag.ContinueOnError)
-		flags.SetOutput(cli.Stderr)
-		profile := flags.String("profile", "default", "official plugin profile")
-		force := flags.Bool("force", false, "rewrite managed Home configuration")
-		if err := flags.Parse(rest); err != nil {
-			return 2
-		}
-		if flags.NArg() != 0 {
-			return cli.usageError("init takes no positional arguments")
-		}
-		result, err := home.Init(ingothome.InitOptions{Profile: *profile, Force: *force})
-		if err == nil {
-			err = writeJSON(cli.Stdout, result)
-		}
-		return cli.result(err)
-	case "resolve":
-		options, resolveOptions, code := cli.parseRecipeFlags("resolve", rest, false)
-		if code != 0 {
-			return code
-		}
-		lock, paths, err := home.ResolveProject(ctx, options, resolveOptions)
-		if err == nil {
-			imageID, _ := lock.ImageID()
-			err = writeJSON(cli.Stdout, map[string]any{"recipe": paths.Recipe, "lock": paths.Lock, "image_id": imageID})
-		}
-		return cli.result(err)
-	case "project":
-		return cli.runProject(ctx, home, rest)
-	case "build":
-		options, resolveOptions, code := cli.parseRecipeFlags("build", rest, true)
-		if code != 0 {
-			return code
-		}
-		result, paths, err := home.BuildProject(ctx, options, resolveOptions)
-		if err == nil {
-			err = writeJSON(cli.Stdout, map[string]any{"recipe": paths.Recipe, "lock": paths.Lock, "image_id": result.ImageID, "artifact_digest": result.ArtifactDigest, "target": result.Target})
-		}
-		return cli.result(err)
-	case "status":
-		options, _, code := cli.parseRecipeFlags("status", rest, false)
-		if code != 0 {
-			return code
-		}
-		status, err := home.ProjectStatus(options)
-		if err == nil {
-			err = writeJSON(cli.Stdout, status)
-		}
-		return cli.result(err)
-	case "inspect":
-		before, _ := splitDashDash(rest)
-		options, remaining, err := extractRecipeOptions(before)
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(remaining) > 1 {
-			return cli.usageError("inspect accepts at most one plugin id or name")
-		}
-		reference := ""
-		if len(remaining) == 1 {
-			reference = remaining[0]
-		}
-		inspection, err := home.ProjectInspect(options, reference)
-		if err == nil {
-			err = writeJSON(cli.Stdout, inspection)
-		}
-		return cli.result(err)
-	case "image":
-		return cli.runImage(ctx, home, rest)
-	case "runtime":
-		return cli.runRuntime(ctx, home, rest)
-	case "run":
-		return cli.runNamed(ctx, home, rest)
-	case "ps":
-		if len(rest) != 0 {
-			return cli.usageError("ps takes no arguments")
-		}
-		processes, err := home.Processes(ctx)
-		if err == nil {
-			err = writeJSON(cli.Stdout, processes)
-		}
-		return cli.result(err)
-	case "stop":
-		return cli.runStop(ctx, home, rest)
-	case "gc":
-		flags := flag.NewFlagSet("gc", flag.ContinueOnError)
-		flags.SetOutput(cli.Stderr)
-		keep := flags.Int("keep-recent", 3, "recent unreferenced images to keep")
-		if err := flags.Parse(rest); err != nil {
-			return 2
-		}
-		if flags.NArg() != 0 {
-			return cli.usageError("gc takes no positional arguments")
-		}
-		removed, err := home.GC(ctx, *keep)
-		if err == nil {
-			err = writeJSON(cli.Stdout, map[string]any{"removed": removed})
-		}
-		return cli.result(err)
-	case "plugin":
-		return cli.runPlugin(ctx, home, rest)
-	case "supervise":
-		return cli.runSupervise(ctx, home, rest)
-	case "apply", "rollback":
-		return cli.usageError(command + " was removed in M2; use build/runtime switch/runtime rollback")
-	default:
-		return cli.usageError("unknown command " + strconv.Quote(command))
+	root.SetIn(app.stdin)
+	root.SetOut(app.stdout)
+	root.SetErr(app.stderr)
+	root.SetVersionTemplate("ingot {{.Version}}\n")
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return commandError{code: 2, err: err}
+	})
+	root.PersistentFlags().StringVar(&app.homePath, "home", "", "managed Home path")
+	root.PersistentFlags().BoolVar(&app.jsonOutput, "json", false, "write stable JSON output")
+	root.AddGroup(
+		&cobra.Group{ID: "common", Title: "Common Commands:"},
+		&cobra.Group{ID: "project", Title: "Project Commands:"},
+		&cobra.Group{ID: "resources", Title: "Resource Commands:"},
+		&cobra.Group{ID: "maintenance", Title: "Maintenance Commands:"},
+	)
+	root.SetHelpCommandGroupID("maintenance")
+	root.SetCompletionCommandGroupID("maintenance")
+	root.AddCommand(
+		app.newSetupCommand(),
+		app.newInitCommand(),
+		app.newBuildCommand(),
+		app.newUpCommand(),
+		app.newRunCommand(),
+		app.newStartCommand(),
+		app.newStopCommand(),
+		app.newRestartCommand(),
+		app.newLogsCommand(),
+		app.newPSCommand(),
+		app.newProjectCommand(),
+		app.newPluginCommand(),
+		app.newCollectionCommand(),
+		app.newImageCommand(),
+		app.newRuntimeCommand(),
+		app.newGCCommand(),
+		app.newUpdateCommand(),
+		app.newVersionCommand(),
+		app.newSuperviseCommand(),
+	)
+	return root
+}
+
+func (app *application) newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "version",
+		Short:   "Show core and builder versions",
+		GroupID: "maintenance",
+		Args:    exactArgs(0),
+		RunE: func(_ *cobra.Command, _ []string) error {
+			result := versionResult()
+			return app.output(result, func(writer io.Writer) error {
+				_, err := fmt.Fprintf(writer, "Core: %s\nIngot ABI: %s\nBuilder: %s\nTarget: %s\n", result.CoreVersion, result.IngotVersion, result.BuilderVersion, result.Target)
+				return err
+			})
+		},
 	}
 }
 
@@ -208,268 +167,72 @@ func versionResult() coreVersionResult {
 	}
 }
 
-func (cli CLI) runUpdate(ctx context.Context, arguments []string) int {
-	flags := flag.NewFlagSet("update", flag.ContinueOnError)
-	flags.SetOutput(cli.Stderr)
-	check := flags.Bool("check", false, "check for a core update without installing it")
-	version := flags.String("version", "", "exact core version")
-	force := flags.Bool("force", false, "allow reinstalling or downgrading to an exact version")
-	if err := flags.Parse(arguments); err != nil {
-		return 2
+func (app *application) newUpdateCommand() *cobra.Command {
+	var check, force bool
+	var version string
+	command := &cobra.Command{
+		Use:     "update",
+		Short:   "Check for or install a core update",
+		GroupID: "maintenance",
+		Args:    exactArgs(0),
+		RunE: func(command *cobra.Command, _ []string) error {
+			if check && force {
+				return usageErrorf("update --check does not accept --force")
+			}
+			update := app.updateCore
+			if update == nil {
+				update = coreupdate.New().Run
+			}
+			result, err := update(command.Context(), coreupdate.Options{Check: check, Version: version, Force: force})
+			if err != nil {
+				return err
+			}
+			return app.output(result, func(writer io.Writer) error {
+				if result.UpdateAvailable {
+					_, err := fmt.Fprintf(writer, "Core %s is available (current %s)\n", result.TargetVersion, result.CurrentVersion)
+					return err
+				}
+				_, err := fmt.Fprintf(writer, "Core is up to date (%s)\n", result.CurrentVersion)
+				return err
+			})
+		},
 	}
-	if flags.NArg() != 0 {
-		return cli.usageError("update takes no positional arguments")
-	}
-	if *check && *force {
-		return cli.usageError("update --check does not accept --force")
-	}
-	updateCore := cli.updateCore
-	if updateCore == nil {
-		updateCore = coreupdate.New().Run
-	}
-	result, err := updateCore(ctx, coreupdate.Options{Check: *check, Version: *version, Force: *force})
-	if err == nil {
-		err = writeJSON(cli.Stdout, result)
-	}
-	return cli.result(err)
+	command.Flags().BoolVar(&check, "check", false, "check without installing")
+	command.Flags().StringVar(&version, "version", "", "exact core version")
+	command.Flags().BoolVar(&force, "force", false, "allow reinstalling or downgrading")
+	return command
 }
 
-func (cli CLI) parseRecipeFlags(name string, arguments []string, build bool) (ingothome.RecipeOptions, builder.ResolveOptions, int) {
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(cli.Stderr)
-	use := flags.String("use", "", "recipe path")
-	lock := flags.String("lock", "", "lock path")
-	locked := flags.Bool("locked", false, "require an existing up-to-date lock")
-	tag := flags.String("tag", "", "image name:tag")
-	if err := flags.Parse(arguments); err != nil {
-		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, 2
+func (app *application) output(value any, human func(io.Writer) error) error {
+	if app.jsonOutput {
+		encoder := json.NewEncoder(app.stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(value)
 	}
-	if flags.NArg() != 0 {
-		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, cli.usageError(name + " takes no positional arguments")
-	}
-	if !build && (*locked || *tag != "") {
-		return ingothome.RecipeOptions{}, builder.ResolveOptions{}, cli.usageError(name + " does not accept --locked or --tag")
-	}
-	return ingothome.RecipeOptions{Use: *use, Lock: *lock, Locked: *locked, Tag: *tag}, builder.ResolveOptions{}, 0
+	return human(app.stdout)
 }
 
-func (cli CLI) runPlugin(ctx context.Context, home *ingothome.Home, arguments []string) int {
-	if len(arguments) == 0 {
-		return cli.usageError("plugin requires a subcommand")
+func (app *application) rejectJSON(command string) error {
+	if app.jsonOutput {
+		return usageErrorf("%s streams raw output and does not accept --json", command)
 	}
-	command, rest := arguments[0], arguments[1:]
-	if remaining, apply, err := extractBoolOption(rest, "apply"); err != nil {
-		return cli.usageError(err.Error())
-	} else if apply {
-		return cli.usageError("plugin --apply was removed in M2")
-	} else {
-		rest = remaining
-	}
-	options, rest, err := extractRecipeOptions(rest)
-	if err != nil {
-		return cli.usageError(err.Error())
-	}
-	switch command {
-	case "list":
-		if len(rest) != 0 {
-			return cli.usageError("plugin list takes no arguments")
+	return nil
+}
+
+func exactArgs(count int) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) != count {
+			return usageErrorf("requires exactly %d argument(s)", count)
 		}
-		inspection, err := home.ProjectInspect(options, "")
-		if err == nil {
-			err = writeJSON(cli.Stdout, inspection.DirectPlugins)
-		}
-		return cli.result(err)
-	case "inspect":
-		if len(rest) != 1 {
-			return cli.usageError("plugin inspect requires an id or name")
-		}
-		inspection, err := home.ProjectInspect(options, rest[0])
-		if err == nil {
-			err = writeJSON(cli.Stdout, inspection)
-		}
-		return cli.result(err)
-	case "add":
-		rest, localPath, _, err := extractStringOption(rest, "path")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		var plugin builder.DesiredPlugin
-		if localPath != "" {
-			if len(rest) != 0 {
-				return cli.usageError("plugin add --path takes no module argument")
-			}
-			absolute, absoluteErr := filepath.Abs(localPath)
-			if absoluteErr != nil {
-				return cli.result(absoluteErr)
-			}
-			moduleID, identityErr := builder.ModuleIdentity(filepath.Join(absolute, "go.mod"))
-			if identityErr != nil {
-				return cli.result(identityErr)
-			}
-			paths, discoverErr := ingothome.DiscoverProject(options)
-			if discoverErr != nil {
-				return cli.result(discoverErr)
-			}
-			locator, relativeErr := filepath.Rel(filepath.Dir(paths.Recipe), absolute)
-			if relativeErr != nil {
-				locator = absolute
-			}
-			plugin = builder.DesiredPlugin{Module: moduleID, Path: filepath.ToSlash(locator)}
-		} else {
-			if len(rest) != 1 {
-				return cli.usageError("plugin add requires module[@query] or --path")
-			}
-			moduleID, version, queryErr := home.ResolveModuleQuery(ctx, rest[0])
-			err = queryErr
-			plugin = builder.DesiredPlugin{Module: moduleID, Version: version}
-		}
-		if err == nil {
-			_, err = home.AddProject(ctx, options, plugin, builder.ResolveOptions{})
-		}
-		return cli.result(err)
-	case "remove":
-		if len(rest) != 1 {
-			return cli.usageError("plugin remove requires an id or name")
-		}
-		_, err = home.RemoveProject(ctx, options, rest[0], builder.ResolveOptions{})
-		return cli.result(err)
-	case "update":
-		if len(rest) != 1 {
-			return cli.usageError("plugin update requires name[@query] or id[@query]")
-		}
-		token := rest[0]
-		reference, query := splitReferenceQuery(token)
-		lookup, err := home.LookupProjectPlugin(options, reference)
-		if err != nil {
-			return cli.result(err)
-		}
-		if query == "" {
-			query = "latest"
-		}
-		moduleID, version, err := home.ResolveModuleQuery(ctx, lookup.Plugin.Module+"@"+query)
-		if err == nil {
-			_, err = home.UpdateProject(ctx, options, reference, builder.DesiredPlugin{Module: moduleID, Version: version}, builder.ResolveOptions{})
-		}
-		return cli.result(err)
-	case "reorder":
-		rest, before, hasBefore, err := extractStringOption(rest, "before")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		rest, after, hasAfter, err := extractStringOption(rest, "after")
-		if err != nil {
-			return cli.usageError(err.Error())
-		}
-		if len(rest) != 1 || hasBefore == hasAfter {
-			return cli.usageError("plugin reorder requires one plugin and exactly one of --before/--after")
-		}
-		anchor, isBefore := before, true
-		if hasAfter {
-			anchor, isBefore = after, false
-		}
-		_, err = home.ReorderProject(ctx, options, rest[0], anchor, isBefore, builder.ResolveOptions{})
-		return cli.result(err)
-	default:
-		return cli.usageError("unknown plugin subcommand " + strconv.Quote(command))
+		return nil
 	}
 }
 
-func parseGlobalHome(arguments []string) (string, []string, error) {
-	if len(arguments) == 0 {
-		return "", arguments, nil
+func rangeArgs(minimum, maximum int) cobra.PositionalArgs {
+	return func(_ *cobra.Command, args []string) error {
+		if len(args) < minimum || len(args) > maximum {
+			return usageErrorf("requires between %d and %d argument(s)", minimum, maximum)
+		}
+		return nil
 	}
-	if arguments[0] == "--home" {
-		if len(arguments) < 2 {
-			return "", nil, fmt.Errorf("--home requires a path")
-		}
-		return arguments[1], arguments[2:], nil
-	}
-	if strings.HasPrefix(arguments[0], "--home=") {
-		return strings.TrimPrefix(arguments[0], "--home="), arguments[1:], nil
-	}
-	return "", arguments, nil
-}
-
-func splitReferenceQuery(value string) (string, string) {
-	index := strings.LastIndex(value, "@")
-	if index < 0 {
-		return value, ""
-	}
-	return value[:index], value[index+1:]
-}
-
-func extractBoolOption(arguments []string, name string, aliases ...string) ([]string, bool, error) {
-	option := "--" + name
-	found := false
-	result := make([]string, 0, len(arguments))
-	for _, argument := range arguments {
-		matched := argument == option
-		for _, alias := range aliases {
-			matched = matched || argument == alias
-		}
-		if matched {
-			if found {
-				return nil, false, fmt.Errorf("%s may be specified only once", option)
-			}
-			found = true
-			continue
-		}
-		if strings.HasPrefix(argument, option+"=") {
-			return nil, false, fmt.Errorf("%s does not take a value", option)
-		}
-		for _, alias := range aliases {
-			if strings.HasPrefix(argument, alias+"=") {
-				return nil, false, fmt.Errorf("%s does not take a value", alias)
-			}
-		}
-		result = append(result, argument)
-	}
-	return result, found, nil
-}
-
-func extractStringOption(arguments []string, name string) ([]string, string, bool, error) {
-	option := "--" + name
-	value := ""
-	found := false
-	result := make([]string, 0, len(arguments))
-	for index := 0; index < len(arguments); index++ {
-		argument := arguments[index]
-		if argument != option && !strings.HasPrefix(argument, option+"=") {
-			result = append(result, argument)
-			continue
-		}
-		if found {
-			return nil, "", false, fmt.Errorf("%s may be specified only once", option)
-		}
-		found = true
-		if strings.HasPrefix(argument, option+"=") {
-			value = strings.TrimPrefix(argument, option+"=")
-		} else {
-			if index+1 >= len(arguments) {
-				return nil, "", false, fmt.Errorf("%s requires a value", option)
-			}
-			index++
-			value = arguments[index]
-		}
-		if value == "" {
-			return nil, "", false, fmt.Errorf("%s requires a non-empty value", option)
-		}
-	}
-	return result, value, found, nil
-}
-func writeJSON(writer io.Writer, value any) error {
-	encoder := json.NewEncoder(writer)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(value)
-}
-func (cli CLI) result(err error) int {
-	if err == nil {
-		return 0
-	}
-	_, _ = fmt.Fprintln(cli.Stderr, err)
-	return 1
-}
-func (cli CLI) usageError(message string) int { _, _ = fmt.Fprintln(cli.Stderr, message); return 2 }
-func (cli CLI) usage() {
-	_, _ = fmt.Fprintln(cli.Stdout, "usage: ingot [--home PATH] <version|update|init|project init|resolve|build|status|inspect|image ...|runtime ...|run|ps|stop|gc|plugin ...|collection ...>")
 }

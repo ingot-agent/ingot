@@ -27,6 +27,14 @@ type ProjectPaths struct {
 	Lock   string `json:"lock"`
 }
 
+type ProjectBuildResult struct {
+	Build          *builder.BuildResult
+	Paths          ProjectPaths
+	Runtime        *RuntimeView
+	RuntimeCreated bool
+	BindingChanged bool
+}
+
 type ProjectStatus struct {
 	ProjectPaths
 	DesiredDigest string `json:"desired_digest,omitempty"`
@@ -413,19 +421,36 @@ func (home *Home) resolveProjectUnlocked(ctx context.Context, paths ProjectPaths
 }
 
 func (home *Home) BuildProject(ctx context.Context, options RecipeOptions, resolveOptions builder.ResolveOptions) (*builder.BuildResult, ProjectPaths, error) {
-	paths, releaseProject, err := prepareProject(ctx, options)
+	result, err := home.buildProject(ctx, options, resolveOptions, "")
 	if err != nil {
-		return nil, ProjectPaths{}, err
+		return nil, result.Paths, err
+	}
+	return result.Build, result.Paths, nil
+}
+
+func (home *Home) BuildProjectForRuntime(ctx context.Context, options RecipeOptions, resolveOptions builder.ResolveOptions, runtimeName string) (ProjectBuildResult, error) {
+	if err := image.ValidateRuntimeName(runtimeName); err != nil {
+		return ProjectBuildResult{}, err
+	}
+	return home.buildProject(ctx, options, resolveOptions, runtimeName)
+}
+
+func (home *Home) buildProject(ctx context.Context, options RecipeOptions, resolveOptions builder.ResolveOptions, runtimeName string) (ProjectBuildResult, error) {
+	output := ProjectBuildResult{}
+	paths, releaseProject, err := prepareProject(ctx, options)
+	output.Paths = paths
+	if err != nil {
+		return output, err
 	}
 	defer releaseProject()
 	desired, err := builder.ParseDesired(paths.Recipe)
 	if err != nil {
-		return nil, paths, err
+		return output, err
 	}
 	lock, lockErr := builder.ParseLock(paths.Lock)
 	digest, digestErr := desired.Digest()
 	if digestErr != nil {
-		return nil, paths, digestErr
+		return output, digestErr
 	}
 	stale := lockErr != nil || lock.PluginsDigest != digest
 	if !stale {
@@ -443,13 +468,13 @@ func (home *Home) BuildProject(ctx context.Context, options RecipeOptions, resol
 	if stale {
 		if options.Locked {
 			if lockErr != nil {
-				return nil, paths, fmt.Errorf("INGOT-BUILD-LOCK-REQUIRED: %w", lockErr)
+				return output, fmt.Errorf("INGOT-BUILD-LOCK-REQUIRED: %w", lockErr)
 			}
-			return nil, paths, fmt.Errorf("INGOT-BUILD-LOCK-STALE: recipe digest changed")
+			return output, fmt.Errorf("INGOT-BUILD-LOCK-STALE: recipe digest changed")
 		}
 		lock, err = home.resolveProjectUnlocked(ctx, paths, resolveOptions)
 		if err != nil {
-			return nil, paths, err
+			return output, err
 		}
 	} else if options.Locked {
 		for _, replacement := range lock.Replacements {
@@ -458,37 +483,50 @@ func (home *Home) BuildProject(ctx context.Context, options RecipeOptions, resol
 				calculated, err = builder.DevSourceDigest(replacement.DevPath)
 			}
 			if err != nil || calculated != replacement.ContentSHA256 {
-				return nil, paths, fmt.Errorf("INGOT-BUILD-LOCK-STALE: source %s changed", replacement.ModulePath)
+				return output, fmt.Errorf("INGOT-BUILD-LOCK-STALE: source %s changed", replacement.ModulePath)
 			}
 		}
 	}
 	release, err := home.acquire(ctx)
 	if err != nil {
-		return nil, paths, err
+		return output, err
 	}
 	defer release()
 	result, err := builder.Build(ctx, desired, lock, builder.BuildOptions{Home: home.Root, GOMODCACHE: filepath.Join(home.Root, "cache", "gomod")})
 	if err != nil {
-		return nil, paths, err
+		return output, err
 	}
+	output.Build = result
+	var source *image.Source
 	if options.Tag != "" {
-		source, err := image.ParseNamedReference(options.Tag)
+		parsed, err := image.ParseNamedReference(options.Tag)
 		if err != nil {
-			return nil, paths, err
+			return output, err
 		}
+		source = &parsed
 		catalog, err := image.LoadCatalog(home.CatalogPath())
 		if err != nil {
-			return nil, paths, err
+			return output, err
 		}
-		binding := image.Binding{Source: &source, Target: result.Target, ImageID: result.ImageID, ArtifactDigest: result.ArtifactDigest}
-		if err := catalog.Set(source, binding); err != nil {
-			return nil, paths, err
+		binding := image.Binding{Source: source, Target: result.Target, ImageID: result.ImageID, ArtifactDigest: result.ArtifactDigest}
+		if err := catalog.Set(parsed, binding); err != nil {
+			return output, err
 		}
 		if err := image.WriteCatalog(home.CatalogPath(), catalog); err != nil {
-			return nil, paths, err
+			return output, err
 		}
 	}
-	return result, paths, nil
+	if runtimeName != "" {
+		binding := image.Binding{Source: source, Target: result.Target, ImageID: result.ImageID, ArtifactDigest: result.ArtifactDigest}
+		view, created, changed, err := home.ensureRuntimeBindingUnlocked(ctx, runtimeName, binding)
+		if err != nil {
+			return output, err
+		}
+		output.Runtime = &view
+		output.RuntimeCreated = created
+		output.BindingChanged = changed
+	}
+	return output, nil
 }
 
 func pluginIsDev(lock *builder.Lock, id string) bool {
