@@ -4,190 +4,218 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ingot-agent/ingot/internal/coreupdate"
+	ingothome "github.com/ingot-agent/ingot/internal/home"
+	"github.com/spf13/cobra"
 )
 
-func TestInitCreatesM2HomeWithoutWritingCurrentDirectory(t *testing.T) {
+func TestSetupInitializesHomeWithoutWritingCurrentDirectory(t *testing.T) {
 	project := t.TempDir()
 	t.Chdir(project)
-	home := t.TempDir()
+	home := filepath.Join(t.TempDir(), "home")
 	var stdout, stderr bytes.Buffer
 	command := CLI{Stdout: &stdout, Stderr: &stderr}
-	code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal"})
+	code := command.Run(context.Background(), []string{"setup", "--home", home, "--profile", "minimal", "--json"})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	var result struct {
-		ProfileRecipePath string `json:"profile_recipe_path"`
-		Home              string `json:"home"`
-	}
+	var result ingothome.InitResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.Home != home || result.ProfileRecipePath != filepath.Join(home, "profiles", "minimal.toml") {
+	if result.Home != home || result.Profile != "minimal" {
 		t.Fatalf("result=%#v", result)
 	}
 	if _, err := os.Stat(filepath.Join(project, "plugins.toml")); !os.IsNotExist(err) {
-		t.Fatalf("init wrote to cwd: %v", err)
+		t.Fatalf("setup wrote to cwd: %v", err)
+	}
+}
+
+func TestInitCreatesProjectAndHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	project := filepath.Join(t.TempDir(), "project")
+	var stdout, stderr bytes.Buffer
+	command := CLI{Stdout: &stdout, Stderr: &stderr}
+	code := command.Run(context.Background(), []string{"--home", home, "init", project, "--profile", "minimal", "--json"})
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
+	}
+	var result initCommandResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Project.PluginsPath != filepath.Join(project, "plugins.toml") {
+		t.Fatalf("project=%#v", result.Project)
 	}
 	if _, err := os.Stat(filepath.Join(home, "home.json")); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestProjectInitRequiresExplicitDirectory(t *testing.T) {
-	home := t.TempDir()
-	project := filepath.Join(t.TempDir(), "project")
-	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := command.Run(context.Background(), []string{"--home", home, "init"}); code != 0 {
-		t.Fatal(code)
-	}
+func TestNoArgumentsShowsHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	command = CLI{Stdout: &stdout, Stderr: &stderr}
-	if code := command.Run(context.Background(), []string{"--home", home, "project", "init", project, "--profile", "minimal"}); code != 0 {
-		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
-	}
-	if _, err := os.Stat(filepath.Join(project, "plugins.toml")); err != nil {
-		t.Fatal(err)
-	}
-	stderr.Reset()
-	if code := command.Run(context.Background(), []string{"--home", home, "project", "init"}); code != 2 {
-		t.Fatalf("missing directory exit=%d", code)
-	}
-	stderr.Reset()
-	if code := command.Run(context.Background(), []string{"--home", home, "project", "init", "--bogus"}); code != 2 {
-		t.Fatalf("unknown option exit=%d", code)
+	code := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), nil)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Common Commands:") || !strings.Contains(stdout.String(), "up") {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}
 }
 
-func TestRemovedApplyAndUnknownDispatchAreUsageErrors(t *testing.T) {
-	project := t.TempDir()
-	t.Chdir(project)
-	home := t.TempDir()
-	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := command.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal"}); code != 0 {
-		t.Fatalf("init exit=%d", code)
-	}
-	for _, arguments := range [][]string{{"--home", home, "apply"}, {"--home", home, "web"}, {"--home", home, "bundle"}} {
-		var stderr bytes.Buffer
-		command = CLI{Stdout: &bytes.Buffer{}, Stderr: &stderr}
-		if code := command.Run(context.Background(), arguments); code != 2 {
-			t.Fatalf("%v exit=%d stderr=%s", arguments, code, stderr.String())
-		}
-		if !strings.Contains(stderr.String(), "removed") && !strings.Contains(stderr.String(), "unknown command") {
-			t.Fatalf("stderr=%s", stderr.String())
-		}
-	}
-}
-
-func TestExtractBoolOptionAcceptsShortAlias(t *testing.T) {
-	for _, option := range []string{"-d", "--detach"} {
-		remaining, found, err := extractBoolOption([]string{"image", option}, "detach", "-d")
-		if err != nil || !found || len(remaining) != 1 || remaining[0] != "image" {
-			t.Fatalf("option %s: remaining=%v found=%t err=%v", option, remaining, found, err)
-		}
-	}
-	if _, _, err := extractBoolOption([]string{"-d", "--detach"}, "detach", "-d"); err == nil || !strings.Contains(err.Error(), "only once") {
-		t.Fatalf("duplicate detach error = %v", err)
-	}
-	if _, _, err := extractBoolOption([]string{"-d=true"}, "detach", "-d"); err == nil || !strings.Contains(err.Error(), "does not take a value") {
-		t.Fatalf("valued detach error = %v", err)
-	}
-}
-
-func TestVersionCommandsDoNotOpenHome(t *testing.T) {
-	missingHome := filepath.Join(t.TempDir(), "must-not-be-created")
-	for _, arguments := range [][]string{{"--version"}, {"version"}} {
-		var stdout, stderr bytes.Buffer
-		command := CLI{Stdout: &stdout, Stderr: &stderr}
-		t.Setenv("INGOT_HOME", missingHome)
-		if code := command.Run(context.Background(), arguments); code != 0 {
-			t.Fatalf("%v exit=%d stderr=%s", arguments, code, stderr.String())
-		}
-		if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
-			t.Fatalf("%v touched INGOT_HOME: %v", arguments, err)
-		}
-	}
-}
-
-func TestStructuredVersionIncludesIndependentIdentities(t *testing.T) {
+func TestVersionDoesNotOpenHome(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "missing")
 	var stdout, stderr bytes.Buffer
-	command := CLI{Stdout: &stdout, Stderr: &stderr}
-	if code := command.Run(context.Background(), []string{"version"}); code != 0 {
+	code := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"version", "--home", missingHome, "--json"})
+	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
 	var result coreVersionResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if result.CoreVersion == "" || result.IngotVersion == "" || result.BuilderVersion == "" || result.Target == "" {
-		t.Fatalf("version result = %#v", result)
+	if result.CoreVersion == "" || result.IngotVersion == "" || result.BuilderVersion == "" {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("version touched Home: %v", err)
 	}
 }
 
-func TestVersionRejectsHomeAndArguments(t *testing.T) {
-	command := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	for _, arguments := range [][]string{{"--home", t.TempDir(), "version"}, {"--home", t.TempDir(), "--version"}} {
-		if code := command.Run(context.Background(), arguments); code != 2 {
-			t.Fatalf("%v exit=%d", arguments, code)
-		}
-	}
-	if code := command.Run(context.Background(), []string{"version", "extra"}); code != 2 {
-		t.Fatalf("version extra exit=%d", code)
-	}
-}
-
-func TestUpdateParsingAndHomeBypass(t *testing.T) {
-	missingHome := filepath.Join(t.TempDir(), "must-not-be-created")
+func TestUpdateUsesInjectedUpdater(t *testing.T) {
 	var received coreupdate.Options
-	called := false
 	var stdout, stderr bytes.Buffer
 	command := CLI{
 		Stdout: &stdout,
 		Stderr: &stderr,
 		updateCore: func(_ context.Context, options coreupdate.Options) (coreupdate.Result, error) {
-			called = true
 			received = options
-			return coreupdate.Result{CurrentVersion: "0.3.1-dev", TargetVersion: "0.3.1", UpdateAvailable: true}, nil
+			return coreupdate.Result{CurrentVersion: "0.3.1", TargetVersion: "0.4.0", UpdateAvailable: true}, nil
 		},
 	}
-	t.Setenv("INGOT_HOME", missingHome)
-	if code := command.Run(context.Background(), []string{"update", "--check", "--version", "v0.3.1"}); code != 0 {
+	if code := command.Run(context.Background(), []string{"update", "--check", "--version", "v0.4.0", "--json"}); code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
-	if !called || !received.Check || received.Version != "v0.3.1" || received.Force {
-		t.Fatalf("update options = %#v, called=%t", received, called)
-	}
-	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
-		t.Fatalf("update touched INGOT_HOME: %v", err)
+	if !received.Check || received.Version != "v0.4.0" || received.Force {
+		t.Fatalf("options=%#v", received)
 	}
 }
 
-func TestUpdateRejectsInvalidFlagCombinations(t *testing.T) {
-	called := false
-	command := CLI{
-		Stdout: &bytes.Buffer{},
-		Stderr: &bytes.Buffer{},
-		updateCore: func(context.Context, coreupdate.Options) (coreupdate.Result, error) {
-			called = true
-			return coreupdate.Result{}, nil
-		},
-	}
+func TestUsageErrorsReturnTwo(t *testing.T) {
 	for _, arguments := range [][]string{
+		{"init", "one", "two"},
 		{"update", "--check", "--force"},
-		{"update", "extra"},
-		{"--home", t.TempDir(), "update"},
+		{"runtime", "switch", "only-one"},
+		{"does-not-exist"},
 	} {
-		if code := command.Run(context.Background(), arguments); code != 2 {
-			t.Fatalf("%v exit=%d", arguments, code)
+		var stderr bytes.Buffer
+		code := (CLI{Stdout: &bytes.Buffer{}, Stderr: &stderr}).Run(context.Background(), arguments)
+		if code != 2 {
+			t.Fatalf("%v exit=%d stderr=%s", arguments, code, stderr.String())
 		}
 	}
-	if called {
-		t.Fatal("invalid update arguments called updater")
+}
+
+func TestDiscoverRecipeUsesNearestParent(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	nested := filepath.Join(project, "a", "b")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipe := filepath.Join(project, "plugins.toml")
+	if err := os.WriteFile(recipe, []byte("plugins_version=1\nplugins=[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := discoverRecipe(nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != recipe {
+		t.Fatalf("got %s, want %s", got, recipe)
+	}
+}
+
+func TestCompletionGenerationDoesNotRequireHome(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "missing")
+	var stdout, stderr bytes.Buffer
+	code := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"completion", "zsh", "--home", missingHome})
+	if code != 0 || !strings.Contains(stdout.String(), "compdef") {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("completion touched Home: %v", err)
+	}
+}
+
+func TestDynamicCompletionDoesNotCreateHome(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "missing")
+	var stdout, stderr bytes.Buffer
+	code := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"--home", missingHome, "__complete", "start", ""})
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("dynamic completion touched Home: %v", err)
+	}
+}
+
+func TestOptionalRuntimeNameDefaultsAndSelects(t *testing.T) {
+	if got := optionalRuntimeName(nil); got != defaultRuntimeName {
+		t.Fatalf("default runtime = %q", got)
+	}
+	if got := optionalRuntimeName([]string{"work"}); got != "work" {
+		t.Fatalf("selected runtime = %q", got)
+	}
+}
+
+func TestSplitRuntimeArgv(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		before   []string
+		argv     []string
+		hasArgv  bool
+		wantCode int
+	}{
+		{name: "default", args: nil, before: []string{}},
+		{name: "named", args: []string{"work"}, before: []string{"work"}},
+		{name: "bare dash", args: []string{"--"}, before: []string{}, argv: []string{}, hasArgv: true},
+		{name: "default command", args: []string{"--", "serve", "--port", "8080"}, before: []string{}, argv: []string{"serve", "--port", "8080"}, hasArgv: true},
+		{name: "named command", args: []string{"work", "--", "serve"}, before: []string{"work"}, argv: []string{"serve"}, hasArgv: true},
+		{name: "too many runtimes", args: []string{"one", "two"}, wantCode: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var before, argv []string
+			var hasArgv bool
+			command := &cobra.Command{
+				Use:          "up",
+				SilenceUsage: true,
+				RunE: func(command *cobra.Command, args []string) error {
+					var err error
+					before, argv, hasArgv, err = splitRuntimeArgv(command, args)
+					return err
+				},
+			}
+			command.SetArgs(test.args)
+			err := command.Execute()
+			if test.wantCode != 0 {
+				var commandErr commandError
+				if !errors.As(err, &commandErr) || commandErr.code != test.wantCode {
+					t.Fatalf("error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Join(before, "\x00") != strings.Join(test.before, "\x00") || strings.Join(argv, "\x00") != strings.Join(test.argv, "\x00") || hasArgv != test.hasArgv {
+				t.Fatalf("before=%q argv=%q hasArgv=%t", before, argv, hasArgv)
+			}
+		})
 	}
 }

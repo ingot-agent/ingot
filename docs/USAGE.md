@@ -54,28 +54,31 @@ To build the core from source instead, Go 1.24 or newer is required:
 GOWORK=off go build -o ingot ./cmd/ingot
 ```
 
-After either installation method, initialize Home explicitly:
+After either installation method, initialize managed Home explicitly:
 
 ```sh
-ingot init
+ingot setup
 ```
 
-`init` initializes schema v2 in `INGOT_HOME`, or `~/.ingot` when that variable
+`setup` initializes schema v2 in `INGOT_HOME`, or `~/.ingot` when that variable
 is unset, and maintains the selected Official Profile recipe under `profiles/`.
-The recipe pins released plugin modules to exact versions. It never writes to
-the current directory and does not create a Runtime.
+The recipe pins released plugin modules to exact versions. `setup` never writes
+to the current directory and does not create a Runtime.
 
-Create a project-owned recipe only with an explicit directory:
+Create a project-owned recipe in the current directory, or name another
+directory explicitly:
 
 ```sh
-ingot project init . [--profile default|minimal] [--force]
+ingot init [DIR] [--profile default|minimal] [--force]
 ```
 
-Use another managed Home with a global option before the command. This option
-overrides `INGOT_HOME`:
+`init` also ensures that managed Home exists. Existing project recipes are not
+overwritten unless `--force` is present.
+
+Use another managed Home with the global option. It overrides `INGOT_HOME`:
 
 ```sh
-ingot --home /path/to/home init
+ingot --home /path/to/home setup
 ```
 
 An old or non-empty incompatible Home is rejected. M2 does not migrate the
@@ -96,15 +99,16 @@ ingot update --version v0.3.1
 ingot update --version v0.3.1 --force
 ```
 
-`--version` prints a short human-readable core version. `version` emits JSON
-with the core version and provenance, build protocol version, and Builder
-version; these identities evolve independently.
+`--version` prints a short core version. `version` prints the core version and
+provenance, build protocol version, and Builder version; pass global `--json`
+for the stable machine-readable representation. These identities evolve
+independently.
 
 Without `--version`, `update` resolves the latest stable Release and never
 selects a prerelease. An exact version may select a prerelease. Downgrades and
 same-version reinstalls require `--force`; `--check` never changes the binary
-and cannot be combined with `--force`. Version and update commands reject
-`--home` because they do not read or write Home.
+and cannot be combined with `--force`. Version and update commands do not read
+or write Home.
 
 Before replacement, the updater verifies the archive digest and executes the
 candidate to verify its version, official-build flag, source revision, clean
@@ -163,47 +167,68 @@ Image.
 ## Standard Workflow
 
 ```sh
-ingot init
-ingot project init .
-ingot build --tag acme/coding-agent:1.0.0
-ingot runtime create work --image acme/coding-agent:1.0.0 -- web
-ingot runtime start work
-ingot runtime logs work --follow
+ingot setup
+ingot init .
+ingot up -- web
+```
+
+`up` builds the nearest project recipe, binds the result to the `default`
+Runtime, persists argv after `--` as that Runtime's default command, stops any
+old Process, and starts the new Process in the foreground. Use `-d` for a
+detached Process:
+
+```sh
+ingot up -d -- web
+ingot logs -f
+ingot stop
+```
+
+Named Runtimes support parallel debugging without inventing Image tags:
+
+```sh
+ingot up work -d -- web
+ingot logs work -f
 ingot stop work
 ```
 
-The Docker-style convenience command creates and runs in the foreground by
-default. Pass `-d` (or `--detach`) to start it in the background:
-
-```sh
-ingot run --name work -d acme/coding-agent:1.0.0 -- web
-```
+Runtime bindings always contain the concrete Image and Artifact digests. The
+name `default` is only the implicit Runtime selected when a lifecycle command
+omits its optional Runtime argument; it is not a mutable Image reference.
+If `up` cannot stop the old Process, it returns an error and leaves the newly
+built Image and desired Runtime binding in place with `restart_required`; it
+does not roll the binding back behind a still-running Process.
 
 ## Project Commands
 
-All recipe-oriented commands default to `./plugins.toml` and its adjacent
-`plugins.lock`. They never search parent directories or fall back to Home.
-The Ingot-managed official recipes under Home are selected explicitly with
-`--use`, as the installers do.
+Recipe-oriented commands search upward from the current directory and use the
+nearest `plugins.toml`. Its default lock is the adjacent `plugins.lock`. Use
+`-f/--file` and `--lock` for explicit paths, or `--profile` to select a managed
+Home profile. `--profile` cannot be combined with `--file` or `--lock`.
 
 ```text
-ingot resolve [--use recipe.toml] [--lock recipe.lock]
-ingot build [--use recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
-ingot status [--use recipe.toml] [--lock recipe.lock]
-ingot inspect [--use recipe.toml] [--lock recipe.lock] [plugin]
+ingot project resolve [-f recipe.toml] [--lock recipe.lock]
+ingot project status [-f recipe.toml] [--lock recipe.lock]
+ingot project show [-f recipe.toml] [--lock recipe.lock]
+ingot build [runtime] [-f recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
+ingot up [runtime] [-d] [-f recipe.toml] [--lock recipe.lock] [--locked] [-- argv...]
 ```
 
 Normal build refreshes a missing or stale lock. `--locked` requires the lock
-and all locked source facts to match and never rewrites it. `--tag` moves only
-the current host target slot after a successful build.
+and all locked source facts to match and never rewrites it. `--tag` additionally
+moves the current host target slot after a successful build.
+
+`build` always binds the resulting Image to exactly one Runtime. The Runtime
+defaults to `default`, is created when absent, and is switched when it already
+exists. `build` never starts or restarts a Process. Rebuilding the same Image
+does not advance Runtime generation. Switching a running Runtime leaves the old
+Process alive and reports `restart_required` until it is restarted.
 
 Plugin mutations use the same project selection rules:
 
 ```text
-ingot plugin list|inspect ... [--use ...] [--lock ...]
-ingot plugin add module@version [--use ...] [--lock ...]
-ingot plugin add --path ../plugin [--use ...] [--lock ...]
-ingot plugin remove|update|reorder ... [--use ...] [--lock ...]
+ingot plugin ls|show ... [-f ...] [--lock ...]
+ingot plugin add <module[@query]|path> [-f ...] [--lock ...]
+ingot plugin rm|update|move ... [-f ...] [--lock ...]
 ```
 
 ## Plugin Collections
@@ -227,8 +252,8 @@ version = "v0.1.0"
 
 ```text
 ingot collection inspect [--expect-digest sha256:...] <path-or-https-url>
-ingot collection plan [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
-ingot collection apply [--use ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection plan [-f ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
+ingot collection apply [-f ...] [--lock ...] [--expect-digest sha256:...] [--accept-order] <source>
 ```
 
 `inspect` does not require an initialized Home. `plan` classifies additions,
@@ -273,24 +298,28 @@ trusted merely because its checksum is valid.
 ## Runtime Commands
 
 ```text
-ingot runtime create <name> --image <ref> [-- <default-argv>]
-ingot runtime list
-ingot runtime inspect <name>
+ingot run <name> <image> [-d] [-- <default-argv>]
+ingot runtime create <name> <image> [-- <default-argv>]
+ingot runtime ls
+ingot runtime show [name]
 ingot runtime switch <name> <ref>
-ingot runtime rollback <name>
-ingot runtime command set <name> -- <argv...>
-ingot runtime command clear <name>
-ingot runtime run <name> [-- <temporary-argv>]
-ingot runtime start <name> [--timeout 30s] [-- <temporary-argv>]
-ingot runtime restart <name> [--timeout 30s]
-ingot runtime logs <name> [--process <id>] [--follow]
-ingot runtime delete <name> [--purge]
+ingot runtime rollback [name]
+ingot runtime command set [name] -- <argv...>
+ingot runtime command clear [name]
+ingot runtime rm <name> [--purge]
+ingot start [name] [--foreground] [-- <temporary-argv>]
+ingot restart [name]
+ingot logs [name] [--process <id>] [-f]
 ```
 
 `switch` updates desired and rollback bindings atomically but does not restart
-a live Process. `runtime inspect` reports `restart_required` when the live
+a live Process. `runtime show` reports `restart_required` when the live
 Process differs from the desired Image or Runtime generation. `rollback`
 swaps desired and rollback bindings and never copies or interprets State.
+
+Optional Runtime names on lifecycle and inspection commands default to
+`default`. `run` remains available for creating a Runtime from an already-built
+Image reference; `up` is the normal build-and-restart workflow.
 
 Each Runtime has an isolated Runtime Home. Generated Images acquire
 `run/writer.lock` before constructing any Plugin, so standalone and managed
@@ -300,7 +329,8 @@ launches enforce the same single-writer contract.
 
 ```text
 ingot ps
-ingot stop <runtime> [--timeout 10s]
+ingot ps -a
+ingot stop [runtime] [--timeout 10s]
 ingot stop --process <process-id> [--timeout 10s]
 ```
 
@@ -326,6 +356,25 @@ corrupt roots, or any external Runtime writer, abort the sweep without deletion.
 
 ## Output And Exit Codes
 
-Commands emit stable JSON objects except foreground Runtime stdio and raw log
-streaming. Usage errors return `2`; domain, I/O, and verification failures
-return `1`; foreground runs propagate the Runtime exit code.
+Commands print concise human-readable output by default. Pass global `--json`
+for stable machine-readable output. Foreground `run`, foreground `up`,
+`start --foreground`, and raw `logs` reject `--json` because stdout belongs to
+the Runtime or log stream.
+
+Usage errors return `2`; domain, I/O, and verification failures return `1`;
+foreground runs propagate the Runtime exit code.
+
+## Shell Completion
+
+Cobra generates completion scripts for Bash, Zsh, Fish, and PowerShell:
+
+```sh
+ingot completion bash
+ingot completion zsh
+ingot completion fish
+ingot completion powershell
+```
+
+Dynamic completion suggests existing Runtime names, Image references, plugins,
+and profiles. Completion is read-only: it does not initialize Home, recover
+transactions, resolve modules, build Images, or access the network.

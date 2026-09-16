@@ -72,22 +72,24 @@ Remove-Item $installer
 仍需要 Go 1.24 或更高版本。
 
 ```sh
-# 1. 使用官方插件集初始化 ingot home
-ingot init
+# 1. 初始化 Managed Home
+ingot setup
 
-# 2. 构建并命名 Home 管理的默认 Profile
-ingot build --use ~/.ingot/profiles/default.toml \
-  --lock ~/.ingot/profiles/default.lock --tag local/ingot:default
+# 2. 在当前目录初始化项目 Recipe
+ingot init .
 
-# 3. 创建并启动隔离 Runtime（默认 profile 为 app.backend）
-ingot runtime create default --image local/ingot:default -- web
-ingot runtime start default
+# 3. 构建并在后台启动 default Runtime（默认 profile 为 app.backend）
+ingot up -d -- web
 ```
 
 插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
 `app.backend.config` Operation（或直接编辑插件自己的 `state/` 文件）设置模型 Provider。
 
-`ingot init` 会把官方 Profile 精确固定到已发布的插件模块版本，写入 `builder.toml`，并在 Managed Home 的 `profiles/` 下维护所选 Profile recipe；它不会写入当前目录。只有显式执行 `ingot project init .` 才会创建项目自己的 `plugins.toml`。使用 `--profile minimal` 可获得最小可运行依赖图。安装选项和完整流程见[使用说明](./USAGE.zh.md)。
+`ingot setup` 会把官方 Profile 精确固定到已发布的插件模块版本，在 Managed Home 的
+`profiles/` 下维护 Profile recipe，并写入 `builder.toml`。`ingot init [DIR]` 创建项目自己的
+`plugins.toml`，同时确保 Home 已存在。使用 `--profile minimal` 可获得最小可运行依赖图。
+`ingot up [NAME]` 构建、绑定并重启一个 Runtime；省略名称时使用 `default`。安装选项和
+完整流程见[使用说明](./USAGE.zh.md)。
 
 ## 构建期组合如何工作
 
@@ -143,9 +145,9 @@ Builder 读取这些 Contract，解析 `ONE`、`OPTIONAL` 和 `MANY` 依赖，�
 
 ```sh
 ingot plugin add github.com/example/my-plugin@v1.2.3
-ingot plugin add --path ../my-local-plugin
-ingot plugin remove tool.ask
-ingot build --tag acme/agent:dev
+ingot plugin add ../my-local-plugin
+ingot plugin rm tool.ask
+ingot up
 ```
 
 如果新的组合存在 Capability 缺失、重复或成环，构建会在提交 Image 之前失败。
@@ -157,8 +159,9 @@ ingot build --tag acme/agent:dev
 - **普通 Contract Module** —— Agent SDK 与领域 SDK 无需 Builder 配置，以普通 Go Type Identity 参与 Component Graph，并作为普通 Module 锁定。
 - **内容寻址身份** —— `ImageID` 标识完整构建输入，`ArtifactDigest` 标识最终可执行文件字节。
 - **可复现性检查** —— 重建一个已有 `ImageID` 时必须得到相同的产物摘要，而不是静默覆盖不同的二进制。
-- **显式部署** —— mutable tag 命名不可变 target variant；Runtime 将其解析为 concrete
-  digest，并可原子切换 desired Image，而不改变 live Process。
+- **Concrete Runtime binding** —— 每次构建只把一个 Runtime 绑定到不可变 Image 与
+  Artifact digest。mutable tag 不会让已有 Runtime 自动跟随后续 Image，切换 binding
+  也不会静默重启 live Process。
 
 ## ingot home
 
@@ -180,22 +183,25 @@ Managed Home。
 ## 命令一览
 
 ```text
-ingot [--home PATH] <command>
+ingot [--home PATH] [--json] <command>
 
+setup       初始化或刷新 Managed Home
+init        在 [DIR] 初始化项目 Recipe
+build       构建并绑定一个 Runtime（默认 `default`）
+up          构建、绑定并重启一个 Runtime
+start       启动已有 Runtime
+stop        正常关闭 Runtime Process
+restart     在后台重启 Runtime
+logs / ps   查看后台日志与 Process
+run         从已有 Image 创建并运行命名 Runtime
+project     status | show | resolve
+plugin      add | rm | update | move | ls | show
+collection  inspect | plan | apply
+image       ls | show | verify | tag | import | export | pin | rm
+runtime     create | show | switch | rollback | command | rm
+completion  生成 Bash、Zsh、Fish 或 PowerShell 补全
 version     输出 Core、Builder 与协议身份
-update      检查或安装官方 Core Release
-init        使用官方插件 Profile 初始化 home
-project     使用 `project init <目录>` 显式初始化项目 Recipe
-resolve     解析 plugins.toml 并刷新 plugins.lock
-build       解析并构建内容寻址 Image，可通过 --tag 命名
-image       list | inspect | verify | tag | import | export | pin | remove
-runtime     create | inspect | switch | rollback | run | start | restart | logs
-run         创建并启动命名 Runtime
-ps / stop   观察或正常关闭 managed Process
-status      以 JSON 输出项目 desired、locked 和 built 状态
-inspect     以 JSON 查看环境或单个插件
-gc          按 tag、pin、Runtime 与 Process 引用图清理 Image
-plugin      add | remove | update | reorder | list | inspect
+update / gc 维护 Core 二进制与不可变 Image
 ```
 
 完整命令参考见 [Usage Guide](./USAGE.md) 或[使用说明](./USAGE.zh.md)。
@@ -242,7 +248,7 @@ GOWORK=off go test -race ./...
 
 ## 路线图
 
-- [x] `ingot init` —— 创建可运行的插件 Profile 与配置。
+- [x] `ingot setup` 与 `ingot init` —— 初始化 Managed Home 与项目 Recipe。
 - [ ] `ingot doctor` —— 验证插件完整性、配置和当前镜像。
 
 ## 许可证

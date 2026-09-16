@@ -173,6 +173,148 @@ func TestRuntimeStateIsolation(t *testing.T) {
 	}
 }
 
+func TestEnsureRuntimeBindingCreatesAndSwitches(t *testing.T) {
+	home := newM2Home(t)
+	first := writeM2ImageFixture(t, home, "first")
+	second := writeM2ImageFixture(t, home, "second")
+	firstBinding, _, err := home.ResolveImage(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondBinding, _, err := home.ResolveImage(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, created, changed, err := home.ensureRuntimeBindingUnlocked(context.Background(), "default", firstBinding)
+	release()
+	if err != nil || !created || !changed || view.DesiredImage.ImageID != first {
+		t.Fatalf("create view=%#v created=%t changed=%t err=%v", view, created, changed, err)
+	}
+	release, err = home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, created, changed, err = home.ensureRuntimeBindingUnlocked(context.Background(), "default", secondBinding)
+	release()
+	if err != nil || created || !changed || view.DesiredImage.ImageID != second || view.RollbackImage == nil || view.RollbackImage.ImageID != first {
+		t.Fatalf("switch view=%#v created=%t changed=%t err=%v", view, created, changed, err)
+	}
+	generation := view.Generation
+	release, err = home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, created, changed, err = home.ensureRuntimeBindingUnlocked(context.Background(), "default", secondBinding)
+	release()
+	if err != nil || created || changed || view.Generation != generation {
+		t.Fatalf("same binding view=%#v created=%t changed=%t err=%v", view, created, changed, err)
+	}
+}
+
+func TestBuildProjectForRuntimeRejectsInvalidNameBeforeProjectAccess(t *testing.T) {
+	home := newM2Home(t)
+	_, err := home.BuildProjectForRuntime(context.Background(), RecipeOptions{CWD: filepath.Join(t.TempDir(), "missing")}, builder.ResolveOptions{}, "../bad")
+	if err == nil || !strings.Contains(err.Error(), "INGOT-RUNTIME-REGISTRY-NAME") {
+		t.Fatalf("invalid Runtime name error = %v", err)
+	}
+}
+
+func TestEnsureRuntimeBindingCreatesOnlySelectedRuntime(t *testing.T) {
+	home := newM2Home(t)
+	id := writeM2ImageFixture(t, home, "image")
+	binding, _, err := home.ResolveImage(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, created, changed, err := home.ensureRuntimeBindingUnlocked(context.Background(), "work", binding)
+	release()
+	if err != nil || !created || !changed || view.Name != "work" {
+		t.Fatalf("view=%#v created=%t changed=%t err=%v", view, created, changed, err)
+	}
+	if _, err := home.RuntimeInspect(context.Background(), "default"); err == nil || !strings.Contains(err.Error(), "INGOT-RUNTIME-REGISTRY-NOT-FOUND") {
+		t.Fatalf("default Runtime unexpectedly exists: %v", err)
+	}
+}
+
+func TestEnsureRuntimeBindingMarksRunningRuntimeRestartRequired(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX script fixture")
+	}
+	home := newM2Home(t)
+	first := writeM2ImageFixture(t, home, "#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n")
+	second := writeM2ImageFixture(t, home, "second")
+	if _, err := home.RuntimeCreate(context.Background(), "default", first, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type runResult struct {
+		code int
+		err  error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		code, err := home.RuntimeRun(ctx, "default", nil, nil, &bytes.Buffer{}, &bytes.Buffer{})
+		done <- runResult{code: code, err: err}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case result := <-done:
+			if result.err != nil && strings.Contains(result.err.Error(), "operation not permitted") {
+				t.Skip("sandbox forbids loopback control listener")
+			}
+			t.Fatalf("Runtime exited before inspection: code=%d err=%v", result.code, result.err)
+		default:
+		}
+		view, err := home.RuntimeInspect(context.Background(), "default")
+		if err == nil && view.State == "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Runtime did not reach running state: view=%#v err=%v", view, err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	binding, _, err := home.ResolveImage(context.Background(), second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release, err := home.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, created, changed, err := home.ensureRuntimeBindingUnlocked(context.Background(), "default", binding)
+	release()
+	if err != nil || created || !changed {
+		t.Fatalf("switch view=%#v created=%t changed=%t err=%v", view, created, changed, err)
+	}
+	if !view.RestartRequired || view.Process == nil || view.Process.ImageID != first || view.DesiredImage.ImageID != second {
+		t.Fatalf("running switch view=%#v", view)
+	}
+	if err := home.RuntimeStop(context.Background(), "default", "", 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-done:
+		if result.err != nil || result.code != 0 {
+			t.Fatalf("RuntimeRun = %d, %v", result.code, result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RuntimeRun did not return after stop")
+	}
+}
+
 func TestForegroundRunInjectsRuntimeHomeAndRecordsExit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX script fixture")

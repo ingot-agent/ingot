@@ -11,12 +11,12 @@ import (
 )
 
 func TestCollectionInspectDoesNotRequireHome(t *testing.T) {
-	t.Parallel()
 	directory := t.TempDir()
 	collectionPath := writeCLICollection(t, directory, []string{"a"})
+	missingHome := filepath.Join(directory, "missing-home")
 	var stdout, stderr bytes.Buffer
 	command := CLI{Stdout: &stdout, Stderr: &stderr}
-	code := command.Run(context.Background(), []string{"--home", filepath.Join(directory, "missing-home"), "collection", "inspect", collectionPath})
+	code := command.Run(context.Background(), []string{"collection", "inspect", collectionPath, "--home", missingHome, "--json"})
 	if code != 0 {
 		t.Fatalf("exit=%d stderr=%s", code, stderr.String())
 	}
@@ -26,23 +26,26 @@ func TestCollectionInspectDoesNotRequireHome(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || !strings.HasPrefix(output.Digest, "sha256:") {
 		t.Fatalf("output=%s err=%v", stdout.String(), err)
 	}
+	if _, err := os.Stat(missingHome); !os.IsNotExist(err) {
+		t.Fatalf("inspect touched Home: %v", err)
+	}
 }
 
-func TestCollectionPlanConflictIsMachineReadableAndApplyFails(t *testing.T) {
+func TestCollectionPlanConflictAndApplyFailure(t *testing.T) {
 	project := t.TempDir()
-	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(project, "plugins.toml"), []byte("plugins_version=1\n[[plugins]]\nmodule='example.com/plugins/a'\nversion='v1.0.0'\n[[plugins]]\nmodule='example.com/plugins/b'\nversion='v1.0.0'\n"), 0o644); err != nil {
+	home := filepath.Join(t.TempDir(), "home")
+	recipe := filepath.Join(project, "plugins.toml")
+	if err := os.WriteFile(recipe, []byte("plugins_version=1\n[[plugins]]\nmodule='example.com/plugins/a'\nversion='v1.0.0'\n[[plugins]]\nmodule='example.com/plugins/b'\nversion='v1.0.0'\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	collectionPath := writeCLICollection(t, project, []string{"b", "a"})
-	initializer := CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}
-	if code := initializer.Run(context.Background(), []string{"--home", home, "init", "--profile", "minimal"}); code != 0 {
-		t.Fatalf("init exit=%d", code)
+	if code := (CLI{Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"setup", "--home", home, "--profile", "minimal"}); code != 0 {
+		t.Fatalf("setup exit=%d", code)
 	}
 
 	var stdout, stderr bytes.Buffer
 	command := CLI{Stdout: &stdout, Stderr: &stderr}
-	code := command.Run(context.Background(), []string{"--home", home, "collection", "plan", "--use", filepath.Join(project, "plugins.toml"), collectionPath})
+	code := command.Run(context.Background(), []string{"collection", "plan", collectionPath, "--file", recipe, "--home", home, "--json"})
 	if code != 0 {
 		t.Fatalf("plan exit=%d stderr=%s", code, stderr.String())
 	}
@@ -55,11 +58,11 @@ func TestCollectionPlanConflictIsMachineReadableAndApplyFails(t *testing.T) {
 		} `json:"plan"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output.Plan.Applicable || output.Plan.Order.Status != "order_conflict" {
-		t.Fatalf("plan output=%s err=%v", stdout.String(), err)
+		t.Fatalf("output=%s err=%v", stdout.String(), err)
 	}
 	stdout.Reset()
 	stderr.Reset()
-	code = command.Run(context.Background(), []string{"--home", home, "collection", "apply", "--use", filepath.Join(project, "plugins.toml"), collectionPath})
+	code = command.Run(context.Background(), []string{"collection", "apply", collectionPath, "--file", recipe, "--home", home, "--json"})
 	if code != 1 || !strings.Contains(stderr.String(), "INGOT-COLLECTION-CONFLICT") {
 		t.Fatalf("apply exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
 	}

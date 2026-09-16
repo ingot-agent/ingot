@@ -60,7 +60,7 @@ func OpenForInit(root string) (*Home, error) {
 func (home *Home) validateSchema() error {
 	data, err := os.ReadFile(filepath.Join(home.Root, "home.json"))
 	if err != nil {
-		return fmt.Errorf("INGOT-HOME-SCHEMA-MISSING: %s is not an initialized M2 home; move it aside or run ingot init on an empty home: %w", home.Root, err)
+		return fmt.Errorf("INGOT-HOME-SCHEMA-MISSING: %s is not an initialized M2 home; move it aside or run ingot setup on an empty home: %w", home.Root, err)
 	}
 	var schema schemaFile
 	if err := image.StrictDecode(data, &schema); err != nil {
