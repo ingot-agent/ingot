@@ -60,12 +60,13 @@ jobs:
           project="$RUNNER_TEMP/ingot-project"
 
           go build -trimpath -o "$binary" ./cmd/ingot
-          "$binary" --home "$ingot_home" init --profile default
-          "$binary" --home "$ingot_home" project init "$project" --profile default
-          "$binary" --home "$ingot_home" resolve \
-            --use "$project/plugins.toml" \
+          "$binary" --home "$ingot_home" setup --profile default
+          "$binary" --home "$ingot_home" init "$project" --profile default
+          "$binary" --home "$ingot_home" project resolve \
+            --file "$project/plugins.toml" \
             --lock "$project/plugins.lock"
-          "$binary" --home "$ingot_home" build \
-            --use "$project/plugins.toml" \
+          "$binary" --home "$ingot_home" build smoke \
+            --file "$project/plugins.toml" \
             --lock "$project/plugins.lock" \
-            --tag local/ingot:m3-released-profile-smoke
+            --tag local/ingot:released-profile-smoke
+          "$binary" --home "$ingot_home" runtime show smoke --json >/dev/null
