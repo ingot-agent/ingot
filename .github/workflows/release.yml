@@ -223,7 +223,7 @@ jobs:
           test "$actual" = "$expected"
           tar -xzf "dist/release/$archive" -C dist/smoke
           test "$(dist/smoke/ingot --version)" = "ingot ${VERSION}"
-          identity="$(dist/smoke/ingot version)"
+          identity="$(dist/smoke/ingot version --json)"
           compact_identity="$(printf '%s' "$identity" | tr -d '[:space:]')"
           printf '%s' "$compact_identity" | grep -F '"core_version":"'"$VERSION"'"'
           printf '%s' "$compact_identity" | grep -F '"official":true'
@@ -255,7 +255,7 @@ jobs:
           Expand-Archive "dist/release/$archive" dist/smoke
           $actual = (& dist/smoke/ingot.exe --version | Out-String).Trim()
           if ($actual -ne "ingot $env:VERSION") { throw "unexpected version: $actual" }
-          $identity = (& dist/smoke/ingot.exe version | Out-String | ConvertFrom-Json)
+          $identity = (& dist/smoke/ingot.exe version --json | Out-String | ConvertFrom-Json)
           if ($identity.core_version -ne $env:VERSION -or -not $identity.official -or
               $identity.revision -ne $env:COMMIT -or $identity.modified -or
               $identity.target -ne "windows/$architecture") {
