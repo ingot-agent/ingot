@@ -85,6 +85,16 @@ func TestVersionDoesNotOpenHome(t *testing.T) {
 	}
 }
 
+func TestVersionUsesJSONForStagedUpdateCandidate(t *testing.T) {
+	candidate := filepath.Join(t.TempDir(), ".ingot-update-candidate-1234")
+	if !versionJSONOutput(false, candidate) {
+		t.Fatal("staged update candidate did not select JSON output")
+	}
+	if versionJSONOutput(false, filepath.Join(t.TempDir(), "ingot")) {
+		t.Fatal("normal executable selected JSON output without --json")
+	}
+}
+
 func TestUpdateUsesInjectedUpdater(t *testing.T) {
 	var received coreupdate.Options
 	var stdout, stderr bytes.Buffer

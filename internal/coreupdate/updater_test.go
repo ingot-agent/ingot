@@ -24,6 +24,33 @@ import (
 
 const testCommit = "0123456789abcdef0123456789abcdef01234567"
 
+func TestMain(m *testing.M) {
+	if os.Getenv("INGOT_COREUPDATE_TEST_CANDIDATE") == "1" {
+		if len(os.Args) != 3 || os.Args[1] != "version" || os.Args[2] != "--json" {
+			fmt.Fprintf(os.Stderr, "candidate arguments = %q\n", os.Args[1:])
+			os.Exit(2)
+		}
+		fmt.Fprint(os.Stdout, `{"core_version":"0.3.1-alpha","official":true,"revision":"`+testCommit+`","modified":false,"go_version":"go-test","target":"linux/amd64"}`)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+func TestInspectCandidateRequestsJSON(t *testing.T) {
+	t.Setenv("INGOT_COREUPDATE_TEST_CANDIDATE", "1")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := inspectCandidate(context.Background(), executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.CoreVersion != "0.3.1-alpha" || !info.Official || info.Revision != testCommit || info.Target != "linux/amd64" {
+		t.Fatalf("candidate info = %#v", info)
+	}
+}
+
 func TestCheckLatestDoesNotResolveExecutable(t *testing.T) {
 	archive := testTarArchive(t, []byte("new core"))
 	client := testReleaseClient(t, "v0.3.1", archive, "")

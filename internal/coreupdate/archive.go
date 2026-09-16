@@ -14,12 +14,13 @@ import (
 )
 
 const (
-	maxExecutableSize = 192 << 20
-	maxLicenseSize    = 1 << 20
+	updateCandidatePrefix = ".ingot-update-candidate-"
+	maxExecutableSize     = 192 << 20
+	maxLicenseSize        = 1 << 20
 )
 
 func extractExecutable(archivePath, directory string, artifact ingotrelease.Artifact) (string, error) {
-	pattern := ".ingot-update-candidate-*"
+	pattern := updateCandidatePrefix + "*"
 	if artifact.GOOS == "windows" {
 		pattern += ".exe"
 	}
@@ -56,6 +57,13 @@ func extractExecutable(archivePath, directory string, artifact ingotrelease.Arti
 	}
 	keep = true
 	return candidatePath, nil
+}
+
+// IsStagedCandidatePath reports whether path uses the updater's temporary
+// executable name. It keeps candidate verification compatible with updaters
+// that predate the explicit `version --json` invocation.
+func IsStagedCandidatePath(path string) bool {
+	return strings.HasPrefix(filepath.Base(path), updateCandidatePrefix)
 }
 
 func extractTarExecutable(archivePath, destination, executable string) error {

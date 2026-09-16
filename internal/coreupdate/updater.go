@@ -285,7 +285,7 @@ func (updater *Updater) downloadAsset(ctx context.Context, source, destination s
 }
 
 func inspectCandidate(ctx context.Context, path string) (buildinfo.Info, error) {
-	command := exec.CommandContext(ctx, path, "version")
+	command := exec.CommandContext(ctx, path, "version", "--json")
 	stdout := limitedBuffer{limit: ingotrelease.MaxManifestSize}
 	stderr := limitedBuffer{limit: ingotrelease.MaxManifestSize}
 	command.Stdout, command.Stderr = &stdout, &stderr
