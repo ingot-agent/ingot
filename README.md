@@ -317,6 +317,7 @@ See the [Usage Guide](./docs/USAGE.md) or
 - [Usage Guide](./docs/USAGE.md) · [使用说明](./docs/USAGE.zh.md)
 - [Architecture design v0.3](./docs/ingot_架构设计_v0.3.md) (Chinese)
 - [M2 Image / Runtime / Process design](./docs/ingot_M2_image_runtime_process_设计方案.md) (Chinese)
+- [Core installation and update mechanism v0.1](./docs/ingot_Core_安装与更新机制_v0.1.md) (Chinese)
 - [M0 architecture freeze ADRs: Image identity, Runtime Home, Plugin Configuration, Operation identity, Collection, Runtime environment](./docs/adr/) (Chinese)
 - [Plugin manifest design](./docs/ingot.plugin.toml_设计方案_v0.1.md) (Chinese)
 - [`plugins.toml` design](./docs/ingot_plugins.toml_v0.1_设计方案.md) (Chinese)

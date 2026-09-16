@@ -14,4 +14,11 @@ web/app-webui/playwright-report/
 /ingot.exe
 /ingot.exe~
 
+go.work
 go.work.sum
+
+plugins.toml
+plugins.lock
+
+.ingot.update.lock
+.plugins.lock.writer.lock
