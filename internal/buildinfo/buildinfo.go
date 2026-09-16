@@ -9,7 +9,7 @@ import (
 
 // These values are overridden by the release workflow through -ldflags -X.
 var (
-	CoreVersion = "0.3.1-dev"
+	CoreVersion = "0.3.2-dev"
 	Official    = "false"
 	Revision    = ""
 	Modified    = ""
