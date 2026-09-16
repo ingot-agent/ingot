@@ -145,12 +145,20 @@ func (app *application) newVersionCommand() *cobra.Command {
 		Args:    exactArgs(0),
 		RunE: func(_ *cobra.Command, _ []string) error {
 			result := versionResult()
+			executable, _ := os.Executable()
+			if versionJSONOutput(app.jsonOutput, executable) {
+				return app.writeJSON(result)
+			}
 			return app.output(result, func(writer io.Writer) error {
 				_, err := fmt.Fprintf(writer, "Core: %s\nIngot ABI: %s\nBuilder: %s\nTarget: %s\n", result.CoreVersion, result.IngotVersion, result.BuilderVersion, result.Target)
 				return err
 			})
 		},
 	}
+}
+
+func versionJSONOutput(explicit bool, executable string) bool {
+	return explicit || coreupdate.IsStagedCandidatePath(executable)
 }
 
 type coreVersionResult struct {
@@ -205,11 +213,15 @@ func (app *application) newUpdateCommand() *cobra.Command {
 
 func (app *application) output(value any, human func(io.Writer) error) error {
 	if app.jsonOutput {
-		encoder := json.NewEncoder(app.stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(value)
+		return app.writeJSON(value)
 	}
 	return human(app.stdout)
+}
+
+func (app *application) writeJSON(value any) error {
+	encoder := json.NewEncoder(app.stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(value)
 }
 
 func (app *application) rejectJSON(command string) error {
