@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ingot-agent/ingot/internal/layout"
 )
 
 func TestResolveAndBuildRemoteVerticalSlice(t *testing.T) {
@@ -63,6 +65,44 @@ version = "v1.0.0"
 	}
 	if len(lock.Modules) != 3 {
 		t.Fatalf("resolved module graph has %d nodes: %#v", len(lock.Modules), lock.Modules)
+	}
+	exportDirectory := filepath.Join(t.TempDir(), "runtime-source")
+	exported, err := ExportRuntimeSource(context.Background(), desired, lock, ExportOptions{OutputDirectory: exportDirectory, GOMODCACHE: moduleCache})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedImageID, err := lock.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exported.SourceDirectory != exportDirectory || exported.ExpectedImageID != expectedImageID || exported.BuildManifest != filepath.Join(exportDirectory, ExportBuildManifestName) {
+		t.Fatalf("export result = %#v", exported)
+	}
+	for _, name := range []string{"go.mod", "go.sum", "main.go", "wiring_gen.go", "signals_nonwindows_gen.go", "signals_windows_gen.go", "writer_lock_nonwindows_gen.go", "writer_lock_windows_gen.go", ExportBuildManifestName} {
+		if _, err := os.Stat(filepath.Join(exportDirectory, name)); err != nil {
+			t.Fatalf("exported %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(exportDirectory, layout.RuntimeExecutableName(runtime.GOOS))); !os.IsNotExist(err) {
+		t.Fatalf("source export produced a runtime binary: %v", err)
+	}
+	manifestData, err := os.ReadFile(exported.BuildManifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedManifest, err := lock.CanonicalBuildManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(manifestData) != string(expectedManifest) {
+		t.Fatal("exported build manifest is not canonical")
+	}
+	externalBinary := filepath.Join(t.TempDir(), layout.RuntimeExecutableName(runtime.GOOS))
+	if _, err := runGo(context.Background(), exportDirectory, lockedEnvironment(lock, moduleCache), "build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-o", externalBinary); err != nil {
+		t.Fatalf("exported runtime source does not build: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "images")); !os.IsNotExist(err) {
+		t.Fatalf("source export created an Image directory: %v", err)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {
@@ -126,6 +166,22 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 	}
 	if lock.Plugins[0].SourceKind != "dev" || len(lock.Replacements) != 1 || lock.Runtime.Sum == "" {
 		t.Fatalf("local lock materialization = %#v / %#v / %#v", lock.Plugins[0], lock.Replacements, lock.Runtime)
+	}
+	exportDirectory := filepath.Join(t.TempDir(), "runtime-source")
+	if _, err := ExportRuntimeSource(context.Background(), desired, lock, ExportOptions{OutputDirectory: exportDirectory, GOMODCACHE: moduleCache}); err != nil {
+		t.Fatal(err)
+	}
+	goMod, err := os.ReadFile(filepath.Join(exportDirectory, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	devDirectory := devSourceDirName("example.com/ingot-test-plugin")
+	wantReplace := "replace example.com/ingot-test-plugin => ./dev/" + devDirectory
+	if !strings.Contains(string(goMod), wantReplace) {
+		t.Fatalf("exported go.mod does not use a relative dev replacement:\n%s", goMod)
+	}
+	if _, err := os.Stat(filepath.Join(exportDirectory, "dev", devDirectory, "component.go")); err != nil {
+		t.Fatalf("exported dev source: %v", err)
 	}
 	result, err := Build(context.Background(), desired, lock, BuildOptions{Home: home, GOMODCACHE: moduleCache})
 	if err != nil {

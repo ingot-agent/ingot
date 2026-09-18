@@ -189,12 +189,23 @@ Recipe 命令从当前目录向上搜索，并使用最近的 `plugins.toml`；�
 ingot project resolve [-f recipe.toml] [--lock recipe.lock]
 ingot project status [-f recipe.toml] [--lock recipe.lock]
 ingot project show [-f recipe.toml] [--lock recipe.lock]
+ingot project generate -o runtime-source [-f recipe.toml] [--lock recipe.lock] [--locked]
 ingot build [runtime] [-f recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
 ingot up [runtime] [-d] [-f recipe.toml] [--lock recipe.lock] [--locked] [-- argv...]
 ```
 
 普通 build 会刷新缺失或 stale 的 lock。`--locked` 要求 lock 与全部源码事实完全匹配，
 且绝不改写 lock。`--tag` 会在构建成功后额外移动当前主机 target slot。
+
+`project generate` 使用相同的 lock 刷新与 `--locked` 规则，加载并类型检查完整
+Component Graph，然后把 generated Runtime 写成独立的 `package main` Go module。该命令
+不会执行 `go build`、不会运行 Runtime validation check、不会创建 Image，也不会移动 tag
+或绑定 Runtime。显式输出目录必须不存在或为空，且不能位于任一本地 replacement 源码树内。
+
+导出 module 包含 `go.mod`、`go.sum`、generated Go 文件、精确的
+`ingot-build-manifest.json`，以及放在 `dev/` 下并通过相对 `replace` 引用的本地
+replacement 副本。远程 module 不会 vendor，其精确版本与摘要继续由 module 文件锁定。
+Build manifest 记录复现 expected Image identity 所需的 target、Go 版本、tags 与编译 flags。
 
 `build` 始终把结果绑定到且只绑定到一个 Runtime。Runtime 默认为 `default`；不存在时
 自动创建，已存在时切换 binding。`build` 不启动或重启 Process。重复构建同一个 Image

@@ -194,7 +194,7 @@ stop        正常关闭 Runtime Process
 restart     在后台重启 Runtime
 logs / ps   查看后台日志与 Process
 run         从已有 Image 创建并运行命名 Runtime
-project     status | show | resolve
+project     status | show | resolve | generate
 plugin      add | rm | update | move | ls | show
 collection  inspect | plan | apply
 image       ls | show | verify | tag | import | export | pin | rm

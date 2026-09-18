@@ -35,6 +35,11 @@ type ProjectBuildResult struct {
 	BindingChanged bool
 }
 
+type ProjectGenerateResult struct {
+	Export *builder.ExportResult
+	Paths  ProjectPaths
+}
+
 type ProjectStatus struct {
 	ProjectPaths
 	DesiredDigest string `json:"desired_digest,omitempty"`
@@ -435,6 +440,32 @@ func (home *Home) BuildProjectForRuntime(ctx context.Context, options RecipeOpti
 	return home.buildProject(ctx, options, resolveOptions, runtimeName)
 }
 
+// GenerateProject exports the generated runtime as a standalone Go module. It
+// shares build input and lock semantics but does not create an Image, mutate a
+// tag, or bind a Runtime.
+func (home *Home) GenerateProject(ctx context.Context, options RecipeOptions, resolveOptions builder.ResolveOptions, outputDirectory string) (ProjectGenerateResult, error) {
+	result := ProjectGenerateResult{}
+	paths, releaseProject, err := prepareProject(ctx, options)
+	result.Paths = paths
+	if err != nil {
+		return result, err
+	}
+	defer releaseProject()
+	desired, lock, err := home.loadProjectBuildInputs(ctx, paths, options, resolveOptions)
+	if err != nil {
+		return result, err
+	}
+	exported, err := builder.ExportRuntimeSource(ctx, desired, lock, builder.ExportOptions{
+		OutputDirectory: outputDirectory,
+		GOMODCACHE:      filepath.Join(home.Root, "cache", "gomod"),
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Export = exported
+	return result, nil
+}
+
 func (home *Home) buildProject(ctx context.Context, options RecipeOptions, resolveOptions builder.ResolveOptions, runtimeName string) (ProjectBuildResult, error) {
 	output := ProjectBuildResult{}
 	paths, releaseProject, err := prepareProject(ctx, options)
@@ -443,49 +474,9 @@ func (home *Home) buildProject(ctx context.Context, options RecipeOptions, resol
 		return output, err
 	}
 	defer releaseProject()
-	desired, err := builder.ParseDesired(paths.Recipe)
+	desired, lock, err := home.loadProjectBuildInputs(ctx, paths, options, resolveOptions)
 	if err != nil {
 		return output, err
-	}
-	lock, lockErr := builder.ParseLock(paths.Lock)
-	digest, digestErr := desired.Digest()
-	if digestErr != nil {
-		return output, digestErr
-	}
-	stale := lockErr != nil || lock.PluginsDigest != digest
-	if !stale {
-		for _, replacement := range lock.Replacements {
-			calculated, sourceErr := builder.ModuleSourceDigest(replacement.DevPath)
-			if pluginIsDev(lock, replacement.ModulePath) {
-				calculated, sourceErr = builder.DevSourceDigest(replacement.DevPath)
-			}
-			if sourceErr != nil || calculated != replacement.ContentSHA256 {
-				stale = true
-				break
-			}
-		}
-	}
-	if stale {
-		if options.Locked {
-			if lockErr != nil {
-				return output, fmt.Errorf("INGOT-BUILD-LOCK-REQUIRED: %w", lockErr)
-			}
-			return output, fmt.Errorf("INGOT-BUILD-LOCK-STALE: recipe digest changed")
-		}
-		lock, err = home.resolveProjectUnlocked(ctx, paths, resolveOptions)
-		if err != nil {
-			return output, err
-		}
-	} else if options.Locked {
-		for _, replacement := range lock.Replacements {
-			calculated, err := builder.ModuleSourceDigest(replacement.DevPath)
-			if pluginIsDev(lock, replacement.ModulePath) {
-				calculated, err = builder.DevSourceDigest(replacement.DevPath)
-			}
-			if err != nil || calculated != replacement.ContentSHA256 {
-				return output, fmt.Errorf("INGOT-BUILD-LOCK-STALE: source %s changed", replacement.ModulePath)
-			}
-		}
 	}
 	release, err := home.acquire(ctx)
 	if err != nil {
@@ -527,6 +518,44 @@ func (home *Home) buildProject(ctx context.Context, options RecipeOptions, resol
 		output.BindingChanged = changed
 	}
 	return output, nil
+}
+
+func (home *Home) loadProjectBuildInputs(ctx context.Context, paths ProjectPaths, options RecipeOptions, resolveOptions builder.ResolveOptions) (*builder.DesiredPlugins, *builder.Lock, error) {
+	desired, err := builder.ParseDesired(paths.Recipe)
+	if err != nil {
+		return nil, nil, err
+	}
+	lock, lockErr := builder.ParseLock(paths.Lock)
+	digest, digestErr := desired.Digest()
+	if digestErr != nil {
+		return nil, nil, digestErr
+	}
+	stale := lockErr != nil || lock.PluginsDigest != digest
+	if !stale {
+		for _, replacement := range lock.Replacements {
+			calculated, sourceErr := builder.ModuleSourceDigest(replacement.DevPath)
+			if pluginIsDev(lock, replacement.ModulePath) {
+				calculated, sourceErr = builder.DevSourceDigest(replacement.DevPath)
+			}
+			if sourceErr != nil || calculated != replacement.ContentSHA256 {
+				stale = true
+				break
+			}
+		}
+	}
+	if stale {
+		if options.Locked {
+			if lockErr != nil {
+				return nil, nil, fmt.Errorf("INGOT-BUILD-LOCK-REQUIRED: %w", lockErr)
+			}
+			return nil, nil, fmt.Errorf("INGOT-BUILD-LOCK-STALE: recipe digest changed")
+		}
+		lock, err = home.resolveProjectUnlocked(ctx, paths, resolveOptions)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return desired, lock, nil
 }
 
 func pluginIsDev(lock *builder.Lock, id string) bool {

@@ -22,10 +22,14 @@ func (selector *projectSelector) addFlags(command *cobra.Command, build bool) {
 	command.Flags().StringVar(&selector.lock, "lock", "", "lock file path")
 	command.Flags().StringVar(&selector.profile, "profile", "", "managed profile name")
 	if build {
-		command.Flags().BoolVar(&selector.locked, "locked", false, "require an up-to-date lock")
+		selector.addLockedFlag(command)
 		command.Flags().StringVarP(&selector.tag, "tag", "t", "", "tag the built image")
 	}
 	_ = command.RegisterFlagCompletionFunc("profile", fixedCompletion("default", "minimal"))
+}
+
+func (selector *projectSelector) addLockedFlag(command *cobra.Command) {
+	command.Flags().BoolVar(&selector.locked, "locked", false, "require an up-to-date lock")
 }
 
 func (selector projectSelector) options(home *ingothome.Home) (ingothome.RecipeOptions, error) {

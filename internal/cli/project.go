@@ -32,6 +32,15 @@ type buildCommandResult struct {
 	BindingChanged bool                  `json:"binding_changed"`
 }
 
+type generateCommandResult struct {
+	Recipe          string       `json:"recipe"`
+	Lock            string       `json:"lock"`
+	SourceDirectory string       `json:"source_directory"`
+	BuildManifest   string       `json:"build_manifest"`
+	ExpectedImageID string       `json:"expected_image_id"`
+	Target          image.Target `json:"target"`
+}
+
 type upCommandResult struct {
 	Build   buildCommandResult    `json:"build"`
 	Runtime ingothome.RuntimeView `json:"runtime"`
@@ -247,8 +256,47 @@ func writeBuildSummary(writer io.Writer, result buildCommandResult) error {
 }
 
 func (app *application) newProjectCommand() *cobra.Command {
-	command := &cobra.Command{Use: "project", Short: "Inspect and resolve a project", GroupID: "project"}
-	command.AddCommand(app.newProjectStatusCommand(), app.newProjectShowCommand(), app.newProjectResolveCommand())
+	command := &cobra.Command{Use: "project", Short: "Inspect, resolve, and generate a project", GroupID: "project"}
+	command.AddCommand(app.newProjectStatusCommand(), app.newProjectShowCommand(), app.newProjectResolveCommand(), app.newProjectGenerateCommand())
+	return command
+}
+
+func (app *application) newProjectGenerateCommand() *cobra.Command {
+	selector := projectSelector{}
+	var outputDirectory string
+	command := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate runtime source without compiling it",
+		Args:  exactArgs(0),
+		RunE: func(command *cobra.Command, _ []string) error {
+			if outputDirectory == "" {
+				return usageErrorf("project generate requires --output")
+			}
+			home, options, err := app.projectHome(selector)
+			if err != nil {
+				return err
+			}
+			result, err := home.GenerateProject(command.Context(), options, builder.ResolveOptions{}, outputDirectory)
+			if err != nil {
+				return err
+			}
+			output := generateCommandResult{
+				Recipe: result.Paths.Recipe, Lock: result.Paths.Lock,
+				SourceDirectory: result.Export.SourceDirectory, BuildManifest: result.Export.BuildManifest,
+				ExpectedImageID: result.Export.ExpectedImageID, Target: result.Export.Target,
+			}
+			return app.output(output, func(writer io.Writer) error {
+				_, err := fmt.Fprintf(writer, "Generated runtime source: %s\nBuild manifest: %s\nExpected image: %s (%s)\n", output.SourceDirectory, output.BuildManifest, shortDigest(output.ExpectedImageID), output.Target.Platform())
+				return err
+			})
+		},
+	}
+	selector.addFlags(command, false)
+	selector.addLockedFlag(command)
+	command.Flags().StringVarP(&outputDirectory, "output", "o", "", "generated runtime source directory")
+	command.ValidArgsFunction = func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	return command
 }
 
