@@ -36,7 +36,11 @@ func copyDevSources(lock *Lock, rootDirectory, stagingDirectory string) (map[str
 		if err != nil {
 			return nil, nil, err
 		}
-		locators[replacement.ModulePath] = filepath.ToSlash(relative)
+		locator := filepath.ToSlash(relative)
+		if locator != "." && !strings.HasPrefix(locator, "./") && !strings.HasPrefix(locator, "../") {
+			locator = "./" + locator
+		}
+		locators[replacement.ModulePath] = locator
 		absolute[replacement.ModulePath] = target
 	}
 	return locators, absolute, nil

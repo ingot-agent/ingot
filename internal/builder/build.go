@@ -65,28 +65,12 @@ func (options BuildOptions) defaults() (BuildOptions, error) {
 // runtime's validation check, and atomically commits an immutable image. It
 // does not mutate tags or Runtime bindings.
 func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options BuildOptions) (*BuildResult, error) {
-	if err := desired.Validate(); err != nil {
+	if err := validateGeneratedRuntimeInputs(desired, lock); err != nil {
 		return nil, err
 	}
-	if err := lock.Validate(); err != nil {
-		return nil, err
-	}
-	digest, err := desired.Digest()
+	options, err := options.defaults()
 	if err != nil {
 		return nil, err
-	}
-	if digest != lock.PluginsDigest {
-		return nil, &Error{Code: "INGOT-BUILD-DESIRED-DRIFT", Field: "plugins_digest", Want: lock.PluginsDigest, Actual: digest}
-	}
-	options, err = options.defaults()
-	if err != nil {
-		return nil, err
-	}
-	if lock.Target.GOOS != runtime.GOOS || lock.Target.GOARCH != runtime.GOARCH {
-		return nil, &Error{Code: "INGOT-BUILD-CHECK-TARGET", Want: runtime.GOOS + "/" + runtime.GOARCH, Actual: lock.Target.GOOS + "/" + lock.Target.GOARCH}
-	}
-	if runtime.Version() != lock.Toolchain.Version {
-		return nil, &Error{Code: "INGOT-BUILD-TOOLCHAIN", Want: lock.Toolchain.Version, Actual: runtime.Version()}
 	}
 	imageID, err := lock.ImageID()
 	if err != nil {
@@ -121,46 +105,11 @@ func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options Bui
 	if err := os.MkdirAll(imageDirectory, 0o700); err != nil {
 		return nil, err
 	}
-	// Faithful copies of every dev plugin are compiled from inside the
-	// staging area through relative replace locators. This keeps the
-	// artifact free of machine-specific absolute source paths, so identical
-	// content yields identical binaries regardless of where the dev sources
-	// live (or whether two homes share the same plugin set).
-	devLocators, devDirs, err := copyDevSources(lock, rootDirectory, staging)
+	generated, err := prepareGeneratedRuntime(ctx, lock, rootDirectory, staging, options.GOMODCACHE)
 	if err != nil {
 		return nil, err
 	}
-	if err := lock.RestoreRootModule(rootDirectory, devLocators); err != nil {
-		return nil, err
-	}
-	environment := lockedEnvironment(lock, options.GOMODCACHE)
-	if _, err := runGo(ctx, rootDirectory, environment, "mod", "download", "all"); err != nil {
-		return nil, err
-	}
-	if _, err := runGo(ctx, rootDirectory, environment, "mod", "verify"); err != nil {
-		return nil, err
-	}
-	listOutput, err := runGo(ctx, rootDirectory, environment, "list", "-mod=readonly", "-m", "-json", "all")
-	if err != nil {
-		return nil, err
-	}
-	selected, err := decodeModuleStream(listOutput)
-	if err != nil {
-		return nil, err
-	}
-	if err := verifySelectedGraph(lock, selected, devDirs); err != nil {
-		return nil, err
-	}
-	if err := verifyLockedSources(lock, selected); err != nil {
-		return nil, err
-	}
-	graph, err := LoadGraph(ctx, rootDirectory, lock, LoadOptions{GOMODCACHE: options.GOMODCACHE})
-	if err != nil {
-		return nil, err
-	}
-	if err := Generate(rootDirectory, lock, graph); err != nil {
-		return nil, err
-	}
+	graph, environment := generated.graph, generated.environment
 	runtimeName := layout.RuntimeExecutableName(lock.Target.GOOS)
 	binaryPath := filepath.Join(imageDirectory, runtimeName)
 	arguments := []string{"build", "-mod=readonly", "-trimpath", "-buildvcs=false", "-o", binaryPath}

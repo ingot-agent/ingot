@@ -209,6 +209,7 @@ Home profile. `--profile` cannot be combined with `--file` or `--lock`.
 ingot project resolve [-f recipe.toml] [--lock recipe.lock]
 ingot project status [-f recipe.toml] [--lock recipe.lock]
 ingot project show [-f recipe.toml] [--lock recipe.lock]
+ingot project generate -o runtime-source [-f recipe.toml] [--lock recipe.lock] [--locked]
 ingot build [runtime] [-f recipe.toml] [--lock recipe.lock] [--locked] [--tag name:tag]
 ingot up [runtime] [-d] [-f recipe.toml] [--lock recipe.lock] [--locked] [-- argv...]
 ```
@@ -216,6 +217,20 @@ ingot up [runtime] [-d] [-f recipe.toml] [--lock recipe.lock] [--locked] [-- arg
 Normal build refreshes a missing or stale lock. `--locked` requires the lock
 and all locked source facts to match and never rewrites it. `--tag` additionally
 moves the current host target slot after a successful build.
+
+`project generate` applies the same lock refresh and `--locked` rules, loads
+and type-checks the complete Component Graph, and writes the generated Runtime
+as a standalone `package main` Go module. It does not run `go build`, execute
+the Runtime validation check, create an Image, move a tag, or bind a Runtime.
+The explicit output directory must be missing or empty and cannot be inside a
+local replacement source tree.
+
+The exported module contains `go.mod`, `go.sum`, generated Go files, an exact
+`ingot-build-manifest.json`, and copies of local replacements under `dev/` with
+relative `replace` directives. Remote modules are not vendored; their exact
+versions and sums remain locked by the module files. The build manifest records
+the target, Go version, tags, and compiler flags required to reproduce the
+expected Image identity.
 
 `build` always binds the resulting Image to exactly one Runtime. The Runtime
 defaults to `default`, is created when absent, and is switched when it already

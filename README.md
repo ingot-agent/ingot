@@ -297,7 +297,7 @@ stop        Gracefully stop a Runtime Process
 restart     Restart a Runtime in the background
 logs / ps   Inspect detached logs and Processes
 run         Create and run a named Runtime from an existing Image
-project     status | show | resolve
+project     status | show | resolve | generate
 plugin      add | rm | update | move | ls | show
 collection  inspect | plan | apply
 image       ls | show | verify | tag | import | export | pin | rm

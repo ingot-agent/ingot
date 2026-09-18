@@ -1,5 +1,5 @@
-// Package builder resolves ingot plugin declarations into a statically wired
-// Go runtime image.
+// Package builder resolves ingot plugin declarations into statically wired Go
+// runtime source and immutable runtime images.
 package builder
 
 import "fmt"
