@@ -67,6 +67,15 @@ ingot init [DIR] [--profile default|minimal] [--force]
 
 `init` 同时确保 Managed Home 已存在；除非传入 `--force`，否则不会覆盖已有项目 Recipe。
 
+若本地源码目录的每个一级子目录都是一个插件 Module，可直接扫描并生成 Recipe：
+
+```sh
+ingot project scan /path/to/plugins [-o plugins.toml] [--force]
+```
+
+被识别的目录必须同时包含 `go.mod` 与 `ingot.plugin.toml`。生成的本地 `path` 使用
+绝对路径，插件顺序按目录名稳定排序。`project scan` 不会初始化或读取 Managed Home。
+
 全局 `--home` 会覆盖 `INGOT_HOME`：
 
 ```sh
@@ -181,11 +190,12 @@ binding，同时显示 `restart_required`；它不会在仍运行旧 Process 时
 
 ## 项目命令
 
-Recipe 命令从当前目录向上搜索，并使用最近的 `plugins.toml`；默认 lock 是相邻的
-`plugins.lock`。使用 `-f/--file` 与 `--lock` 可指定路径，使用 `--profile` 可选择 Home
-管理的 Profile。`--profile` 不能与 `--file` 或 `--lock` 同时使用。
+除 `project scan` 外，Recipe 命令从当前目录向上搜索，并使用最近的 `plugins.toml`；
+默认 lock 是相邻的 `plugins.lock`。使用 `-f/--file` 与 `--lock` 可指定路径，使用
+`--profile` 可选择 Home 管理的 Profile。`--profile` 不能与 `--file` 或 `--lock` 同时使用。
 
 ```text
+ingot project scan <plugin-directory> [-o plugins.toml] [--force]
 ingot project resolve [-f recipe.toml] [--lock recipe.lock]
 ingot project status [-f recipe.toml] [--lock recipe.lock]
 ingot project show [-f recipe.toml] [--lock recipe.lock]

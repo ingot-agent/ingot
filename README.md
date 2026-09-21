@@ -133,6 +133,10 @@ no tools). `ingot up [NAME]` builds, binds, and restarts one Runtime; omitting
 the name selects `default`. See the [Usage Guide](./docs/USAGE.md) for
 installation options and the full workflow.
 
+For a local plugin checkout with one plugin per first-level directory,
+`ingot project scan /path/to/plugins` generates `plugins.toml` with absolute
+local source paths.
+
 For the browser workspace, replace the CLI with
 [app.backend](https://github.com/ingot-agent/plugins/tree/main/app-webui).
 Its Vue + Tailwind frontend is embedded in the native Runtime Image and includes

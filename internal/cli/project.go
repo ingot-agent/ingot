@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
@@ -39,6 +40,17 @@ type generateCommandResult struct {
 	BuildManifest   string       `json:"build_manifest"`
 	ExpectedImageID string       `json:"expected_image_id"`
 	Target          image.Target `json:"target"`
+}
+
+type scanCommandPlugin struct {
+	Module string `json:"module"`
+	Path   string `json:"path"`
+}
+
+type scanCommandResult struct {
+	SourceDirectory string              `json:"source_directory"`
+	Recipe          string              `json:"recipe"`
+	Plugins         []scanCommandPlugin `json:"plugins"`
 }
 
 type upCommandResult struct {
@@ -256,8 +268,65 @@ func writeBuildSummary(writer io.Writer, result buildCommandResult) error {
 }
 
 func (app *application) newProjectCommand() *cobra.Command {
-	command := &cobra.Command{Use: "project", Short: "Inspect, resolve, and generate a project", GroupID: "project"}
-	command.AddCommand(app.newProjectStatusCommand(), app.newProjectShowCommand(), app.newProjectResolveCommand(), app.newProjectGenerateCommand())
+	command := &cobra.Command{Use: "project", Short: "Create, inspect, resolve, and generate a project", GroupID: "project"}
+	command.AddCommand(app.newProjectScanCommand(), app.newProjectStatusCommand(), app.newProjectShowCommand(), app.newProjectResolveCommand(), app.newProjectGenerateCommand())
+	return command
+}
+
+func (app *application) newProjectScanCommand() *cobra.Command {
+	var outputPath string
+	var force bool
+	command := &cobra.Command{
+		Use:   "scan <plugin-directory>",
+		Short: "Create plugins.toml from local plugin modules",
+		Args:  exactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			if outputPath == "" {
+				outputPath = "plugins.toml"
+			}
+			recipePath, err := filepath.Abs(outputPath)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Lstat(recipePath); err == nil && !force {
+				return fmt.Errorf("%s already exists; pass --force to overwrite it", recipePath)
+			} else if err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			desired, err := builder.ScanPluginDirectory(args[0], recipePath)
+			if err != nil {
+				return err
+			}
+			data, err := desired.MarshalTOML()
+			if err != nil {
+				return err
+			}
+			if err := image.AtomicWriteUserFile(recipePath, data, 0o644); err != nil {
+				return err
+			}
+			sourceDirectory, err := filepath.Abs(args[0])
+			if err != nil {
+				return err
+			}
+			result := scanCommandResult{
+				SourceDirectory: sourceDirectory,
+				Recipe:          recipePath,
+				Plugins:         make([]scanCommandPlugin, len(desired.Plugins)),
+			}
+			for index, plugin := range desired.Plugins {
+				result.Plugins[index] = scanCommandPlugin{Module: plugin.Module, Path: plugin.Path}
+			}
+			return app.output(result, func(writer io.Writer) error {
+				_, err := fmt.Fprintf(writer, "Generated %s with %d local plugins\nSource: %s\n", result.Recipe, len(result.Plugins), result.SourceDirectory)
+				return err
+			})
+		},
+	}
+	command.Flags().StringVarP(&outputPath, "output", "o", "plugins.toml", "output plugins.toml path")
+	command.Flags().BoolVar(&force, "force", false, "overwrite an existing output file")
+	command.ValidArgsFunction = func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveFilterDirs
+	}
 	return command
 }
 

@@ -117,6 +117,7 @@ func TestUpdateUsesInjectedUpdater(t *testing.T) {
 func TestUsageErrorsReturnTwo(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"init", "one", "two"},
+		{"project", "scan"},
 		{"project", "generate"},
 		{"update", "--check", "--force"},
 		{"runtime", "switch", "only-one"},
