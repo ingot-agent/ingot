@@ -8,11 +8,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// GetExitCodeProcess reports STILL_ACTIVE using the NT status value for pending.
-const stillActiveProcessExitCode = uint32(windows.STATUS_PENDING)
+const processIdentityAccess = windows.PROCESS_QUERY_LIMITED_INFORMATION | windows.SYNCHRONIZE
 
 func BirthIdentity(pid int) (string, error) {
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	handle, err := windows.OpenProcess(processIdentityAccess, false, uint32(pid))
 	if err != nil {
 		return "", err
 	}
@@ -28,7 +27,7 @@ func BirthIdentity(pid int) (string, error) {
 }
 
 func IdentityAlive(pid int, birth string) bool {
-	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	handle, err := windows.OpenProcess(processIdentityAccess, false, uint32(pid))
 	if err != nil {
 		return false
 	}
@@ -42,9 +41,16 @@ func processIdentity(handle windows.Handle) (string, bool, error) {
 	if err := windows.GetProcessTimes(handle, &creation, &exit, &kernel, &user); err != nil {
 		return "", false, err
 	}
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+	waitStatus, err := windows.WaitForSingleObject(handle, 0)
+	if err != nil {
 		return "", false, err
 	}
-	return fmt.Sprintf("%d", creation.Nanoseconds()), exitCode == stillActiveProcessExitCode, nil
+	switch waitStatus {
+	case windows.WAIT_OBJECT_0:
+		return fmt.Sprintf("%d", creation.Nanoseconds()), false, nil
+	case uint32(windows.WAIT_TIMEOUT):
+		return fmt.Sprintf("%d", creation.Nanoseconds()), true, nil
+	default:
+		return "", false, fmt.Errorf("unexpected process wait status %d", waitStatus)
+	}
 }
