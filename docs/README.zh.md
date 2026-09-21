@@ -91,6 +91,9 @@ ingot up -d -- web
 `ingot up [NAME]` 构建、绑定并重启一个 Runtime；省略名称时使用 `default`。安装选项和
 完整流程见[使用说明](./USAGE.zh.md)。
 
+对于每个一级子目录对应一个插件的本地源码仓库，可执行
+`ingot project scan /path/to/plugins`，生成使用绝对本地源码路径的 `plugins.toml`。
+
 ## 构建期组合如何工作
 
 ```mermaid
