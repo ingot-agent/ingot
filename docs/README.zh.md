@@ -214,6 +214,7 @@ update / gc 维护 Core 二进制与不可变 Image
 - [ingot 架构设计 v0.3](./ingot_架构设计_v0.3.md)
 - [M2 Image / Runtime / Process 设计方案](./ingot_M2_image_runtime_process_设计方案.md)
 - [Core 安装与更新机制 v0.1](./ingot_Core_安装与更新机制_v0.1.md)
+- [Sub-Agent 轻量方案（同 Runtime、单 Turn 与 Session meta）](./ingot_subagent_轻量版设计方案.md)
 - [M0 架构冻结 ADR：Image 身份 / Runtime Home / Plugin Configuration / Operation 身份 / Collection / Runtime 环境变量](./adr/)
 - [Plugin Manifest 设计](./ingot.plugin.toml_设计方案_v0.1.md)
 - [`plugins.toml` 设计](./ingot_plugins.toml_v0.1_设计方案.md)

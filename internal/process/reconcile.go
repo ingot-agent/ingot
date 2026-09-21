@@ -104,6 +104,9 @@ func Stop(ctx context.Context, runtimeHome, processID string, timeout time.Durat
 	if processID != "" && observation.Process.ProcessID != processID {
 		return fmt.Errorf("INGOT-PROCESS-CONTROL-MISMATCH: live process is %s", observation.Process.ProcessID)
 	}
+	if observation.State == "orphaned" {
+		return fmt.Errorf("INGOT-PROCESS-CONTROL-ORPHANED: process %s has no live supervisor", observation.Process.ProcessID)
+	}
 	control, err := ReadControl(runtimeHome)
 	if err != nil {
 		return err
