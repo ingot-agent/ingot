@@ -106,6 +106,18 @@ ingot init [DIR] [--profile default|minimal] [--force]
 `init` also ensures that managed Home exists. Existing project recipes are not
 overwritten unless `--force` is present.
 
+To create a recipe from a local checkout containing one plugin module per
+first-level directory, scan it directly:
+
+```sh
+ingot project scan /path/to/plugins [-o plugins.toml] [--force]
+```
+
+Each discovered directory must contain both `go.mod` and
+`ingot.plugin.toml`. The generated local `path` values are absolute, and plugin
+order follows the sorted directory names. `project scan` does not initialize or
+read managed Home.
+
 Use another managed Home with the global option. It overrides `INGOT_HOME`:
 
 ```sh
@@ -329,12 +341,14 @@ The default application is for trusted local, single-user use.
 
 ## Project Commands
 
-Recipe-oriented commands search upward from the current directory and use the
-nearest `plugins.toml`. Its default lock is the adjacent `plugins.lock`. Use
-`-f/--file` and `--lock` for explicit paths, or `--profile` to select a managed
-Home profile. `--profile` cannot be combined with `--file` or `--lock`.
+Except for `project scan`, Recipe-oriented commands search upward from the
+current directory and use the nearest `plugins.toml`. Its default lock is the
+adjacent `plugins.lock`. Use `-f/--file` and `--lock` for explicit paths, or
+`--profile` to select a managed Home profile. `--profile` cannot be combined
+with `--file` or `--lock`.
 
 ```text
+ingot project scan <plugin-directory> [-o plugins.toml] [--force]
 ingot project resolve [-f recipe.toml] [--lock recipe.lock]
 ingot project status [-f recipe.toml] [--lock recipe.lock]
 ingot project show [-f recipe.toml] [--lock recipe.lock]

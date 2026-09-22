@@ -155,6 +155,16 @@ exists. Both `default` and `minimal` use `app.backend`; `minimal` omits
 the name selects `default`. See the [Usage Guide](./docs/USAGE.md) for
 installation options and the full workflow.
 
+For a local plugin checkout with one plugin per first-level directory,
+`ingot project scan /path/to/plugins` generates `plugins.toml` with absolute
+local source paths.
+
+For the browser workspace, replace the CLI with
+[app.backend](https://github.com/ingot-agent/plugins/tree/main/app-webui).
+Its Vue + Tailwind frontend is embedded in the native Runtime Image and includes
+conversations, streaming, approvals, attachments, execution details, and operations.
+It is intended for trusted local, single-user use.
+
 ## How build-time composition works
 
 ```mermaid

@@ -104,6 +104,9 @@ plugins 仓库 `main` 文档描述更新后的源码及命令名（`/model-opena
 `ingot up [NAME]` 构建、绑定并重启一个 Runtime；省略名称时使用 `default`。安装选项和
 完整流程见[使用说明](./USAGE.zh.md)。
 
+对于每个一级子目录对应一个插件的本地源码仓库，可执行
+`ingot project scan /path/to/plugins`，生成使用绝对本地源码路径的 `plugins.toml`。
+
 ## 构建期组合如何工作
 
 ```mermaid
@@ -241,16 +244,17 @@ update / gc 维护 Core 二进制与不可变 Image
 - [English README](../README.md)
 - [Contributing guide](../CONTRIBUTING.md) · [贡献指南](./CONTRIBUTING.zh.md)
 - [Usage Guide](./USAGE.md) · [使用说明](./USAGE.zh.md)
-- [当前文件格式](./FILE_FORMATS.md)
-- [升级、备份与恢复（英文）](./UPGRADING.md)
-- [当前架构与源码导航（英文）](./ARCHITECTURE.md)
-- [Core 发布流程（英文）](../RELEASE.md) · [安全报告](../SECURITY.md)
-- [官方插件指南](https://github.com/ingot-agent/plugins/tree/main/docs)
-- [SDK Contract](https://github.com/ingot-agent/sdk) · [Runtime ABI](https://github.com/ingot-agent/ingot-abi)
-
-Core 设计记录与 ADR 在文档索引中单独列出。历史提案保留设计理由；当前支持的行为以代码、
-测试和使用参考为准。插件实现设计历史归属于
-[plugins 仓库](https://github.com/ingot-agent/plugins/tree/main/docs/design-history)。
+- [ingot 架构设计 v0.3](./ingot_架构设计_v0.3.md)
+- [M2 Image / Runtime / Process 设计方案](./ingot_M2_image_runtime_process_设计方案.md)
+- [Core 安装与更新机制 v0.1](./ingot_Core_安装与更新机制_v0.1.md)
+- [Sub-Agent 轻量方案（同 Runtime、单 Turn 与 Session meta）](./ingot_subagent_轻量版设计方案.md)
+- [M0 架构冻结 ADR：Image 身份 / Runtime Home / Plugin Configuration / Operation 身份 / Collection / Runtime 环境变量](./adr/)
+- [Plugin Manifest 设计](./ingot.plugin.toml_设计方案_v0.1.md)
+- [`plugins.toml` 设计](./ingot_plugins.toml_v0.1_设计方案.md)
+- [`builder.toml` 设计](./ingot_builder.toml_v0.1_设计方案.md)
+- [`plugins.lock` 设计](./ingot_plugins.lock_v0.1_设计方案.md)
+- [SDK 设计 v0.1](./ingot_SDK_v0.1_设计方案.md)
+- [ingot ABI 设计 v0.1](./ingot_ABI_v0.1_设计提案.md)
 
 ## 仓库结构
 

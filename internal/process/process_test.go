@@ -98,6 +98,42 @@ func TestReconcilePreservesStartingRecordForLiveSupervisor(t *testing.T) {
 	}
 }
 
+func TestStopRejectsOrphanBeforeReadingControl(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(RunDirectory(home), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeBirth, err := BirthIdentity(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimePID := os.Getpid()
+	record := Record{
+		ProcessVersion:    1,
+		ProcessID:         "00000000-0000-4000-8000-000000000000",
+		Mode:              "foreground",
+		Phase:             "running",
+		SupervisorPID:     os.Getpid(),
+		SupervisorBirthID: "missing",
+		RuntimePID:        &runtimePID,
+		RuntimeBirthID:    runtimeBirth,
+		ImageID:           "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		ArtifactDigest:    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		Target:            image.Target{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: []image.TargetKey{}},
+		RuntimeGeneration: 1,
+		Argv:              []string{},
+		StartedAt:         time.Now().UTC(),
+	}
+	if err := writeJSON(ProcessPath(home), record); err != nil {
+		t.Fatal(err)
+	}
+	err = Stop(context.Background(), home, "", time.Second)
+	want := "INGOT-PROCESS-CONTROL-ORPHANED: process 00000000-0000-4000-8000-000000000000 has no live supervisor"
+	if err == nil || err.Error() != want {
+		t.Fatalf("Stop error = %v, want %q", err, want)
+	}
+}
+
 func TestProcessMetadataIsBoundedAndControlIsLoopback(t *testing.T) {
 	home := t.TempDir()
 	if err := os.MkdirAll(RunDirectory(home), 0o700); err != nil {
