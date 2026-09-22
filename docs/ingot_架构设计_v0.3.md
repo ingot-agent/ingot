@@ -1,5 +1,9 @@
 # ingot 重构架构设计 v0.3
 
+> **历史设计 / Historical design。** 本文保留原设计范围，状态和里程碑指撰写时的语境，不是当前 CLI/API 参考。
+> 当前命令见[使用指南](USAGE.zh.md)，字段与构造函数见[当前文件格式](FILE_FORMATS.md)，已定稿决策见 [ADR](adr/README.md)。
+> 当前构造函数为 `New(ctx, deps)`，配置由 Plugin 自行维护；本文中的全局 Runtime config 和旧 Config 参数示例不可直接使用。
+
 > 状态：Draft  
 > 关联规范：Plugin Manifest v0.1、`plugins.lock` v0.1、SDK v0.1
 
@@ -474,9 +478,9 @@ Runtime 的主要 chokepoint：
 - Model stream 调用进入 `model.StreamingRuntime`；
 - Agent turn 进入 `agent.Runtime`。
 
-ABI 语义见《ingot ABI v0.1 设计提案》；Agent Contract 的历史基线见
-《ingot SDK v0.1 设计方案》，当前多模态语义见仓库顶层
-《ingot SDK 多模态协议迁移方案》和 SDK package docs。
+当前 ABI 语义见 [ABI 仓库](https://github.com/ingot-agent/ingot-abi)，Agent Contract
+和多模态语义见 [SDK 仓库](https://github.com/ingot-agent/sdk)及其 package docs。
+设计历史分别由各仓库的 `docs/design-history/` 维护。
 
 ## 11. 首批官方 Plugin
 

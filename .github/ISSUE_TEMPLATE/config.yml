@@ -1,0 +1,6 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security reporting instructions
+    url: https://github.com/ingot-agent/ingot/security/policy
+    about: Read the current private-reporting setup and contact procedure before sharing vulnerability details.
+

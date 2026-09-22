@@ -51,8 +51,9 @@ loop to the application that exposes the agent.
 
 ingot moves variability to build time and keeps the production runtime fixed:
 
-- **Generated wiring, no reflection** — components are plain Go objects joined
-  by generated `main.go` and `wiring_gen.go`.
+- **Generated static wiring** — components are plain Go objects joined by
+  generated `main.go` and `wiring_gen.go`. Runtime value checks use reflection
+  to validate capabilities; dependency selection and constructor calls are static.
 - **Compile-time graph validation** — capability types, cardinality, missing or
   ambiguous providers, self-loops, cycles, and creation order are checked
   before an image is committed.
@@ -72,8 +73,9 @@ the build system and plugin packages.
 
 ## More than a coding agent
 
-The default profile produces a capable terminal-based coding agent, but that is
-one composition of ingot, not its architectural limit.
+The default profile produces a browser-based coding agent with shell and
+question tools. It is one composition of ingot; the application, tools, and
+agent loop can all be replaced.
 
 For a customer-service agent, for example, replace `app.backend` with a network
 plugin that receives conversations from the support system and streams replies
@@ -108,7 +110,9 @@ Remove-Item $installer
 ```
 
 Then initialize and build the agent composition. Building Runtime Images
-requires Go 1.24 or newer even when the core was installed from a Release.
+requires Go on `PATH` (the Core source requires Go 1.24.2 or newer), even when
+the Core was installed from a Release. See the [Usage Guide](./docs/USAGE.md)
+for build requirements and platform support.
 
 ```sh
 # 1. Initialize managed Home
@@ -121,15 +125,33 @@ ingot init .
 ingot up -d -- web   # then open http://127.0.0.1:7316/
 ```
 
-Plugins start Unconfigured and own their configuration. Set the model provider
-through the `app.backend.config` operation (or by editing the plugin's own
-`state/` file) once the runtime is running.
+Open [http://127.0.0.1:7316/](http://127.0.0.1:7316/). For the shipped plugin
+`v0.1.0` profile, select the browser Operation `model.openai-compatible.config`
+in group `configuration` and add one initial provider with its endpoint, API
+key, and model IDs. Run `ingot restart default`, refresh the browser, then use
+`model.runtime.config` in the same group to set the default provider and model.
+Restart once more after saving changed defaults. These are browser Operations;
+the restarts are Core CLI commands. Follow each Operation's `restart_required`
+result; configuration changes need no Image rebuild. See the
+[version-specific setup notes](./docs/USAGE.md#configure-the-browser-agent)
+before configuring multiple providers.
+
+The plugins repository's `main` docs describe newer source behavior and command
+names (`/model-openai-compatible config`, `/model-runtime config`), which can
+differ from the exact modules selected by this Core's profiles.
+
+The browser workspace starts before a provider is configured. Its frontend is
+embedded in the Image, so running it needs neither Node nor a separate web
+server. It currently targets trusted local, single-user use. See the
+[app.backend guide](https://github.com/ingot-agent/plugins/tree/main/app-webui)
+for workspace selection, configuration, and application behavior.
 
 `ingot setup` writes the selected official profile with exact released plugin
 module versions under `profiles/` in managed Home, then writes `builder.toml`.
 `ingot init [DIR]` creates a project-owned `plugins.toml` and also ensures Home
-exists. Pass `--profile minimal` for the smallest runnable graph (terminal CLI,
-no tools). `ingot up [NAME]` builds, binds, and restarts one Runtime; omitting
+exists. Both `default` and `minimal` use `app.backend`; `minimal` omits
+`tool.shell` and `tool.ask` while retaining the tool runtime.
+`ingot up [NAME]` builds, binds, and restarts one Runtime; omitting
 the name selects `default`. See the [Usage Guide](./docs/USAGE.md) for
 installation options and the full workflow.
 
@@ -150,8 +172,9 @@ flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Resolve
     Desired["plugins.toml<br/>(selected composition)"] --> Resolve
     Runtime["ingot ABI<br/>(fixed host ABI)"] --> Resolve
-    Resolve["Resolve + type-check<br/>Component Graph"] --> Lock["plugins.lock<br/>(exact build facts)"]
-    Lock --> Generate["Generate static wiring"]
+    Resolve["Resolve modules + manifests"] --> Lock["plugins.lock<br/>(target-neutral resolution facts)"]
+    Lock --> Graph["Load + type-check<br/>target Component Graph"]
+    Graph --> Generate["Generate static wiring"]
     Generate --> Compile["Compile + startup check"]
     Compile --> Image["Immutable Runtime Image<br/>(native executable + provenance)"]
 ```
@@ -160,7 +183,8 @@ The composition passes through three distinct states:
 
 1. `plugins.toml` states what you want.
 2. `plugins.lock` records exactly what was resolved, including the full Go
-   module graph, source digests, the pinned Runtime ABI, and build flags.
+   module graph, source digests, and the pinned Runtime ABI. Target, toolchain,
+   and build flags are recorded in each Image's BuildManifest.
 3. `images/<ImageID>/` contains the immutable native executable and its
    provenance manifest.
 
@@ -223,7 +247,6 @@ type Exports struct {
 
 func New(
     ctx context.Context,
-    cfg Config,
     deps Dependencies,
 ) (Exports, ingotabi.Cleanup, error)
 ```
@@ -274,7 +297,7 @@ build fails before an Image is committed.
 
 Managed machine state uses `INGOT_HOME` when set and otherwise lives in
 `~/.ingot`; project recipes remain in the project directory. Use `--home PATH`
-to override both and select another managed Home.
+to override this Home selection. It does not move or select the project recipe.
 
 | Path | Role |
 |---|---|
@@ -304,8 +327,8 @@ run         Create and run a named Runtime from an existing Image
 project     status | show | resolve | generate
 plugin      add | rm | update | move | ls | show
 collection  inspect | plan | apply
-image       ls | show | verify | tag | import | export | pin | rm
-runtime     create | show | switch | rollback | command | rm
+image       ls | show | verify | tag | untag | import | export | pin | unpin | rm
+runtime     create | ls | show | switch | rollback | command | rm
 completion  Generate Bash, Zsh, Fish, or PowerShell completion
 version     Report core, Builder, and protocol identities
 update / gc Maintain the core binary and immutable Images
@@ -316,19 +339,21 @@ See the [Usage Guide](./docs/USAGE.md) or
 
 ## Documentation
 
+- [Documentation index and ownership](./docs/README.md)
 - [中文 README](./docs/README.zh.md)
 - [Contributing guide](./CONTRIBUTING.md) · [贡献指南](./docs/CONTRIBUTING.zh.md)
 - [Usage Guide](./docs/USAGE.md) · [使用说明](./docs/USAGE.zh.md)
-- [Architecture design v0.3](./docs/ingot_架构设计_v0.3.md) (Chinese)
-- [M2 Image / Runtime / Process design](./docs/ingot_M2_image_runtime_process_设计方案.md) (Chinese)
-- [Core installation and update mechanism v0.1](./docs/ingot_Core_安装与更新机制_v0.1.md) (Chinese)
-- [M0 architecture freeze ADRs: Image identity, Runtime Home, Plugin Configuration, Operation identity, Collection, Runtime environment](./docs/adr/) (Chinese)
-- [Plugin manifest design](./docs/ingot.plugin.toml_设计方案_v0.1.md) (Chinese)
-- [`plugins.toml` design](./docs/ingot_plugins.toml_v0.1_设计方案.md) (Chinese)
-- [`builder.toml` design](./docs/ingot_builder.toml_v0.1_设计方案.md) (Chinese)
-- [`plugins.lock` design](./docs/ingot_plugins.lock_v0.1_设计方案.md) (Chinese)
-- [SDK design v0.1](./docs/ingot_SDK_v0.1_设计方案.md) (Chinese)
-- [ingot ABI design v0.1](./docs/ingot_ABI_v0.1_设计提案.md) (Chinese)
+- [Current file formats](./docs/FILE_FORMATS.md)
+- [Upgrading, backup, and recovery](./docs/UPGRADING.md)
+- [Current architecture and source navigation](./docs/ARCHITECTURE.md)
+- [Core release procedure](./RELEASE.md) · [Security reporting](./SECURITY.md)
+- [Official plugin guides](https://github.com/ingot-agent/plugins/tree/main/docs)
+- [SDK contracts](https://github.com/ingot-agent/sdk) · [Runtime ABI](https://github.com/ingot-agent/ingot-abi)
+
+Core design records and ADRs are indexed separately in the documentation index.
+Historical proposals are retained for rationale; current code, tests, and usage
+references determine supported behavior. Plugin implementation design history
+belongs in the [plugins repository](https://github.com/ingot-agent/plugins/tree/main/docs/design-history).
 
 ## Repository layout
 
@@ -357,17 +382,17 @@ Run the Core test suite from this directory:
 GOWORK=off go test -race ./...
 ```
 
-The repository `go.work` selects the Core module only. Official profile builds
-resolve released plugin modules with `GOWORK=off`; local plugin development is
-performed in the standalone `ingot-agent/plugins` repository.
+This repository is the Core Go module. `GOWORK=off` prevents a parent or local
+workspace from changing its dependency resolution. Official profile builds
+resolve exact released plugin modules; local plugin development belongs in the
+standalone [plugins repository](https://github.com/ingot-agent/plugins).
 
 ## Roadmap
 
 - [x] `ingot setup` and `ingot init` — initialize managed Home and project recipes.
 - [x] `ingot collection inspect|plan|apply` — apply reusable exact-version
   Plugin composition recipes with explicit conflict handling.
-- [ ] `ingot doctor` — validate plugin completeness, configuration, and the
-  active image.
+- [ ] `ingot doctor` — a future diagnostic command; it is not currently available.
 
 ## License
 

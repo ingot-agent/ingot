@@ -1,5 +1,8 @@
 # Ingot 下一阶段 Roadmap
 
+> **历史路线图 / Historical roadmap。** 本文记录阶段规划，不是实时完成状态或发布承诺。
+> 当前 CLI 已包含 Image、Runtime、Process 和 Collection 功能；实际使用见[文档目录](docs/README.md)，决策见 [ADR](docs/adr/README.md)。
+
 ## 总体方向
 
 下一阶段不再继续扩展 Agent Core 本身，而是把 Ingot 从“可组合 Agent Runtime Builder”进一步推进成：

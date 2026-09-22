@@ -32,7 +32,7 @@ ingot 是一个面向 Agent 的构建期组合系统。它不把 Agent 看成只
 
 ingot 把变化放在构建期，把生产运行时固定下来：
 
-- **生成 wiring，全程无反射** —— Component 是普通 Go 对象，由自动生成的 `main.go` 和 `wiring_gen.go` 连接。
+- **生成静态 wiring** —— Component 是普通 Go 对象，由自动生成的 `main.go` 和 `wiring_gen.go` 连接。运行时使用反射校验 Capability 值；依赖选择与构造函数调用是静态代码。
 - **构建期依赖图校验** —— Capability 类型、基数、缺失或歧义的 Provider、self-loop、环和创建顺序，都会在镜像提交前完成检查。
 - **自包含交付** —— 选定的插件实现会被编译进运行时可执行文件；目标机器不需要安装 Go、ingot Builder、SDK，也不需要单独部署插件目录。
 - **不可变、可追溯的镜像** —— 精确的 Module 输入和本地源码都会被锁定与哈希，二进制本身也有独立的产物摘要。
@@ -43,7 +43,7 @@ ingot 把变化放在构建期，把生产运行时固定下来：
 
 ## 不只是 Coding Agent
 
-内置的默认 Profile 会生成一个功能完整的终端 Coding Agent，但它只是 ingot 的一种组合方式，并不是架构边界。
+内置默认 Profile 生成的是包含 Shell 与提问工具的浏览器 Coding Agent。它只是 ingot 的一种组合方式；应用、工具和 Agent Loop 都可以替换。
 
 例如，要构建一个客服 Agent，可以把 `app.backend` 替换为网络插件：从客服系统接收会话，再把流式响应发送回去；把 Shell 和提问工具替换为工单、CRM、订单和知识库插件；默认模型运行时和 Agent Loop 可以保留，也可以一并替换。Builder 会验证新的依赖图，并产出同样自包含的 Runtime Image，分发时不需要再附带一套插件框架。
 
@@ -69,7 +69,7 @@ Remove-Item $installer
 ```
 
 然后初始化并构建 Agent 组合。即使 Core 来自 Release，本地执行 `ingot build`
-仍需要 Go 1.24 或更高版本。
+仍需要在 `PATH` 中提供 Go（Core 源码要求 Go 1.24.2 或更高版本）。构建要求与平台支持详见[使用说明](./USAGE.zh.md)。
 
 ```sh
 # 1. 初始化 Managed Home
@@ -82,12 +82,25 @@ ingot init .
 ingot up -d -- web
 ```
 
-插件以未配置状态启动，并各自拥有自己的配置。运行时启动后，可通过
-`app.backend.config` Operation（或直接编辑插件自己的 `state/` 文件）设置模型 Provider。
+打开 [http://127.0.0.1:7316/](http://127.0.0.1:7316/)。对于当前内置的插件 `v0.1.0`
+Profile，在浏览器 Operation 选择器的 `configuration` 分组中选择
+`model.openai-compatible.config`，先配置一个 Provider 的 endpoint、API key 与模型 ID。
+执行 `ingot restart default` 并刷新页面，再用同一分组的 `model.runtime.config` 设置默认
+Provider 和模型；保存修改后再次重启。配置项是浏览器 Operation，重启命令属于 Core CLI。
+请遵循 Operation 返回的 `restart_required`，配置修改无需重新构建 Image。多 Provider
+配置前请阅读[对应版本的设置说明](./USAGE.zh.md#配置浏览器-agent)。
+
+plugins 仓库 `main` 文档描述更新后的源码及命令名（`/model-openai-compatible config`、
+`/model-runtime config`），可能与本 Core Profile 精确选择的已发布模块不同。
+
+浏览器工作区可以在尚未配置模型时启动。前端嵌入 Image，运行时无需 Node 或独立 Web
+服务器。当前面向可信的本机单用户场景。工作区选择、配置和应用行为详见
+[app.backend 指南](https://github.com/ingot-agent/plugins/tree/main/app-webui)。
 
 `ingot setup` 会把官方 Profile 精确固定到已发布的插件模块版本，在 Managed Home 的
 `profiles/` 下维护 Profile recipe，并写入 `builder.toml`。`ingot init [DIR]` 创建项目自己的
-`plugins.toml`，同时确保 Home 已存在。使用 `--profile minimal` 可获得最小可运行依赖图。
+`plugins.toml`，同时确保 Home 已存在。`default` 与 `minimal` 都使用 `app.backend`；
+`minimal` 去掉 `tool.shell` 与 `tool.ask`，保留 Tool Runtime。
 `ingot up [NAME]` 构建、绑定并重启一个 Runtime；省略名称时使用 `default`。安装选项和
 完整流程见[使用说明](./USAGE.zh.md)。
 
@@ -101,8 +114,9 @@ flowchart LR
     Plugins["Plugin Go Modules<br/>(go.mod + ingot.plugin.toml)"] --> Resolve
     Desired["plugins.toml<br/>(选定的组合)"] --> Resolve
     IngotABI["ingot ABI<br/>(固定宿主 ABI)"] --> Resolve
-    Resolve["解析并类型检查<br/>Component Graph"] --> Lock["plugins.lock<br/>(精确构建事实)"]
-    Lock --> Generate["生成静态 wiring"]
+    Resolve["解析 Module 与 Manifest"] --> Lock["plugins.lock<br/>(target-neutral 解析事实)"]
+    Lock --> Graph["加载并类型检查<br/>目标 Component Graph"]
+    Graph --> Generate["生成静态 wiring"]
     Generate --> Compile["编译 + 启动校验"]
     Compile --> Image["不可变 Runtime Image<br/>(原生可执行文件 + 来源证明)"]
 ```
@@ -110,10 +124,26 @@ flowchart LR
 一次组合会经过三个清晰的状态：
 
 1. `plugins.toml` 描述你想要什么。
-2. `plugins.lock` 记录精确解析结果，包括完整 Go Module 图、源码摘要、固定的 Runtime ABI 和构建参数。
+2. `plugins.lock` 记录精确解析结果，包括完整 Go Module 图、源码摘要和固定的 Runtime ABI。Target、toolchain 与构建参数记录在每个 Image 的 BuildManifest 中。
 3. `images/<ImageID>/` 保存不可变的原生可执行文件和来源 Manifest。
 
 修改运行参数只需修改插件自己的状态，不会改变镜像。替换实现则意味着修改插件集合并构建新镜像；旧镜像仍然保留，可随时回滚。
+
+## 两个依赖维度
+
+ingot 在两个独立维度上组合能力：静态 Component Graph 描述组件依赖哪些能力，由 Builder
+在构建期解析和检查；动态 Execution Scope 描述一次调用属于哪个执行域，通过 SDK 请求或
+调用对象上的显式 `execution.Scope` 传递（例如 `tool.Invocation`）。正确性所依赖的执行身份
+不从隐式 `context.Value` 或进程环境推导。
+
+需要执行域内交互的插件，将静态注入的 `interaction.ExecutionBinder` 与显式 Scope 组合，
+获得绑定的 Channel。Observation correlation 可以补充追踪与展示信息，但不能提供或覆盖
+Session 路由。
+
+默认 Coding Agent 是这一模型的使用者：Workspace Binding 将 Session 绑定到不可变的本地
+工作根目录；`tool.shell` 只通过 Session 对应的 `workspace.Resolver` 获取工作目录；
+`session.sqlite` 持久化 Session 和 Workspace。Builder 仍然只理解静态 Component Graph，
+没有 Session 或 Workspace 专用逻辑。
 
 ## 插件模型
 
@@ -137,7 +167,6 @@ type Exports struct {
 
 func New(
     ctx context.Context,
-    cfg Config,
     deps Dependencies,
 ) (Exports, ingotabi.Cleanup, error)
 ```
@@ -169,8 +198,8 @@ ingot up
 ## ingot home
 
 机器级 Managed State 优先使用 `INGOT_HOME` 指向的目录，未设置时默认位于
-`~/.ingot`；项目 Recipe 保留在项目目录。可使用 `--home PATH` 覆盖两者并指定其他
-Managed Home。
+`~/.ingot`；项目 Recipe 保留在项目目录。`--home PATH` 覆盖 Managed Home 的选择，
+不会移动或选择项目 Recipe。
 
 | 路径 | 作用 |
 |---|---|
@@ -200,8 +229,8 @@ run         从已有 Image 创建并运行命名 Runtime
 project     status | show | resolve | generate
 plugin      add | rm | update | move | ls | show
 collection  inspect | plan | apply
-image       ls | show | verify | tag | import | export | pin | rm
-runtime     create | show | switch | rollback | command | rm
+image       ls | show | verify | tag | untag | import | export | pin | unpin | rm
+runtime     create | ls | show | switch | rollback | command | rm
 completion  生成 Bash、Zsh、Fish 或 PowerShell 补全
 version     输出 Core、Builder 与协议身份
 update / gc 维护 Core 二进制与不可变 Image
@@ -211,6 +240,7 @@ update / gc 维护 Core 二进制与不可变 Image
 
 ## 文档
 
+- [文档索引与归属](./README.md)
 - [English README](../README.md)
 - [Contributing guide](../CONTRIBUTING.md) · [贡献指南](./CONTRIBUTING.zh.md)
 - [Usage Guide](./USAGE.md) · [使用说明](./USAGE.zh.md)
@@ -248,13 +278,15 @@ update / gc 维护 Core 二进制与不可变 Image
 GOWORK=off go test -race ./...
 ```
 
-本仓库 `go.work` 只包含 Core Module。官方 Profile 构建以 `GOWORK=off` 解析已发布插件；
-插件本地开发在独立的 `ingot-agent/plugins` 仓库中完成。
+本仓库是 Core Go Module。`GOWORK=off` 避免上层目录或本地 workspace 改变依赖解析。
+官方 Profile 构建解析精确的已发布插件模块；本地插件开发在独立的
+[plugins 仓库](https://github.com/ingot-agent/plugins)中完成。
 
 ## 路线图
 
 - [x] `ingot setup` 与 `ingot init` —— 初始化 Managed Home 与项目 Recipe。
-- [ ] `ingot doctor` —— 验证插件完整性、配置和当前镜像。
+- [x] `ingot collection inspect|plan|apply` —— 应用可复用、固定版本的插件组合 Recipe，并显式处理冲突。
+- [ ] `ingot doctor` —— 未来的诊断命令；当前尚不可用。
 
 ## 许可证
 

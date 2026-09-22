@@ -4,6 +4,8 @@
 > 目标文件：`~/.ingot/builder.toml`
 > 关联文件：`plugins.toml`、`plugins.lock`
 
+当前字段参考见 [FILE_FORMATS.md](FILE_FORMATS.md)。本文仅描述已实现的 schema v1；Go 参数与环境覆盖等后续提案不属于当前接受的配置。
+
 ## 1. 定位
 
 `builder.toml` 是 Builder 的稳定、可扩展配置入口。v0.1 暂无用户可调的构建
@@ -32,9 +34,9 @@ builder_config_version = 1
 
 ## 3. 生命周期
 
-- `ingot init` 写入默认 `builder.toml`；
+- `ingot setup` 初始化 managed Home 中的 `builder.toml`；`ingot init` 创建项目 recipe 并确保 Home 存在；
 - 未创建该文件的旧 home 使用 Builder 内嵌的同一份默认配置；
-- `resolve` 与 `apply` 始终读取并校验该文件，即使当前没有可调选项；
+- 项目 resolve/build 流程读取并校验该文件，即使当前没有可调选项；
 - `--force` 初始化可以重写默认文件，普通初始化保留用户已有文件。
 
 ## 4. 后续扩展规则
