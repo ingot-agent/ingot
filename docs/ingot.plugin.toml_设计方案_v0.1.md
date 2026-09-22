@@ -1,5 +1,9 @@
 # `ingot.plugin.toml` 设计提案 v0.1
 
+> **历史设计 / Historical design。** 本文保留原设计范围，状态和里程碑指撰写时的语境，不是当前 CLI/API 参考。
+> 当前命令见[使用指南](USAGE.zh.md)，字段与构造函数见[当前文件格式](FILE_FORMATS.md)，已定稿决策见 [ADR](adr/README.md)。
+> 当前构造函数为 `New(ctx, deps)`，配置由 Plugin 自行维护；本文中的全局 Runtime config 和旧 Config 参数示例不可直接使用。
+
 > 状态：Discussion Draft  
 > 目标：定义最小、明确、可稳定演进的 Plugin Manifest
 

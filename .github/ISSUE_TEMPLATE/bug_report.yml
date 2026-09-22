@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible non-security defect in Ingot Core.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security concerns, follow [SECURITY.md](https://github.com/ingot-agent/ingot/security/policy).
+        Do not attach credentials, private prompts, populated Runtime homes, or unredacted logs.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What went wrong?
+      description: Describe one concrete failure and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions and affected components
+      description: "Include ingot version --json, exact Image/Artifact IDs where relevant, the redacted recipe/lock, OS/architecture and Go version."
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant operating system, architecture, installation method, and workspace overrides. Share selected settings only, not your entire environment.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include minimal code or a redacted recipe when needed, and identify prerequisites.
+      placeholder: |
+        1. Prepare...
+        2. Run...
+        3. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+      description: Include the exact error or exit status and whether it reproduces consistently.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted diagnostics
+      description: Share only relevant logs and screenshots. Remove secrets and confidential content.
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression or workaround
+      description: If known, give the last working version and a tested workaround.
+

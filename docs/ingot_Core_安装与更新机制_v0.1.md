@@ -1,5 +1,8 @@
 # ingot Core 安装与更新机制 v0.1
 
+> **历史设计 / Historical design。** 本文保留原设计范围，状态和里程碑指撰写时的语境，不是当前 CLI/API 参考。
+> 当前命令见[使用指南](USAGE.zh.md)，字段与构造函数见[当前文件格式](FILE_FORMATS.md)，已定稿决策见 [ADR](adr/README.md)。
+
 > 状态：已实现  
 > 日期：2026-09-15  
 > 范围：只覆盖 ingot Core；Plugin 的分发与更新机制不在本文范围内。

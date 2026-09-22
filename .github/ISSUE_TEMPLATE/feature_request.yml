@@ -1,0 +1,36 @@
+name: Feature or contract proposal
+description: Propose a concrete improvement to Ingot Core.
+title: "[Proposal]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and use case
+      description: Explain the user-visible problem and who encounters it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the expected behavior and which repository or public contract owns it.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and migration
+      description: Identify effects on existing plugins, consumers, stored state, or published formats. Say unknown when this needs investigation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Existing capabilities considered
+      description: Explain whether current configuration, a plugin, or an ordinary contract module can address the use case.
+  - type: textarea
+    id: validation
+    attributes:
+      label: Acceptance and validation
+      description: Give a small example or observable result that would demonstrate success.
+
