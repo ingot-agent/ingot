@@ -68,7 +68,7 @@ func (app *application) newRunCommand() *cobra.Command {
 }
 
 func (app *application) newStartCommand() *cobra.Command {
-	var foreground bool
+	var detach, foreground bool
 	var timeout time.Duration
 	command := &cobra.Command{
 		Use:     "start [runtime] [-- argv...]",
@@ -78,6 +78,14 @@ func (app *application) newStartCommand() *cobra.Command {
 			before, argv, hasArgv, err := splitRuntimeArgv(command, args)
 			if err != nil {
 				return err
+			}
+			if detach && foreground {
+				return usageErrorf("start --detach does not accept --foreground")
+			}
+			if !detach {
+				if err := app.rejectJSON("start"); err != nil {
+					return err
+				}
 			}
 			name := defaultRuntimeName
 			if len(before) == 1 {
@@ -91,10 +99,7 @@ func (app *application) newStartCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if foreground {
-				if err := app.rejectJSON("start --foreground"); err != nil {
-					return err
-				}
+			if !detach {
 				code, err := home.RuntimeRun(command.Context(), name, temporary, app.stdin, app.stdout, app.stderr)
 				if err != nil {
 					return err
@@ -114,6 +119,7 @@ func (app *application) newStartCommand() *cobra.Command {
 			})
 		},
 	}
+	command.Flags().BoolVarP(&detach, "detach", "d", false, "run in the background and write output to logs")
 	command.Flags().BoolVar(&foreground, "foreground", false, "run attached to this terminal")
 	command.Flags().DurationVar(&timeout, "timeout", 30*time.Second, "startup timeout")
 	command.ValidArgsFunction = app.completeRuntimeNames(false)
