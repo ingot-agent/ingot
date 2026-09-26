@@ -422,7 +422,7 @@ ingot runtime rollback [name]
 ingot runtime command set [name] -- <argv...>
 ingot runtime command clear [name]
 ingot runtime rm <name> [--purge]
-ingot start [name] [--foreground] [-- <temporary-argv>]
+ingot start [name] [-d|--detach] [-- <temporary-argv>]
 ingot restart [name]
 ingot logs [name] [--process <id>] [-f]
 ```
@@ -437,7 +437,8 @@ Image 引用创建 Runtime；普通的构建并重启流程应使用 `up`。
 每个 Runtime 都有独立 Runtime Home。Generated Image 在构造任何 Plugin 之前获取
 `run/writer.lock`，因此 standalone 与 managed launch 遵守同一单 writer 契约。
 
-`start` 默认后台启动；`start --foreground` 连接当前终端。它的 `--` 后参数仅对本次
+`start` 默认前台启动；`start -d` 后台启动并将 Runtime 输出写入日志文件（可用
+`ingot logs` 查看）。旧的 `--foreground` 参数仍可使用。它的 `--` 后参数仅对本次
 启动有效。`run` 创建新 Runtime，默认前台运行，`-d` 切换到后台；其 argv 会持久化为
 Runtime 默认命令。`restart` 使用持久化默认 argv，并在后台启动。`up` 不带 `--` 时保留
 已有 Runtime 的默认 argv。无需构建即可用 `runtime command set` 或 `clear` 修改默认值。
@@ -476,7 +477,7 @@ ingot gc [--keep-recent N]
 ## 输出与退出码
 
 命令默认输出简洁的人类可读文本；需要稳定机器输出时传入全局 `--json`。前台 `run`、
-前台 `up`、`start --foreground` 与原始 `logs` 会拒绝 `--json`，因为 stdout 属于 Runtime
+前台 `up`、前台 `start` 与原始 `logs` 会拒绝 `--json`，因为 stdout 属于 Runtime
 或日志流。
 
 Usage error 返回 `2`；domain、I/O 与 verification error 返回 `1`；前台运行原样传播

@@ -175,6 +175,31 @@ func TestDynamicCompletionDoesNotCreateHome(t *testing.T) {
 	}
 }
 
+func TestStartDefaultsToForegroundAndDetachAllowsJSON(t *testing.T) {
+	missingHome := filepath.Join(t.TempDir(), "missing")
+	tests := []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantErr  string
+	}{
+		{name: "default", args: []string{"--json", "start"}, wantCode: 2, wantErr: "start streams raw output"},
+		{name: "foreground alias", args: []string{"--json", "start", "--foreground"}, wantCode: 2, wantErr: "start streams raw output"},
+		{name: "detached", args: []string{"--json", "start", "-d"}, wantCode: 1, wantErr: "INGOT-HOME-SCHEMA-MISSING"},
+		{name: "conflicting modes", args: []string{"start", "-d", "--foreground"}, wantCode: 2, wantErr: "does not accept --foreground"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"--home", missingHome}, test.args...)
+			code := (CLI{Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), args)
+			if code != test.wantCode || !strings.Contains(stderr.String(), test.wantErr) {
+				t.Fatalf("exit=%d stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestOptionalRuntimeNameDefaultsAndSelects(t *testing.T) {
 	if got := optionalRuntimeName(nil); got != defaultRuntimeName {
 		t.Fatalf("default runtime = %q", got)

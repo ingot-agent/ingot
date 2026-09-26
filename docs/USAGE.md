@@ -485,7 +485,7 @@ ingot runtime rollback [name]
 ingot runtime command set [name] -- <argv...>
 ingot runtime command clear [name]
 ingot runtime rm <name> [--purge]
-ingot start [name] [--foreground] [-- <temporary-argv>]
+ingot start [name] [-d|--detach] [-- <temporary-argv>]
 ingot restart [name]
 ingot logs [name] [--process <id>] [-f]
 ```
@@ -503,8 +503,10 @@ Each Runtime has an isolated Runtime Home. Generated Images acquire
 `run/writer.lock` before constructing any Plugin, so standalone and managed
 launches enforce the same single-writer contract.
 
-`start` runs detached by default; `start --foreground` attaches to the terminal.
-Its argv after `--` applies only to this launch. `run` creates a new Runtime and
+`start` runs in the foreground by default; `start -d` runs detached and writes
+Runtime output to its log file (read it with `ingot logs`). `--foreground` remains
+accepted for compatibility. Its argv after `--` applies only to this launch.
+`run` creates a new Runtime and
 runs in the foreground unless `-d` is supplied; its argv becomes that Runtime's
 default. `restart` uses the persisted default argv and starts in the background.
 `up` without `--` preserves an existing Runtime's default argv. Use
@@ -548,7 +550,7 @@ corrupt roots, or any external Runtime writer, abort the sweep without deletion.
 
 Commands print concise human-readable output by default. Pass global `--json`
 for stable machine-readable output. Foreground `run`, foreground `up`,
-`start --foreground`, and raw `logs` reject `--json` because stdout belongs to
+foreground `start`, and raw `logs` reject `--json` because stdout belongs to
 the Runtime or log stream.
 
 Usage errors return `2`; domain, I/O, and verification failures return `1`;
