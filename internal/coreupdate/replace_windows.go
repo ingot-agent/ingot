@@ -49,7 +49,8 @@ func moveFile(source, destination string, replace bool) error {
 }
 
 func syncFile(path string) error {
-	file, err := os.Open(filepath.Clean(path))
+	// FlushFileBuffers requires a handle opened for writing on Windows.
+	file, err := os.OpenFile(filepath.Clean(path), os.O_RDWR, 0)
 	if err != nil {
 		return err
 	}

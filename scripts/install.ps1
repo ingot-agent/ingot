@@ -239,7 +239,13 @@ try {
     $StagedTarget = "$Target.tmp.$PID"
     Copy-Item -LiteralPath $Candidate -Destination $StagedTarget -Force
     if (Test-Path -LiteralPath $Target -PathType Leaf) {
-        [IO.File]::Replace($StagedTarget, $Target, $null, $true)
+        $BackupTarget = "$Target.old.$PID"
+        [IO.File]::Replace($StagedTarget, $Target, $BackupTarget, $true)
+        try {
+            Remove-Item -LiteralPath $BackupTarget -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Previous ingot executable remains at $BackupTarget; remove it after old ingot processes stop"
+        }
     } else {
         [IO.File]::Move($StagedTarget, $Target)
     }
