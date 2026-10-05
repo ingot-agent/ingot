@@ -127,7 +127,9 @@ type LockedModule struct {
 }
 
 type Replacement struct {
-	ModulePath       string `toml:"module_path"`
+	ModulePath string `toml:"module_path"`
+	// SyntheticVersion retains its serialized name for lock compatibility,
+	// but records the final Go-selected requirement, not just the initial seed.
 	SyntheticVersion string `toml:"synthetic_version"`
 	DevPath          string `toml:"dev_path"`
 	ContentSHA256    string `toml:"content_sha256"`
@@ -526,21 +528,17 @@ func (l *Lock) validatePluginsAndGraph() error {
 		if replacement.ModulePath <= previousReplacement || replacements[replacement.ModulePath] || !allowedSource || !digestPattern.MatchString(replacement.ContentSHA256) || !filepath.IsAbs(replacement.DevPath) || filepath.Clean(replacement.DevPath) != replacement.DevPath {
 			return &Error{Code: "INGOT-LOCK-REPLACEMENT", Field: fmt.Sprintf("replacements[%d]", i), Actual: replacement.ModulePath}
 		}
-		expected, err := SyntheticVersion(replacement.ModulePath)
 		if runtimeSource {
-			expected, err = l.Runtime.Version, nil
-		} else if !devSource {
-			// Generic workspace contract module: the locked replacement uses
-			// the Go-selected version of the module path. It must be a
-			// canonical version for the path but cannot be derived from the
-			// path alone, so the locked value is authoritative.
-			expected, err = replacement.SyntheticVersion, nil
+			if replacement.SyntheticVersion != l.Runtime.Version {
+				return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Want: l.Runtime.Version, Actual: replacement.SyntheticVersion}
+			}
+		} else {
+			// Local plugins and workspace contract modules lock the final
+			// Go-selected version. The initial synthetic version is only a
+			// seed requirement; other modules can raise it through MVS.
 			if module.CanonicalVersion(replacement.SyntheticVersion) != replacement.SyntheticVersion || module.Check(replacement.ModulePath, replacement.SyntheticVersion) != nil {
 				return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Actual: replacement.SyntheticVersion, Want: "canonical version matching " + replacement.ModulePath}
 			}
-		}
-		if err != nil || expected != replacement.SyntheticVersion {
-			return &Error{Code: "INGOT-LOCK-SYNTHETIC-VERSION", Field: fmt.Sprintf("replacements[%d].synthetic_version", i), Want: expected, Actual: replacement.SyntheticVersion, Err: err}
 		}
 		replacements[replacement.ModulePath] = true
 		previousReplacement = replacement.ModulePath
@@ -606,6 +604,7 @@ type buildManifestSource struct {
 }
 type buildManifestReplace struct {
 	ModulePath    string `json:"module_path"`
+	Version       string `json:"version"`
 	Kind          string `json:"kind"`
 	ContentSHA256 string `json:"content_sha256"`
 }
@@ -619,7 +618,7 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		tuning[item.Key] = item.Value
 	}
 	manifest := buildManifest{
-		SchemaVersion: 3, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, Runtime: l.Runtime,
+		SchemaVersion: 4, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, Runtime: l.Runtime,
 		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
 		Environment: l.Environment,
@@ -634,7 +633,7 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 	replacementByModule := map[string]Replacement{}
 	for i, replacement := range l.Replacements {
 		replacementByModule[replacement.ModulePath] = replacement
-		manifest.Replacements[i] = buildManifestReplace{ModulePath: replacement.ModulePath, Kind: "dev", ContentSHA256: replacement.ContentSHA256}
+		manifest.Replacements[i] = buildManifestReplace{ModulePath: replacement.ModulePath, Version: replacement.SyntheticVersion, Kind: "dev", ContentSHA256: replacement.ContentSHA256}
 	}
 	for i, plugin := range l.Plugins {
 		source := buildManifestSource{Kind: "module", Version: plugin.Version, ModuleSum: plugin.ModuleSum}

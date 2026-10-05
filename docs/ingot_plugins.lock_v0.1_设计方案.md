@@ -297,16 +297,17 @@ dev_path
 content_sha256
 ```
 
-`dev_path` 是 absolute、clean 的机器 locator。Plugin 的 `synthetic_version` 从
-module path 推导；ingot ABI 使用 Builder 固定版本；普通 Contract Module 使用
-Go 首轮选择出的 canonical version。
+`dev_path` 是 absolute、clean 的机器 locator。`synthetic_version` 保留原字段名，
+记录恢复 root module require 所需的版本：本地 Plugin 与普通 Contract Module
+使用 Go 依赖图收敛后的 selected canonical version；ingot ABI 使用 Builder 固定版本。
+本地 Plugin 的初始 require 从 module path 推导，允许被其他依赖通过 MVS 提升。
 
 | Module path | Synthetic version |
 |---|---|
-| 无 `/vN`，`N >= 2` | `v0.0.0` |
-| 以 `/vN` 结束，`N >= 2` | `vN.0.0` |
+| 无 `/vN`，`N >= 2` | 初始 `v0.0.0`，锁定最终 selected version |
+| 以 `/vN` 结束，`N >= 2` | 初始 `vN.0.0`，锁定最终 selected version |
 | ingot ABI 本地开发条目 | Builder 固定的 exact ABI version |
-| 普通 Contract Module 本地开发条目 | Go selected canonical version |
+| 普通 Contract Module 本地开发条目 | Go 最终 selected canonical version |
 
 条目按 `module_path` 排序。
 
@@ -396,15 +397,15 @@ manifest_digest = "sha256:" + lowercase_hex(
 )
 ```
 
-## 8. Canonical BuildManifest v3
+## 8. Canonical BuildManifest v4
 
 Lock Semantic Model 生成以下 exact JSON shape，并使用 RFC 8785 JCS：
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "ingot_version": "0.3.0",
-  "builder_version": "0.3.0",
+  "builder_version": "0.3.2",
   "runtime": {
     "module_path": "github.com/ingot-agent/ingot-abi",
     "version": "v0.1.0",
@@ -479,12 +480,17 @@ BuildManifest replacement：
 ```json
 {
   "module_path": "github.com/example/ingot-plugin",
+  "version": "v0.1.1",
   "kind": "dev",
   "content_sha256": "sha256:..."
 }
 ```
 
-`dev_path` 与 `synthetic_version` 服务 root module restore，不进入 Canonical BuildManifest。`bindings` 在 v0.1 固定为 `[]`。
+`dev_path` 是机器 locator，不进入 Canonical BuildManifest。`synthetic_version`
+以 replacement 的 `version` 字段进入 BuildManifest，因为所选版本会进入 Go build info，
+影响二进制内容。v4 为 replacement 增加该字段；`plugins.lock` 与外层 Image Manifest
+仍使用 v3。旧 lock 可读取，使用新 Builder 重建时会生成新的 ImageID；已有 Image
+仍按其原始 BuildManifest 验证。`bindings` 在 v0.1 固定为 `[]`。
 
 字段与 collection 规则：
 

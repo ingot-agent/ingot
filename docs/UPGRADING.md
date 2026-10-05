@@ -225,6 +225,21 @@ change requires a new resolution, preserve the old recipe and lock, resolve
 with the new Core, and review the replacement. Do not hand-edit ABI sums or
 format versions to make validation pass.
 
+Builder 0.3.2 records the final Go-selected version of each local replacement
+in the existing lock-v3 `synthetic_version` field. A dependency can raise that
+version while the plugin continues to use its local source. Existing locks
+remain readable; run `ingot project resolve` to refresh a project's lock with
+the new Builder. Older Builders may reject new locks containing raised local
+versions. When reverting to an older Core, restore its compatible recipe/lock
+snapshot or reuse an existing Image instead of rewriting the locked versions.
+
+The new Builder generates Canonical BuildManifest v4, which includes local
+replacement versions because they affect Go build info. Rebuilding produces
+a new ImageID, including when the recipe and source files are unchanged. The
+outer Image manifest remains v3, and existing Images remain usable and are
+verified against their stored build manifests. This change does not migrate
+Managed Home or plugin state.
+
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated
 and account for external services/ports: a copied API key or workspace path can

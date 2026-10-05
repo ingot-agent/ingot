@@ -127,6 +127,19 @@ records ordered plugin identities, manifest/source digests, components, state
 schema declarations, exact module graph and fixed ABI identity. Local sources
 also record replacement locators and content identity. Do not hand-author it.
 
+For local plugins, `synthetic_version` records the final Go-selected version
+after dependency resolution. It starts at `v0.0.0` (or `vN.0.0` for `/vN`
+modules), but another plugin's requirements may raise it while the replacement
+continues to use local source. The selected version must be canonical and match
+the module path's major version. Remote plugins and the Runtime ABI retain
+their exact version constraints.
+
+Canonical BuildManifest v4 includes each replacement's selected `version` in
+the ImageID because it affects Go build info. Machine-specific source paths
+remain excluded. The lock and outer Image Manifest remain v3; existing locks
+can be read, and rebuilding them with the new Builder produces a new ImageID.
+Existing images continue to be verified against their stored build manifests.
+
 Lock v3 is **target-neutral**. Persisted lock TOML does not contain `[target]`,
 `[toolchain]`, `[environment]` or `[build]` tables. Target-specific toolchain,
 environment and build choices belong to the build manifest and image identity.

@@ -201,14 +201,17 @@ plugins[*].module
 
 ### 5.3 Synthetic Version
 
-Local Dev root module require 使用确定性 synthetic version：
+Local Dev root module require 初始使用确定性 synthetic version：
 
 | Module path | Synthetic version |
 |---|---|
 | 无 `/vN`，`N >= 2` | `v0.0.0` |
 | 以 `/vN` 结束，`N >= 2` | `vN.0.0` |
 
-该值由 Builder 推导并写入 lock，用户文件只保留 `module` 与 `path`。
+该初始值由 Builder 推导。其他 Plugin 的依赖可以通过 Go MVS 提升版本；
+Builder 将依赖图收敛后的 selected version 写入 lock 的 `synthetic_version`，
+并在构建恢复时使用该版本。版本提升不改变 versionless `replace` 指定的本地源码，
+源码身份仍由 DevSourceDigest 确定。用户文件只保留 `module` 与 `path`。
 
 ## 6. Direct Plugin Order
 
