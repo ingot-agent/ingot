@@ -98,3 +98,56 @@ func TestLockRoundTripPreservesModuleGraph(t *testing.T) {
 		t.Fatalf("round trip changed module count: %d != %d", len(parsed.Modules), len(lock.Modules))
 	}
 }
+
+func TestLockLocalReplacementVersions(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, suffix, version string
+		valid                 bool
+	}{
+		{name: "initial", version: "v0.0.0", valid: true},
+		{name: "selected", version: "v0.1.1", valid: true},
+		{name: "pseudo", version: "v0.0.0-20260822091230-0123456789ab", valid: true},
+		{name: "v2", suffix: "/v2", version: "v2.1.1", valid: true},
+		{name: "empty"},
+		{name: "noncanonical", version: "v0.1"},
+		{name: "wrong-major", version: "v2.1.1"},
+		{name: "v2-wrong-major", suffix: "/v2", version: "v1.1.1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			lock := fixtureGraphLock("/dev/a", "/dev/b", "/dev/c")
+			modulePath := lock.Replacements[0].ModulePath
+			for i := range lock.Plugins {
+				if lock.Plugins[i].ID == modulePath {
+					lock.Plugins[i].ID += test.suffix
+				}
+			}
+			lock.Replacements[0].ModulePath += test.suffix
+			lock.Replacements[0].SyntheticVersion = test.version
+			err := lock.Validate()
+			if test.valid && err != nil {
+				t.Fatal(err)
+			}
+			if !test.valid && (err == nil || !strings.Contains(err.Error(), "INGOT-LOCK-SYNTHETIC-VERSION")) {
+				t.Fatalf("invalid version error = %v", err)
+			}
+		})
+	}
+}
+
+func TestImageIDIncludesReplacementVersion(t *testing.T) {
+	t.Parallel()
+	lock := fixtureGraphLock("/dev/a", "/dev/b", "/dev/c")
+	initial, err := lock.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock.Replacements[0].SyntheticVersion = "v0.1.1"
+	selected, err := lock.ImageID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected == initial {
+		t.Fatal("replacement version must affect ImageID because it enters Go build info")
+	}
+}

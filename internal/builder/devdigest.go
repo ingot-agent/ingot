@@ -179,8 +179,8 @@ func writeDigestField(writer io.Writer, data []byte) {
 	_, _ = writer.Write(data)
 }
 
-// SyntheticVersion returns the deterministic version used by the generated
-// root module for a local development replacement.
+// SyntheticVersion returns the initial requirement for a local development
+// replacement. Resolve locks the final Go-selected version, which MVS may raise.
 func SyntheticVersion(modulePath string) (string, error) {
 	if err := module.CheckPath(modulePath); err != nil {
 		return "", err

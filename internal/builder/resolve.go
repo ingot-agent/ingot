@@ -19,7 +19,7 @@ import (
 
 const (
 	DefaultIngotVersion   = "0.3.0"
-	DefaultBuilderVersion = "0.3.1"
+	DefaultBuilderVersion = "0.3.2"
 
 	// IngotABIModulePath is the fixed, unconfigurable Runtime ABI module
 	// between Plugins and generated Runtime Images.
@@ -110,16 +110,14 @@ type resolvedModule struct {
 }
 
 type directSource struct {
-	plugin    DesiredPlugin
-	version   string
-	devPath   string
-	synthetic string
-	digest    string
+	plugin  DesiredPlugin
+	version string
+	devPath string
+	digest  string
 }
 
 type moduleReplacement struct {
 	modulePath string
-	synthetic  string
 	devPath    string
 	digest     string
 }
@@ -136,7 +134,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if err != nil {
 		return nil, err
 	}
-	runtimeReplacement, err := resolveModuleReplacement(IngotABIModulePath, IngotABIVersion)
+	runtimeReplacement, err := resolveModuleReplacement(IngotABIModulePath)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +172,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		if digestErr != nil {
 			return nil, digestErr
 		}
-		sources[i].devPath, sources[i].synthetic, sources[i].digest, sources[i].version = absolute, synthetic, digest, synthetic
+		sources[i].devPath, sources[i].digest, sources[i].version = absolute, digest, synthetic
 	}
 
 	staging, err := os.MkdirTemp("", "ingot-resolve-")
@@ -250,7 +248,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	nameOwners := map[string]string{}
 	for i, source := range sources {
 		selectedModule, ok := selectedByPath[source.plugin.Module]
-		if !ok || selectedModule.Version != source.version {
+		if !ok || (source.devPath == "" && selectedModule.Version != source.version) {
 			actual := "missing"
 			if ok {
 				actual = selectedModule.Version
@@ -259,6 +257,9 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		moduleRoot := selectedModule.Dir
 		if source.devPath != "" {
+			if err := validateLocalReplacement(selectedModule, source.devPath); err != nil {
+				return nil, err
+			}
 			moduleRoot = source.devPath
 		}
 		identity, identityErr := moduleIdentity(filepath.Join(moduleRoot, "go.mod"))
@@ -300,7 +301,10 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		if source.devPath != "" {
 			locked.SourceKind = "dev"
-			replacements = append(replacements, Replacement{ModulePath: source.plugin.Module, SyntheticVersion: source.synthetic, DevPath: source.devPath, ContentSHA256: source.digest})
+			// The initial synthetic version only roots the local module. MVS
+			// may raise it through another plugin's requirements without
+			// changing the source selected by the versionless replacement.
+			replacements = append(replacements, Replacement{ModulePath: source.plugin.Module, SyntheticVersion: selectedModule.Version, DevPath: source.devPath, ContentSHA256: source.digest})
 		} else {
 			locked.SourceKind, locked.Version, locked.ModuleSum = "module", source.version, selectedModule.Sum
 		}
@@ -313,7 +317,11 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	sort.Strings(replacementPaths)
 	for _, path := range replacementPaths {
 		replacement := moduleReplacements[path]
-		replacements = append(replacements, Replacement{ModulePath: replacement.modulePath, SyntheticVersion: replacement.synthetic, DevPath: replacement.devPath, ContentSHA256: replacement.digest})
+		selectedModule := selectedByPath[path]
+		if err := validateLocalReplacement(selectedModule, replacement.devPath); err != nil {
+			return nil, err
+		}
+		replacements = append(replacements, Replacement{ModulePath: replacement.modulePath, SyntheticVersion: selectedModule.Version, DevPath: replacement.devPath, ContentSHA256: replacement.digest})
 	}
 	sort.Slice(replacements, func(i, j int) bool { return replacements[i].ModulePath < replacements[j].ModulePath })
 
@@ -386,6 +394,20 @@ func componentPackages(components []ManifestComponent) []string {
 	return result
 }
 
+func validateLocalReplacement(selected resolvedModule, directory string) error {
+	actual := "missing local replacement"
+	if selected.Replace != nil {
+		if selected.Replace.Version == "" && filepath.Clean(selected.Replace.Dir) == directory {
+			return nil
+		}
+		actual = selected.Replace.Path
+		if selected.Replace.Version != "" {
+			actual += "@" + selected.Replace.Version
+		}
+	}
+	return &Error{Code: "INGOT-RESOLVE-LOCAL-REPLACEMENT", Plugin: selected.Path, Want: directory, Actual: actual}
+}
+
 func moduleIdentity(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -434,8 +456,16 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 	content.WriteString(strings.TrimPrefix(options.Toolchain, "go"))
 	content.WriteString("\n\nrequire (\n")
 	seen := map[string]bool{}
+	selectedVersions := map[string]string{}
+	for _, item := range transitive {
+		selectedVersions[item.Path] = item.Version
+	}
 	for _, source := range sources {
-		_, _ = fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, source.version)
+		version := source.version
+		if source.devPath != "" && selectedVersions[source.plugin.Module] != "" {
+			version = selectedVersions[source.plugin.Module]
+		}
+		_, _ = fmt.Fprintf(&content, "\t%s %s\n", source.plugin.Module, version)
 		seen[source.plugin.Module] = true
 	}
 	if !seen[IngotABIModulePath] {
@@ -479,7 +509,7 @@ func writeResolveRoot(directory string, options ResolveOptions, sources []direct
 // by the developer workspace (go.work). It returns nil when no workspace
 // replacement exists, in which case the module is served from the module
 // graph like any other dependency.
-func resolveModuleReplacement(modulePath, version string) (*moduleReplacement, error) {
+func resolveModuleReplacement(modulePath string) (*moduleReplacement, error) {
 	locator := workspaceModuleReplacement(modulePath)
 	if locator == "" {
 		return nil, nil
@@ -500,7 +530,7 @@ func resolveModuleReplacement(modulePath, version string) (*moduleReplacement, e
 	if err != nil {
 		return nil, err
 	}
-	return &moduleReplacement{modulePath: modulePath, synthetic: version, devPath: absolute, digest: digest}, nil
+	return &moduleReplacement{modulePath: modulePath, devPath: absolute, digest: digest}, nil
 }
 
 // discoverWorkspaceReplacements detects ordinary contract modules in the
@@ -538,7 +568,7 @@ func discoverWorkspaceReplacements(selected []resolvedModule, existing map[strin
 		if err != nil {
 			return nil, err
 		}
-		result[item.Path] = moduleReplacement{modulePath: item.Path, synthetic: item.Version, devPath: absolute, digest: digest}
+		result[item.Path] = moduleReplacement{modulePath: item.Path, devPath: absolute, digest: digest}
 	}
 	return result, nil
 }
