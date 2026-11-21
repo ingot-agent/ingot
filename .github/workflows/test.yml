@@ -12,6 +12,13 @@ concurrency:
   group: test-${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Must match RELEASE_GO_VERSION in release.yml. The unit job deliberately stays
+# on the minimum declared by go.mod so the supported floor keeps being tested;
+# the smoke job builds with the release toolchain, which is what a published
+# binary actually contains.
+env:
+  RELEASE_GO_VERSION: "1.27.4"
+
 jobs:
   test:
     name: Core tests
@@ -45,7 +52,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.RELEASE_GO_VERSION }}
           cache-dependency-path: go.sum
 
       - name: Resolve and build the default released profile
