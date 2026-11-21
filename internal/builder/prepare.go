@@ -12,7 +12,7 @@ type generatedRuntime struct {
 	environment []string
 }
 
-func validateGeneratedRuntimeInputs(desired *DesiredPlugins, lock *Lock) error {
+func validateGeneratedRuntimeInputs(ctx context.Context, desired *DesiredPlugins, lock *Lock) error {
 	if err := desired.Validate(); err != nil {
 		return err
 	}
@@ -29,10 +29,18 @@ func validateGeneratedRuntimeInputs(desired *DesiredPlugins, lock *Lock) error {
 	if lock.Target.GOOS != runtime.GOOS || lock.Target.GOARCH != runtime.GOARCH {
 		return &Error{Code: "INGOT-BUILD-CHECK-TARGET", Want: runtime.GOOS + "/" + runtime.GOARCH, Actual: lock.Target.GOOS + "/" + lock.Target.GOARCH}
 	}
-	if runtime.Version() != lock.Toolchain.Version {
-		return &Error{Code: "INGOT-BUILD-TOOLCHAIN", Want: lock.Toolchain.Version, Actual: runtime.Version()}
+	// Gate on the go command that will actually compile the image, not on the
+	// toolchain that compiled this Builder. Only a minimum is required: any
+	// newer release toolchain can build a module with an older go directive.
+	toolchain, err := probeGoToolchain(ctx)
+	if err != nil {
+		return err
 	}
-	return nil
+	requirement := goRequirement{Version: lock.MinimumGoVersion}
+	if derived, recorded := requiredGoVersion(lock.Modules); recorded && compareGoVersions(derived.Version, requirement.Version) > 0 {
+		requirement = derived
+	}
+	return requireGoToolchain(toolchain, requirement)
 }
 
 // prepareGeneratedRuntime restores and verifies the locked root module,

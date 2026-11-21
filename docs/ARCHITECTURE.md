@@ -92,10 +92,30 @@ and confirm no local replacements appear in the lock; an external `--home`
 alone does not isolate the current working directory.
 
 The ImageID hashes the canonical BuildManifest, including effective target,
-toolchain, build settings and graph inputs. ArtifactDigest hashes the resulting
-executable bytes. If the same ImageID already exists but rebuilding produces
-different bytes, Core reports a reproducibility error instead of overwriting
-it. Different toolchains/targets can legitimately create different ImageIDs.
+the generated module's Go language floor, build settings and graph inputs.
+ArtifactDigest hashes the resulting executable bytes. If the same ImageID
+already exists but rebuilding produces different bytes, Core reports a
+reproducibility error instead of overwriting it. Different targets can
+legitimately create different ImageIDs.
+
+The Go toolchain requirements of a build and of a Builder binary are separate
+facts:
+
+- The generated root module declares the language floor required by the locked
+  graph. A build accepts any release toolchain on `PATH` at least that new, so
+  the Go version that compiled the Core no longer pins the user's toolchain.
+- The Builder does not type-check plugin sources itself. It runs
+  `go list -export -deps` with the locked environment and decodes the resulting
+  compiler export data, so the language ceiling is the toolchain on `PATH`
+  rather than the release that compiled the Core. A plugin may therefore adopt
+  a newer Go without waiting for a Core release.
+- The exported type data must be readable by this Core's
+  `golang.org/x/tools/go/gcexportdata`, which follows Go's policy of supporting
+  the last two releases plus tip. Export data produced by a newer compiler than
+  the reader understands is reported as `INGOT-PACKAGES-EXPORT`; unlike a
+  language-version mismatch, that is fixed by upgrading the Core, and it changes
+  on a far slower cadence than plugins adopting new Go releases.
+- The Core source itself still requires Go 1.24.2 or newer to compile.
 
 Static wiring does not mean the runtime contains no reflection at all. The
 current generated validation helpers use `reflect` to reject nil capabilities

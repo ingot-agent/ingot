@@ -50,6 +50,21 @@ PowerShell 对应 `-Prefix`、`-BinaryDir`、`-DestDir`、`-Version` 与 `-Force
 GOWORK=off go build -o ingot ./cmd/ingot
 ```
 
+构建 Runtime Image 同样需要在 `PATH` 中提供 Go，但不要求与编译 Core 的版本完全一致：
+只要不低于锁定模块图的 `minimum_go_version` 即可，更新的工具链也被接受。所选插件可能
+抬高该下限，构建错误会给出具体版本要求。由于 Core 通过读取编译器的 export data 分析插件
+契约，而不是在进程内类型检查源码，插件可以使用比构建 Core 更新的 Go；唯一剩下的上限是
+export data 格式，错误码为 `INGOT-PACKAGES-EXPORT`，升级 Core 即可解决。
+
+`resolve`、`build`、`generate` 都会在开始工作前读取工具链，因此 Go 缺失或不可用会在第一条
+命令就失败，而不是进行到一半：
+
+| 错误码 | 含义 |
+| --- | --- |
+| `INGOT-GO-MISSING` | `PATH` 上没有 `go` 命令。 |
+| `INGOT-BUILD-TOOLCHAIN` | `go` 存在但不是 `go1.x.y` release，或低于模块图要求。 |
+| `INGOT-PACKAGES-EXPORT` | 工具链写出的 export data 格式本 Core 无法解码，需要升级 Core。 |
+
 Release workflow 生成 Linux、macOS 和 Windows 的 `amd64` 与 `arm64` 归档。
 Unix 需要确保安装目录位于 `PATH` 中，脚本不会修改 Shell 启动文件；Windows 安装器会
 更新用户与当前进程的 `PATH`，使用 `-DestDir` 暂存安装时除外。

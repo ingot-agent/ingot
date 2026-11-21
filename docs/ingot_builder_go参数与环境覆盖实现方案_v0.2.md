@@ -557,6 +557,17 @@ flowchart TD
 
 ### 9.1 Go command 与 toolchain
 
+> **后续变更（当前实现）**：本节要求把探测到的 toolchain 精确版本写入 lock 并逐次比对。
+> 当前实现改为记录并校验**最低**版本要求：lock 保存 `minimum_go_version`（由模块图推导，
+> 与机器无关），构建时探测 `PATH` 上的 `go` 并要求不低于该值，允许更新的工具链。生成
+> `go.mod` 的 `go` 行同样取该最低要求，而不是 Builder 自身的编译版本。
+>
+> 此外，组件图分析不再由 Builder 进程内做类型检查，而是执行 `go list -export` 并读取
+> 编译器产出的 export data。这样插件语言版本的上限由 `PATH` 上的工具链决定，而不是编译
+> Core 的 Go 版本；Core 自身 Go 版本不再限制插件可用的语言特性。剩下唯一的上限是 export
+> data 格式（遵循 Go“最近两个 release + tip”策略），错误码 `INGOT-PACKAGES-EXPORT`。
+> 原因与迁移说明见 [ARCHITECTURE.md](ARCHITECTURE.md) 与 [UPGRADING.md](UPGRADING.md)。
+
 Builder 必须：
 
 1. 解析唯一 Go executable path；

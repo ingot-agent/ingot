@@ -55,6 +55,24 @@ To build the Core from a checkout of this repository, Go 1.24.2 or newer is requ
 GOWORK=off go build -o ingot ./cmd/ingot
 ```
 
+Building a Runtime Image also needs Go on `PATH`, but not the exact release that
+compiled the Core. Any release toolchain at least as new as the locked graph's
+`minimum_go_version` works, and a newer one is accepted. A selected plugin can
+raise that floor; the build error names the required version. Because the Core
+analyzes plugin contracts by decoding compiler export data instead of
+type-checking sources itself, a plugin may use a newer Go than the release that
+built the Core; the only remaining ceiling is the export-data format, reported
+as `INGOT-PACKAGES-EXPORT`.
+
+`resolve`, `build`, and `generate` all read the toolchain before doing work, so
+a missing or unusable Go fails at the first command rather than partway through:
+
+| Code | Meaning |
+| --- | --- |
+| `INGOT-GO-MISSING` | No `go` command on `PATH`. |
+| `INGOT-BUILD-TOOLCHAIN` | The `go` command exists but is not a `go1.x.y` release, or is older than the graph requires. |
+| `INGOT-PACKAGES-EXPORT` | The toolchain writes an export-data format this Core cannot decode; upgrade the Core. |
+
 The release workflow produces Linux, macOS, and Windows archives for `amd64`
 and `arm64`. On Unix, ensure the installation directory is on `PATH` (the script
 does not change your shell startup files). The Windows installer updates the

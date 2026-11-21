@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,7 +39,6 @@ const (
 type ResolveOptions struct {
 	IngotVersion   string
 	BuilderVersion string
-	Toolchain      string
 	GOOS           string
 	GOARCH         string
 	GOExperiment   []string
@@ -57,9 +57,6 @@ func (options ResolveOptions) defaults() (ResolveOptions, error) {
 	}
 	if options.BuilderVersion == "" {
 		options.BuilderVersion = DefaultBuilderVersion
-	}
-	if options.Toolchain == "" {
-		options.Toolchain = runtime.Version()
 	}
 	if options.GOOS == "" {
 		options.GOOS = runtime.GOOS
@@ -98,15 +95,16 @@ func defaultTuning(goarch string) []TargetKey {
 }
 
 type resolvedModule struct {
-	Path     string
-	Version  string
-	Sum      string
-	GoModSum string
-	Dir      string
-	GoMod    string
-	Main     bool
-	Replace  *resolvedModule
-	Error    *struct{ Err string }
+	Path      string
+	Version   string
+	Sum       string
+	GoModSum  string
+	GoVersion string
+	Dir       string
+	GoMod     string
+	Main      bool
+	Replace   *resolvedModule
+	Error     *struct{ Err string }
 }
 
 type directSource struct {
@@ -131,6 +129,14 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	}
 	var err error
 	options, err = options.defaults()
+	if err != nil {
+		return nil, err
+	}
+	// Resolve is the first step that shells out to Go, so reject an unusable
+	// toolchain here instead of letting the raw go command fail afterwards. A
+	// resolution that succeeded would otherwise only be rejected later, at
+	// build time, by the minimum-version gate.
+	toolchain, err := probeGoToolchain(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +180,21 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		}
 		sources[i].devPath, sources[i].digest, sources[i].version = absolute, digest, synthetic
 	}
+	// A local plugin is the case where the toolchain requirement is knowable
+	// before anything is downloaded. Reading its go directive turns the go
+	// command's module error into an ingot diagnostic that names the plugin.
+	for _, source := range sources {
+		if source.devPath == "" {
+			continue
+		}
+		requirement, requirementErr := sourceGoRequirement(source.devPath, source.plugin.Module)
+		if requirementErr != nil {
+			return nil, requirementErr
+		}
+		if err := requireGoToolchain(toolchain, requirement); err != nil {
+			return nil, err
+		}
+	}
 
 	staging, err := os.MkdirTemp("", "ingot-resolve-")
 	if err != nil {
@@ -184,7 +205,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if runtimeReplacement != nil {
 		moduleReplacements[runtimeReplacement.modulePath] = *runtimeReplacement
 	}
-	if err := writeResolveRoot(staging, options, sources, nil, moduleReplacements); err != nil {
+	if err := writeResolveRoot(staging, sources, nil, moduleReplacements); err != nil {
 		return nil, err
 	}
 	environment := resolveEnvironment(options)
@@ -223,7 +244,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 			break
 		}
 		selected = next
-		if err := writeResolveRoot(staging, options, sources, selected, moduleReplacements); err != nil {
+		if err := writeResolveRoot(staging, sources, selected, moduleReplacements); err != nil {
 			return nil, err
 		}
 		if pass == resolveGraphPasses-1 {
@@ -338,7 +359,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		if goModSum == "" {
 			return nil, &Error{Code: "INGOT-RESOLVE-GOMOD-SUM", Plugin: selectedModule.Path, Actual: selectedModule.Version}
 		}
-		modules = append(modules, LockedModule{Path: selectedModule.Path, Version: selectedModule.Version, Sum: sum, GoModSum: goModSum})
+		modules = append(modules, LockedModule{Path: selectedModule.Path, Version: selectedModule.Version, Sum: sum, GoModSum: goModSum, GoVersion: selectedModule.GoVersion})
 	}
 	sort.Slice(modules, func(i, j int) bool {
 		if modules[i].Path != modules[j].Path {
@@ -374,7 +395,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	}
 	lock := &Lock{
 		LockVersion: 3, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
-		Replacements: replacements, Runtime: runtimeLock, Toolchain: ToolchainLock{Version: options.Toolchain},
+		Replacements: replacements, MinimumGoVersion: minimumGoVersion(selected).Version, Runtime: runtimeLock,
 		Target:      TargetLock{GOOS: options.GOOS, GOARCH: options.GOARCH, CGOEnabled: false, GOExperiment: options.GOExperiment, Tuning: options.Tuning},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"},
 		Build:       BuildLock{Trimpath: true, BuildVCS: false, Tags: options.Tags, LDFlags: options.LDFlags, GCFlags: options.GCFlags, ASMFlags: options.ASMFlags},
@@ -450,10 +471,34 @@ func selectedGraphEqual(previous, next []resolvedModule) bool {
 	return true
 }
 
-func writeResolveRoot(directory string, options ResolveOptions, sources []directSource, transitive []resolvedModule, moduleReplacements map[string]moduleReplacement) error {
+// minimumGoVersion returns the language floor of the whole selected graph. It
+// includes local replacements, which never enter Lock.Modules but still
+// constrain the generated go directive.
+func minimumGoVersion(selected []resolvedModule) goRequirement {
+	requirement := goRequirement{Version: MinimumGeneratedGoVersion}
+	for _, item := range selected {
+		if item.Main {
+			continue
+		}
+		version, ok := normalizeGoVersion(item.GoVersion)
+		if !ok {
+			continue
+		}
+		if compareGoVersions(version, requirement.Version) > 0 {
+			source := item.Path
+			if item.Version != "" {
+				source += "@" + item.Version
+			}
+			requirement = goRequirement{Version: version, Source: source}
+		}
+	}
+	return requirement
+}
+
+func writeResolveRoot(directory string, sources []directSource, transitive []resolvedModule, moduleReplacements map[string]moduleReplacement) error {
 	var content strings.Builder
 	content.WriteString("module ingot.local/runtime-image\n\ngo ")
-	content.WriteString(strings.TrimPrefix(options.Toolchain, "go"))
+	content.WriteString(strings.TrimPrefix(minimumGoVersion(transitive).Version, "go"))
 	content.WriteString("\n\nrequire (\n")
 	seen := map[string]bool{}
 	selectedVersions := map[string]string{}
@@ -640,7 +685,14 @@ func runGo(ctx context.Context, directory string, environment []string, argument
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		return nil, &Error{Code: "INGOT-GO-COMMAND", Path: directory, Actual: "go " + strings.Join(arguments, " "), Err: fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))}
+		// A missing go command must not surface as a bare "exit status 127" with
+		// empty stderr; it is the most common first-run failure and the operator
+		// needs the requirement, not the shell exit code.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, &Error{Code: "INGOT-GO-COMMAND", Path: directory, Actual: "go " + strings.Join(arguments, " "), Err: fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))}
+		}
+		return nil, &Error{Code: "INGOT-GO-MISSING", Path: directory, Actual: "go " + strings.Join(arguments, " "), Want: "a Go toolchain on PATH, at least " + MinimumGeneratedGoVersion, Err: err}
 	}
 	return stdout.Bytes(), nil
 }

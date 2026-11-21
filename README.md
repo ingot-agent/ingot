@@ -110,9 +110,10 @@ Remove-Item $installer
 ```
 
 Then initialize and build the agent composition. Building Runtime Images
-requires Go on `PATH` (the Core source requires Go 1.24.2 or newer), even when
-the Core was installed from a Release. See the [Usage Guide](./docs/USAGE.md)
-for build requirements and platform support.
+requires Go on `PATH`, even when the Core was installed from a Release. The Core
+source itself requires Go 1.24.2 or newer; an Image build accepts any release
+toolchain at least as new as the locked module graph requires. See the
+[Usage Guide](./docs/USAGE.md) for build requirements and platform support.
 
 ```sh
 # 1. Initialize managed Home

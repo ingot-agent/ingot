@@ -240,6 +240,29 @@ outer Image manifest remains v3, and existing Images remain usable and are
 verified against their stored build manifests. This change does not migrate
 Managed Home or plugin state.
 
+The current Builder generates Canonical BuildManifest v5, which adds
+`minimum_go_version` to the recorded toolchain facts and changes ImageIDs once
+again. The same rebuild-only expectation applies: recipes, locks, Images and
+plugin state need no migration, and an existing Image stays valid until it is
+rebuilt.
+
+The generated module's `go` directive is no longer the Go version that compiled
+the Core. It is the language floor of the locked module graph, recorded in the
+lock as `minimum_go_version`. Building therefore requires a Go toolchain on
+`PATH` at least that new instead of the exact release that produced the Core;
+accepting a newer toolchain no longer fails with "updates to go.mod needed".
+Locks resolved before this change keep their previous behavior until the next
+resolve adds `minimum_go_version` and `modules[].go_version`, so resolve once
+after upgrading.
+
+The Builder also no longer type-checks plugin sources in-process. It decodes
+compiler export data produced by `go list -export`, which removes the previous
+requirement that the Core binary be compiled by a Go at least as new as every
+selected plugin. A plugin can adopt a newer Go with an older Core as long as the
+toolchain on `PATH` satisfies the graph. The one remaining ceiling is the
+export-data format, which follows Go's "last two releases plus tip" policy and
+is reported as `INGOT-PACKAGES-EXPORT`; upgrading the Core fixes that.
+
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated
 and account for external services/ports: a copied API key or workspace path can
