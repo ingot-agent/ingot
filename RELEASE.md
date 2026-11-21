@@ -18,8 +18,8 @@ are in [docs/UPGRADING.md](docs/UPGRADING.md).
 | Export-data compatibility | `golang.org/x/tools` in [`go.mod`](go.mod) | The Builder decodes compiler export data, so a `RELEASE_GO_VERSION` that writes a newer bitstream than the pinned x/tools reads makes plugin builds fail with `INGOT-PACKAGES-EXPORT`. The release `validate` job runs the Core tests with that toolchain on `PATH`, so a mismatch fails before a tag is published |
 | Persistent formats | [FILE_FORMATS.md](docs/FILE_FORMATS.md), [UPGRADING.md](docs/UPGRADING.md) | Independent format versions and migration limitations |
 
-At this source revision the Core development line is `0.3.2-dev`, composition
-protocol is `0.3.0`, Builder identity is `0.3.1`, ABI is `v0.1.0`, and both
+At this source revision the Core development line is `0.3.3-dev`, composition
+protocol is `0.3.0`, Builder identity is `0.3.2`, ABI is `v0.1.0`, and both
 profiles select plugin `v0.1.0` modules. These are source facts, not a promise
 that a same-numbered Core Release exists or that all those repositories are
 released together. Read these files at the intended release commit; do not copy
@@ -170,6 +170,19 @@ git merge-base --is-ancestor <reviewed-commit> origin/main
 git tag -a vX.Y.Z <reviewed-commit> -m "Release vX.Y.Z"
 git push origin refs/tags/vX.Y.Z
 ```
+
+Confirm the source development line at the reviewed commit before tagging. The
+workflow rejects a mismatch between this value and the tag, but it can only do so
+after the tag exists:
+
+```sh
+git show <reviewed-commit>:internal/buildinfo/buildinfo.go | grep -m1 'CoreVersion = '
+# Must print X.Y.Z-dev for tag vX.Y.Z.
+```
+
+Push the version-advance commit through review and merge it before tagging. The
+development line is not bumped automatically by a release, so a tag cut
+immediately after an unrelated merge will fail validation.
 
 [`release.yml`](.github/workflows/release.yml) then performs:
 
