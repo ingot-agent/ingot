@@ -159,3 +159,68 @@ func TestRequireGoToolchainNamesTheRaisingModule(t *testing.T) {
 		t.Fatalf("newest toolchain rejected: %v", err)
 	}
 }
+
+func TestSourceGoRequirementReadsTheDirective(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "go.mod"), "module example.com/plugin\n\ngo 1.25.0\n")
+	requirement, err := sourceGoRequirement(directory, "example.com/plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement.Version != "go1.25.0" || requirement.Source != "example.com/plugin" {
+		t.Fatalf("requirement = %#v", requirement)
+	}
+}
+
+func TestSourceGoRequirementWithoutDirectiveUsesFloor(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "go.mod"), "module example.com/plugin\n")
+	requirement, err := sourceGoRequirement(directory, "example.com/plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement.Version != MinimumGeneratedGoVersion || requirement.Source != "" {
+		t.Fatalf("requirement = %#v", requirement)
+	}
+}
+
+func TestSourceGoRequirementRejectsMalformedDirective(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "go.mod"), "module example.com/plugin\n\ngo 1.99rc1\n")
+	if _, err := sourceGoRequirement(directory, "example.com/plugin"); err == nil {
+		t.Fatal("a candidate toolchain was accepted as a language version")
+	}
+}
+
+// TestProbeGoToolchainRejectsMissingGo covers the most common first-run
+// failure: no go command on PATH. The diagnostic must name the requirement
+// instead of surfacing a shell exit code.
+func TestProbeGoToolchainRejectsMissingGo(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := probeGoToolchain(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "INGOT-GO-MISSING") || !strings.Contains(err.Error(), MinimumGeneratedGoVersion) {
+		t.Fatalf("missing toolchain error = %v", err)
+	}
+}
+
+// TestProbeGoToolchainRejectsCandidateToolchain pins that resolve, not only
+// build, rejects a toolchain whose version cannot be compared against a go
+// directive.
+func TestProbeGoToolchainRejectsCandidateToolchain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is POSIX-only")
+	}
+	directory := t.TempDir()
+	script := filepath.Join(directory, "go")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho go1.27rc1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, err := probeGoToolchain(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "INGOT-BUILD-TOOLCHAIN") || !strings.Contains(err.Error(), "go1.27rc1") {
+		t.Fatalf("candidate toolchain error = %v", err)
+	}
+}

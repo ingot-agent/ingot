@@ -4,9 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"golang.org/x/mod/modfile"
 )
 
 // MinimumGeneratedGoVersion is the oldest Go language version the Builder's
@@ -129,4 +132,35 @@ func requireGoToolchain(toolchain string, requirement goRequirement) error {
 		want += " raised by " + requirement.Source
 	}
 	return &Error{Code: "INGOT-BUILD-TOOLCHAIN", Want: want, Actual: toolchain, Err: fmt.Errorf("the selected module graph uses a newer Go language version than the toolchain on PATH")}
+}
+
+// sourceGoRequirement reads the go directive of a local module that will be
+// built as part of the generated runtime.
+//
+// Go raises a module's own go directive to the maximum demanded by its
+// dependencies, so this directive is the effective language requirement of the
+// plugin as a whole, not merely its hand-written line. Reading it before the
+// resolver runs means a mismatched toolchain is reported against the plugin that
+// needs it instead of surfacing as a module download failure.
+func sourceGoRequirement(directory, modulePath string) (goRequirement, error) {
+	data, err := os.ReadFile(filepath.Join(directory, "go.mod"))
+	if err != nil {
+		return goRequirement{}, &Error{Code: "INGOT-MODULE-GOMOD", Path: filepath.Join(directory, "go.mod"), Err: err}
+	}
+	parsed, err := modfile.Parse("go.mod", data, nil)
+	if err != nil {
+		return goRequirement{}, &Error{Code: "INGOT-MODULE-GOMOD", Path: filepath.Join(directory, "go.mod"), Err: err}
+	}
+	requirement := goRequirement{Version: MinimumGeneratedGoVersion}
+	if parsed.Go == nil {
+		return requirement, nil
+	}
+	version, ok := normalizeGoVersion(parsed.Go.Version)
+	if !ok {
+		return goRequirement{}, &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "go", Plugin: modulePath, Actual: parsed.Go.Version, Want: "a go.mod language version such as 1.24.0"}
+	}
+	if compareGoVersions(version, requirement.Version) > 0 {
+		requirement = goRequirement{Version: version, Source: modulePath}
+	}
+	return requirement, nil
 }

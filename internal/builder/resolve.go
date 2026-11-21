@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -131,6 +132,14 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if err != nil {
 		return nil, err
 	}
+	// Resolve is the first step that shells out to Go, so reject an unusable
+	// toolchain here instead of letting the raw go command fail afterwards. A
+	// resolution that succeeded would otherwise only be rejected later, at
+	// build time, by the minimum-version gate.
+	toolchain, err := probeGoToolchain(ctx)
+	if err != nil {
+		return nil, err
+	}
 	runtimeReplacement, err := resolveModuleReplacement(IngotABIModulePath)
 	if err != nil {
 		return nil, err
@@ -170,6 +179,21 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 			return nil, digestErr
 		}
 		sources[i].devPath, sources[i].digest, sources[i].version = absolute, digest, synthetic
+	}
+	// A local plugin is the case where the toolchain requirement is knowable
+	// before anything is downloaded. Reading its go directive turns the go
+	// command's module error into an ingot diagnostic that names the plugin.
+	for _, source := range sources {
+		if source.devPath == "" {
+			continue
+		}
+		requirement, requirementErr := sourceGoRequirement(source.devPath, source.plugin.Module)
+		if requirementErr != nil {
+			return nil, requirementErr
+		}
+		if err := requireGoToolchain(toolchain, requirement); err != nil {
+			return nil, err
+		}
 	}
 
 	staging, err := os.MkdirTemp("", "ingot-resolve-")
@@ -661,7 +685,14 @@ func runGo(ctx context.Context, directory string, environment []string, argument
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
-		return nil, &Error{Code: "INGOT-GO-COMMAND", Path: directory, Actual: "go " + strings.Join(arguments, " "), Err: fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))}
+		// A missing go command must not surface as a bare "exit status 127" with
+		// empty stderr; it is the most common first-run failure and the operator
+		// needs the requirement, not the shell exit code.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return nil, &Error{Code: "INGOT-GO-COMMAND", Path: directory, Actual: "go " + strings.Join(arguments, " "), Err: fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))}
+		}
+		return nil, &Error{Code: "INGOT-GO-MISSING", Path: directory, Actual: "go " + strings.Join(arguments, " "), Want: "a Go toolchain on PATH, at least " + MinimumGeneratedGoVersion, Err: err}
 	}
 	return stdout.Bytes(), nil
 }
