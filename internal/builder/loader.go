@@ -97,9 +97,13 @@ func loadPackages(ctx context.Context, rootDirectory string, environment []strin
 	return packages, diagnostics, nil
 }
 
-// readExportData decodes one package's compiler export data. A failure here
-// does not mean the plugin is broken: the compiler already accepted it, so the
-// remaining cause is that this Core's export-data reader predates the format.
+// readExportData decodes one package's compiler export data.
+//
+// A failure here does not mean the plugin is broken: the compiler already
+// accepted it. The only remaining cause is that this Core's export-data reader
+// predates the format the toolchain wrote. The unified bitstream carries a
+// format version that a decoder must know in advance, so no amount of care at
+// the call site can make an old decoder read a newer stream.
 func readExportData(path string, files *token.FileSet, imports map[string]*types.Package, importPath string) (*types.Package, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -112,9 +116,19 @@ func readExportData(path string, files *token.FileSet, imports map[string]*types
 	}
 	pkg, err := gcexportdata.Read(reader, files, imports, importPath)
 	if err != nil {
-		return nil, fmt.Errorf("this Core cannot decode export data written by the selected Go toolchain; upgrading the Core adds support for newer Go releases: %w", err)
+		return nil, fmt.Errorf("the Go toolchain on PATH writes an export-data format this Core does not understand; upgrade the Core to build with this toolchain (%s)", decodeFailureReason(err))
 	}
 	return pkg, nil
+}
+
+// decodeFailureReason drops the importer's "please report an issue" framing,
+// which addresses the Go toolchain maintainers rather than an ingot operator.
+func decodeFailureReason(err error) string {
+	message := err.Error()
+	if index := strings.Index(message, "; please report an issue"); index >= 0 {
+		message = message[:index] + ")"
+	}
+	return message
 }
 
 // nonProgressOutput removes go command progress lines so only diagnostics from
