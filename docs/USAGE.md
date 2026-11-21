@@ -59,9 +59,10 @@ Building a Runtime Image also needs Go on `PATH`, but not the exact release that
 compiled the Core. Any release toolchain at least as new as the locked graph's
 `minimum_go_version` works, and a newer one is accepted. A selected plugin can
 raise that floor; the build error names the required version. Because the Core
-analyzes plugin sources in-process, a Core built with an older Go than a
-selected plugin reports `INGOT-PACKAGES-ANALYZER-TOOLCHAIN` and must be upgraded
-before that composition can be built.
+analyzes plugin contracts by decoding compiler export data instead of
+type-checking sources itself, a plugin may use a newer Go than the release that
+built the Core; the only remaining ceiling is the export-data format, reported
+as `INGOT-PACKAGES-EXPORT`.
 
 The release workflow produces Linux, macOS, and Windows archives for `amd64`
 and `arm64`. On Unix, ensure the installation directory is on `PATH` (the script

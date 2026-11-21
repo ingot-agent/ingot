@@ -52,8 +52,9 @@ GOWORK=off go build -o ingot ./cmd/ingot
 
 构建 Runtime Image 同样需要在 `PATH` 中提供 Go，但不要求与编译 Core 的版本完全一致：
 只要不低于锁定模块图的 `minimum_go_version` 即可，更新的工具链也被接受。所选插件可能
-抬高该下限，构建错误会给出具体版本要求。由于 Core 在进程内分析插件源码，若 Core 自身的
-Go 版本低于所选插件，会报告 `INGOT-PACKAGES-ANALYZER-TOOLCHAIN`，此时需要升级 Core。
+抬高该下限，构建错误会给出具体版本要求。由于 Core 通过读取编译器的 export data 分析插件
+契约，而不是在进程内类型检查源码，插件可以使用比构建 Core 更新的 Go；唯一剩下的上限是
+export data 格式，错误码为 `INGOT-PACKAGES-EXPORT`，升级 Core 即可解决。
 
 Release workflow 生成 Linux、macOS 和 Windows 的 `amd64` 与 `arm64` 归档。
 Unix 需要确保安装目录位于 `PATH` 中，脚本不会修改 Shell 启动文件；Windows 安装器会

@@ -104,10 +104,17 @@ facts:
 - The generated root module declares the language floor required by the locked
   graph. A build accepts any release toolchain on `PATH` at least that new, so
   the Go version that compiled the Core no longer pins the user's toolchain.
-- The Builder type-checks plugin sources in-process, so this Core binary's own
-  Go release must also be at least as new as the newest analyzed plugin. A
-  mismatch is reported as `INGOT-PACKAGES-ANALYZER-TOOLCHAIN` and requires a
-  Core built with a newer Go, not a different plugin selection.
+- The Builder does not type-check plugin sources itself. It runs
+  `go list -export -deps` with the locked environment and decodes the resulting
+  compiler export data, so the language ceiling is the toolchain on `PATH`
+  rather than the release that compiled the Core. A plugin may therefore adopt
+  a newer Go without waiting for a Core release.
+- The exported type data must be readable by this Core's
+  `golang.org/x/tools/go/gcexportdata`, which follows Go's policy of supporting
+  the last two releases plus tip. Export data produced by a newer compiler than
+  the reader understands is reported as `INGOT-PACKAGES-EXPORT`; unlike a
+  language-version mismatch, that is fixed by upgrading the Core, and it changes
+  on a far slower cadence than plugins adopting new Go releases.
 - The Core source itself still requires Go 1.24.2 or newer to compile.
 
 Static wiring does not mean the runtime contains no reflection at all. The

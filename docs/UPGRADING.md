@@ -253,9 +253,15 @@ lock as `minimum_go_version`. Building therefore requires a Go toolchain on
 accepting a newer toolchain no longer fails with "updates to go.mod needed".
 Locks resolved before this change keep their previous behavior until the next
 resolve adds `minimum_go_version` and `modules[].go_version`, so resolve once
-after upgrading. Separately, the Core still type-checks plugin sources with its
-own Go release, so a Core built with an older Go than a selected plugin reports
-`INGOT-PACKAGES-ANALYZER-TOOLCHAIN`; upgrade the Core rather than the toolchain.
+after upgrading.
+
+The Builder also no longer type-checks plugin sources in-process. It decodes
+compiler export data produced by `go list -export`, which removes the previous
+requirement that the Core binary be compiled by a Go at least as new as every
+selected plugin. A plugin can adopt a newer Go with an older Core as long as the
+toolchain on `PATH` satisfies the graph. The one remaining ceiling is the
+export-data format, which follows Go's "last two releases plus tip" policy and
+is reported as `INGOT-PACKAGES-EXPORT`; upgrading the Core fixes that.
 
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated

@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-
-	"golang.org/x/tools/go/packages"
 )
 
 type Cardinality string
@@ -34,7 +32,7 @@ type Component struct {
 	ComponentIndex int
 	ImportPath     string
 	PackageName    string
-	Package        *packages.Package
+	Package        *loadedPackage
 	Dependencies   *types.Named
 	Exports        *types.Named
 	DependencyList []*Dependency
@@ -98,32 +96,14 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 	if len(lock.Build.Tags) > 0 {
 		buildFlags = append(buildFlags, "-tags="+strings.Join(lock.Build.Tags, ","))
 	}
-	configuration := &packages.Config{Context: ctx, Dir: rootDirectory, Env: environment, Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports | packages.NeedDeps | packages.NeedTypes | packages.NeedTypesInfo | packages.NeedSyntax | packages.NeedModule, BuildFlags: buildFlags}
-	loaded, err := packages.Load(configuration, imports...)
+	loaded, diagnostics, err := loadPackages(ctx, rootDirectory, environment, buildFlags, imports)
 	if err != nil {
-		return nil, &Error{Code: "INGOT-PACKAGES-LOAD", Path: rootDirectory, Err: err}
+		return nil, err
 	}
-	byPath := map[string]*packages.Package{}
-	var loadErrors []string
-	for _, pkg := range loaded {
-		byPath[pkg.PkgPath] = pkg
-		for _, packageErr := range pkg.Errors {
-			loadErrors = append(loadErrors, packageErr.Error())
-		}
+	if len(diagnostics) > 0 {
+		return nil, &Error{Code: "INGOT-PACKAGES-ERROR", Path: rootDirectory, Err: fmt.Errorf("%s", strings.Join(diagnostics, "\n"))}
 	}
-	if len(loadErrors) > 0 {
-		// The Builder type-checks plugin sources in-process, so its own Go
-		// release sets a hard language ceiling: go/types refuses a package whose
-		// go directive is newer than the toolchain that compiled the Builder.
-		// The build toolchain is already known to be new enough at this point,
-		// so this can only be the Core binary itself.
-		for _, message := range loadErrors {
-			if strings.Contains(message, "requires newer Go version") {
-				return nil, &Error{Code: "INGOT-PACKAGES-ANALYZER-TOOLCHAIN", Path: rootDirectory, Err: fmt.Errorf("%s\nthis Core binary was built with %s and cannot analyze the selected plugins; use a Core release built with a newer Go toolchain", strings.Join(loadErrors, "\n"), runtime.Version())}
-			}
-		}
-		return nil, &Error{Code: "INGOT-PACKAGES-ERROR", Path: rootDirectory, Err: fmt.Errorf("%s", strings.Join(loadErrors, "\n"))}
-	}
+	byPath := loaded
 	contextPackage := byPath["context"]
 	if contextPackage == nil {
 		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: "context and the ingot ABI module"}
@@ -137,7 +117,7 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 		return nil, &Error{Code: "INGOT-PACKAGES-FOUNDATION", Want: IngotABIModulePath + ".Cleanup", Err: typeErr}
 	}
 	hostTypes := make(map[string]types.Type, 3)
-	for hostName, hostPackage := range map[string]*packages.Package{
+	for hostName, hostPackage := range map[string]*loadedPackage{
 		"invocation": byPath[IngotABIModulePath+"/invocation"],
 		"lifecycle":  byPath[IngotABIModulePath+"/lifecycle"],
 		"state":      byPath[IngotABIModulePath+"/state"],
@@ -210,26 +190,26 @@ func joinImport(modulePath, relative string) string {
 	return modulePath + "/" + strings.TrimPrefix(relative, "./")
 }
 
-func namedType(pkg *packages.Package, name string) (*types.Named, error) {
+func namedType(pkg *loadedPackage, name string) (*types.Named, error) {
 	object := pkg.Types.Scope().Lookup(name)
 	if object == nil {
-		return nil, fmt.Errorf("package %s has no exported %s", pkg.PkgPath, name)
+		return nil, fmt.Errorf("package %s has no exported %s", pkg.Path, name)
 	}
 	typeValue := types.Unalias(object.Type())
 	named, ok := typeValue.(*types.Named)
 	if !ok {
-		return nil, fmt.Errorf("%s.%s is not a named type", pkg.PkgPath, name)
+		return nil, fmt.Errorf("%s.%s is not a named type", pkg.Path, name)
 	}
 	return named, nil
 }
 
-func namedStruct(pkg *packages.Package, name, code string) (*types.Named, error) {
+func namedStruct(pkg *loadedPackage, name, code string) (*types.Named, error) {
 	named, err := namedType(pkg, name)
 	if err != nil {
-		return nil, &Error{Code: code, Plugin: pkg.PkgPath, Field: name, Err: err}
+		return nil, &Error{Code: code, Plugin: pkg.Path, Field: name, Err: err}
 	}
 	if _, ok := named.Underlying().(*types.Struct); !ok {
-		return nil, &Error{Code: code, Plugin: pkg.PkgPath, Field: name, Want: "exported named struct", Actual: types.TypeString(named, nil)}
+		return nil, &Error{Code: code, Plugin: pkg.Path, Field: name, Want: "exported named struct", Actual: types.TypeString(named, nil)}
 	}
 	return named, nil
 }
