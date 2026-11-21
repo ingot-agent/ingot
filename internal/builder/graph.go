@@ -112,6 +112,16 @@ func LoadGraph(ctx context.Context, rootDirectory string, lock *Lock, options Lo
 		}
 	}
 	if len(loadErrors) > 0 {
+		// The Builder type-checks plugin sources in-process, so its own Go
+		// release sets a hard language ceiling: go/types refuses a package whose
+		// go directive is newer than the toolchain that compiled the Builder.
+		// The build toolchain is already known to be new enough at this point,
+		// so this can only be the Core binary itself.
+		for _, message := range loadErrors {
+			if strings.Contains(message, "requires newer Go version") {
+				return nil, &Error{Code: "INGOT-PACKAGES-ANALYZER-TOOLCHAIN", Path: rootDirectory, Err: fmt.Errorf("%s\nthis Core binary was built with %s and cannot analyze the selected plugins; use a Core release built with a newer Go toolchain", strings.Join(loadErrors, "\n"), runtime.Version())}
+			}
+		}
 		return nil, &Error{Code: "INGOT-PACKAGES-ERROR", Path: rootDirectory, Err: fmt.Errorf("%s", strings.Join(loadErrors, "\n"))}
 	}
 	contextPackage := byPath["context"]

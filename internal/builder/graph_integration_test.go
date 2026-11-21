@@ -488,14 +488,14 @@ func fixtureGraphLock(providerA, providerB, consumer string) *Lock {
 	}
 	return &Lock{
 		LockVersion: 3, PluginsDigest: digest, IngotVersion: "0.3.0", BuilderVersion: "0.3.0",
-		Runtime:     RuntimeLock{ModulePath: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-		Toolchain:   ToolchainLock{Version: runtime.Version()},
-		Target:      TargetLock{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: defaultTuning(runtime.GOARCH)},
-		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"}, Build: BuildLock{Trimpath: true, BuildVCS: false, Tags: []string{}, LDFlags: []string{}, GCFlags: []string{}, ASMFlags: []string{}},
+		Runtime:          RuntimeLock{ModulePath: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
+		MinimumGoVersion: "go1.24.0",
+		Target:           TargetLock{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, GOExperiment: []string{}, Tuning: defaultTuning(runtime.GOARCH)},
+		Environment:      EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"}, Build: BuildLock{Trimpath: true, BuildVCS: false, Tags: []string{}, LDFlags: []string{}, GCFlags: []string{}, ASMFlags: []string{}},
 		Plugins: []LockedPlugin{plugin("example.com/provider-b", "provider-b", providerB), plugin("example.com/provider-a", "provider-a", providerA), plugin("example.com/consumer", "consumer", consumer)},
 		Modules: []LockedModule{
-			{Path: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="},
-			{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: tomlSum, GoModSum: tomlGoModSum},
+			{Path: IngotABIModulePath, Version: IngotABIVersion, Sum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoModSum: "h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", GoVersion: "1.24.0"},
+			{Path: RuntimeSupportTOMLModule, Version: RuntimeSupportTOMLVersion, Sum: tomlSum, GoModSum: tomlGoModSum, GoVersion: "1.21.0"},
 		},
 		Replacements: []Replacement{
 			{ModulePath: "example.com/consumer", SyntheticVersion: "v0.0.0", DevPath: consumer, ContentSHA256: digest},

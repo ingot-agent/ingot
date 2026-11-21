@@ -21,9 +21,8 @@ import (
 )
 
 var (
-	digestPattern    = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	toolchainPattern = regexp.MustCompile(`^go1\.[0-9]+\.[0-9]+$`)
-	platformPattern  = regexp.MustCompile(`^[a-z0-9]+$`)
+	digestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	platformPattern = regexp.MustCompile(`^[a-z0-9]+$`)
 )
 
 var supportedTargets = map[string]bool{
@@ -41,19 +40,25 @@ var supportedTargets = map[string]bool{
 }
 
 type Lock struct {
-	LockVersion    int             `toml:"lock_version"`
-	PluginsDigest  string          `toml:"plugins_digest"`
-	IngotVersion   string          `toml:"ingot_version"`
-	BuilderVersion string          `toml:"builder_version"`
-	Replacements   []Replacement   `toml:"replacements"`
-	Runtime        RuntimeLock     `toml:"runtime"`
-	Toolchain      ToolchainLock   `toml:"-"`
-	Target         TargetLock      `toml:"-"`
-	Environment    EnvironmentLock `toml:"-"`
-	Build          BuildLock       `toml:"-"`
-	Plugins        []LockedPlugin  `toml:"plugins"`
-	Modules        []LockedModule  `toml:"modules"`
-	filePath       string
+	LockVersion    int           `toml:"lock_version"`
+	PluginsDigest  string        `toml:"plugins_digest"`
+	IngotVersion   string        `toml:"ingot_version"`
+	BuilderVersion string        `toml:"builder_version"`
+	Replacements   []Replacement `toml:"replacements"`
+	// MinimumGoVersion is the oldest Go toolchain that can build the generated
+	// root module: the Builder floor for generated code raised by every locked
+	// module's own go directive. It is a property of the module graph rather
+	// than of the machine, so it is persisted and stays target-neutral. Locks
+	// written before this fact was recorded leave it empty and fall back to the
+	// Builder's own Go version.
+	MinimumGoVersion string          `toml:"minimum_go_version,omitempty"`
+	Runtime          RuntimeLock     `toml:"runtime"`
+	Target           TargetLock      `toml:"-"`
+	Environment      EnvironmentLock `toml:"-"`
+	Build            BuildLock       `toml:"-"`
+	Plugins          []LockedPlugin  `toml:"plugins"`
+	Modules          []LockedModule  `toml:"modules"`
+	filePath         string
 }
 
 // RuntimeLock pins the fixed Runtime ABI of the Builder that produced this
@@ -65,10 +70,6 @@ type RuntimeLock struct {
 	ModulePath string `toml:"module_path" json:"module_path"`
 	Version    string `toml:"version" json:"version"`
 	Sum        string `toml:"sum,omitempty" json:"sum,omitempty"`
-}
-
-type ToolchainLock struct {
-	Version string `toml:"version"`
 }
 
 type TargetLock struct {
@@ -124,6 +125,11 @@ type LockedModule struct {
 	Version  string `toml:"version" json:"version"`
 	Sum      string `toml:"sum" json:"sum"`
 	GoModSum string `toml:"go_mod_sum" json:"go_mod_sum"`
+	// GoVersion records the module's own go directive (for example "1.24.2")
+	// so the generated language floor can be audited without re-reading the
+	// module cache, and so a new requirement can name the module that raised
+	// it. It is empty for locks resolved before it was recorded.
+	GoVersion string `toml:"go_version,omitempty" json:"go_version,omitempty"`
 }
 
 type Replacement struct {
@@ -252,7 +258,7 @@ func tomlTableArray(value any) ([]map[string]any, bool) {
 }
 
 func (l *Lock) Validate() error {
-	if l.Toolchain.Version == "" {
+	if l.MinimumGoVersion == "" {
 		l.applyBuildDefaults()
 	}
 	if l.LockVersion != 3 {
@@ -269,8 +275,9 @@ func (l *Lock) Validate() error {
 	if err := l.validateRuntime(); err != nil {
 		return err
 	}
-	if !toolchainPattern.MatchString(l.Toolchain.Version) {
-		return &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "toolchain.version", Actual: l.Toolchain.Version, Want: "go1.x.y"}
+	minimum, ok := normalizeGoVersion(l.MinimumGoVersion)
+	if !ok || minimum != l.MinimumGoVersion {
+		return &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "minimum_go_version", Actual: l.MinimumGoVersion, Want: "canonical go1.x.y"}
 	}
 	if !platformPattern.MatchString(l.Target.GOOS) || !platformPattern.MatchString(l.Target.GOARCH) || !supportedTargets[l.Target.GOOS+"/"+l.Target.GOARCH] {
 		return &Error{Code: "INGOT-LOCK-TARGET", Field: "target", Actual: l.Target.GOOS + "/" + l.Target.GOARCH}
@@ -309,12 +316,27 @@ func (l *Lock) Validate() error {
 	if err := l.validatePluginsAndGraph(); err != nil {
 		return err
 	}
+	// The recorded floor must cover every module that reports its own go
+	// directive. Replaced modules are not part of Modules, so this is a lower
+	// bound rather than the complete aggregate; Resolve records the exact
+	// maximum, including local replacements.
+	if requirement, recorded := requiredGoVersion(l.Modules); recorded && compareGoVersions(l.MinimumGoVersion, requirement.Version) < 0 {
+		return &Error{Code: "INGOT-LOCK-TOOLCHAIN", Field: "minimum_go_version", Actual: l.MinimumGoVersion, Want: "at least " + requirement.Version + " required by " + requirement.Source}
+	}
 	return nil
 }
 
 func (l *Lock) applyBuildDefaults() {
-	if l.Toolchain.Version == "" {
-		l.Toolchain.Version = runtime.Version()
+	if l.MinimumGoVersion == "" {
+		if requirement, recorded := requiredGoVersion(l.Modules); recorded {
+			l.MinimumGoVersion = requirement.Version
+		} else {
+			// Locks resolved before modules recorded their go directive carry no
+			// auditable graph fact. Keep the historical behavior for them: the
+			// Builder's own Go version is the only available upper bound, and
+			// the next resolve replaces it with the derived requirement.
+			l.MinimumGoVersion = runtime.Version()
+		}
 	}
 	if l.Target.GOOS == "" {
 		l.Target.GOOS = runtime.GOOS
@@ -450,6 +472,11 @@ func (l *Lock) validatePluginsAndGraph() error {
 		if err := module.Check(item.Path, item.Version); err != nil || module.CanonicalVersion(item.Version) != item.Version || !validModuleSum(item.Sum, true) || !validModuleSum(item.GoModSum, false) {
 			return &Error{Code: "INGOT-LOCK-MODULE", Field: fmt.Sprintf("modules[%d]", i), Actual: item.Path + "@" + item.Version, Err: err}
 		}
+		if item.GoVersion != "" {
+			if _, ok := normalizeGoVersion(item.GoVersion); !ok {
+				return &Error{Code: "INGOT-LOCK-MODULE", Field: fmt.Sprintf("modules[%d].go_version", i), Actual: item.GoVersion, Want: "a go.mod language version such as 1.24.2"}
+			}
+		}
 		modules[item.Path] = item
 		previousModule = key
 	}
@@ -578,7 +605,15 @@ type buildManifest struct {
 }
 
 type buildManifestToolchain struct {
+	// GoVersion is the Go release that compiled the Builder which produced this
+	// image. It is a Builder property, not the language version of the
+	// generated module.
 	GoVersion string `json:"go_version"`
+	// MinimumGoVersion is the language floor of the generated root module: the
+	// value written into its go directive. It changes whenever the selected
+	// module graph requires a newer Go, and it is part of ImageID because the
+	// go directive changes the generated source and the compile semantics.
+	MinimumGoVersion string `json:"minimum_go_version"`
 }
 type buildManifestTarget struct {
 	GOOS         string            `json:"goos"`
@@ -618,8 +653,8 @@ func (l *Lock) CanonicalBuildManifest() ([]byte, error) {
 		tuning[item.Key] = item.Value
 	}
 	manifest := buildManifest{
-		SchemaVersion: 4, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, Runtime: l.Runtime,
-		Toolchain:   buildManifestToolchain{GoVersion: l.Toolchain.Version},
+		SchemaVersion: 5, IngotVersion: l.IngotVersion, BuilderVersion: l.BuilderVersion, Runtime: l.Runtime,
+		Toolchain:   buildManifestToolchain{GoVersion: runtime.Version(), MinimumGoVersion: l.MinimumGoVersion},
 		Target:      buildManifestTarget{GOOS: l.Target.GOOS, GOARCH: l.Target.GOARCH, Tuning: tuning, GOExperiment: append([]string{}, l.Target.GOExperiment...), CGOEnabled: l.Target.CGOEnabled},
 		Environment: l.Environment,
 		// Empty build flags are normalized to non-nil slices so the canonical
@@ -667,7 +702,7 @@ func (l *Lock) RestoreRootModule(directory string, devTargets map[string]string)
 	}
 	var goMod strings.Builder
 	goMod.WriteString("module ingot.local/runtime-image\n\ngo ")
-	goMod.WriteString(strings.TrimPrefix(l.Toolchain.Version, "go"))
+	goMod.WriteString(strings.TrimPrefix(l.MinimumGoVersion, "go"))
 	goMod.WriteString("\n\nrequire (\n")
 	seen := map[string]bool{}
 	replacements := map[string]Replacement{}

@@ -557,6 +557,12 @@ flowchart TD
 
 ### 9.1 Go command 与 toolchain
 
+> **后续变更（当前实现）**：本节要求把探测到的 toolchain 精确版本写入 lock 并逐次比对。
+> 当前实现改为记录并校验**最低**版本要求：lock 保存 `minimum_go_version`（由模块图推导，
+> 与机器无关），构建时探测 `PATH` 上的 `go` 并要求不低于该值，允许更新的工具链。生成
+> `go.mod` 的 `go` 行同样取该最低要求，而不是 Builder 自身的编译版本。原因与迁移说明见
+> [ARCHITECTURE.md](ARCHITECTURE.md) 与 [UPGRADING.md](UPGRADING.md)。
+
 Builder 必须：
 
 1. 解析唯一 Go executable path；

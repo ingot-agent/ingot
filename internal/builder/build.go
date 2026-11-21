@@ -65,7 +65,7 @@ func (options BuildOptions) defaults() (BuildOptions, error) {
 // runtime's validation check, and atomically commits an immutable image. It
 // does not mutate tags or Runtime bindings.
 func Build(ctx context.Context, desired *DesiredPlugins, lock *Lock, options BuildOptions) (*BuildResult, error) {
-	if err := validateGeneratedRuntimeInputs(desired, lock); err != nil {
+	if err := validateGeneratedRuntimeInputs(ctx, desired, lock); err != nil {
 		return nil, err
 	}
 	options, err := options.defaults()

@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -101,7 +100,7 @@ func TestCollectionApplyResolvesAndCommitsPair(t *testing.T) {
 	home := &Home{Root: homeRoot}
 	loaded := testLoadedCollection("a", "b")
 	result, err := home.ApplyCollection(context.Background(), RecipeOptions{Use: recipe}, loaded, collection.PlanOptions{}, builder.ResolveOptions{
-		Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(homeRoot, "cache", "gomod"),
+		GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(homeRoot, "cache", "gomod"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +132,7 @@ func TestCollectionApplyResolvesAndCommitsPair(t *testing.T) {
 
 	reordered := testLoadedCollection("b", "a")
 	reorderResult, err := home.ApplyCollection(context.Background(), RecipeOptions{Use: recipe}, reordered, collection.PlanOptions{AcceptOrder: true}, builder.ResolveOptions{
-		Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(homeRoot, "cache", "gomod"),
+		GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(homeRoot, "cache", "gomod"),
 	})
 	if err != nil {
 		t.Fatal(err)

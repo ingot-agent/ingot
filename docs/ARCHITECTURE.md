@@ -92,10 +92,23 @@ and confirm no local replacements appear in the lock; an external `--home`
 alone does not isolate the current working directory.
 
 The ImageID hashes the canonical BuildManifest, including effective target,
-toolchain, build settings and graph inputs. ArtifactDigest hashes the resulting
-executable bytes. If the same ImageID already exists but rebuilding produces
-different bytes, Core reports a reproducibility error instead of overwriting
-it. Different toolchains/targets can legitimately create different ImageIDs.
+the generated module's Go language floor, build settings and graph inputs.
+ArtifactDigest hashes the resulting executable bytes. If the same ImageID
+already exists but rebuilding produces different bytes, Core reports a
+reproducibility error instead of overwriting it. Different targets can
+legitimately create different ImageIDs.
+
+The Go toolchain requirements of a build and of a Builder binary are separate
+facts:
+
+- The generated root module declares the language floor required by the locked
+  graph. A build accepts any release toolchain on `PATH` at least that new, so
+  the Go version that compiled the Core no longer pins the user's toolchain.
+- The Builder type-checks plugin sources in-process, so this Core binary's own
+  Go release must also be at least as new as the newest analyzed plugin. A
+  mismatch is reported as `INGOT-PACKAGES-ANALYZER-TOOLCHAIN` and requires a
+  Core built with a newer Go, not a different plugin selection.
+- The Core source itself still requires Go 1.24.2 or newer to compile.
 
 Static wiring does not mean the runtime contains no reflection at all. The
 current generated validation helpers use `reflect` to reject nil capabilities

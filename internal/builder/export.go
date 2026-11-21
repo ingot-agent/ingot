@@ -40,7 +40,7 @@ func (options ExportOptions) defaults() (ExportOptions, error) {
 // standalone Go module without compiling a binary, running the runtime check,
 // or creating an Image.
 func ExportRuntimeSource(ctx context.Context, desired *DesiredPlugins, lock *Lock, options ExportOptions) (*ExportResult, error) {
-	if err := validateGeneratedRuntimeInputs(desired, lock); err != nil {
+	if err := validateGeneratedRuntimeInputs(ctx, desired, lock); err != nil {
 		return nil, err
 	}
 	options, err := options.defaults()

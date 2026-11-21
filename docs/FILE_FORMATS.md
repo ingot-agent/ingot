@@ -134,17 +134,32 @@ continues to use local source. The selected version must be canonical and match
 the module path's major version. Remote plugins and the Runtime ABI retain
 their exact version constraints.
 
-Canonical BuildManifest v4 includes each replacement's selected `version` in
-the ImageID because it affects Go build info. Machine-specific source paths
-remain excluded. The lock and outer Image Manifest remain v3; existing locks
-can be read, and rebuilding them with the new Builder produces a new ImageID.
-Existing images continue to be verified against their stored build manifests.
+Canonical BuildManifest v5 records two independent Go facts for the generated
+module: `go_version` is the Go release that compiled the Builder which produced
+the image, and `minimum_go_version` is the language floor written into the
+generated `go.mod`. `minimum_go_version` is derived from the locked graph, so it
+is reproducible from the lock alone; `go_version` identifies the producing
+Builder, as `builder_version` does. Canonical BuildManifest v4 included each
+replacement's selected `version` in the ImageID because it affects Go build
+info. Machine-specific source paths remain excluded.
 
 Lock v3 is **target-neutral**. Persisted lock TOML does not contain `[target]`,
 `[toolchain]`, `[environment]` or `[build]` tables. Target-specific toolchain,
 environment and build choices belong to the build manifest and image identity.
 The in-memory Go `Lock` struct also carries build-time fields, but these are
 marked `toml:"-"`; that does not make them accepted lock-file fields.
+
+Two optional fields carry the language requirement, which is a property of the
+module graph rather than of the machine:
+
+| Field | Meaning |
+| --- | --- |
+| `minimum_go_version` | Oldest Go release that can build the generated root module, as `go1.x.y`. Derived by the Builder from the Builder floor for generated code and every selected module's `go` directive, including local replacements. It becomes the generated `go.mod` directive. |
+| `modules[].go_version` | The module's own `go` directive, kept for audit and diagnostics. Empty for locks resolved before this fact was recorded. |
+
+A build requires a Go toolchain on `PATH` at least as new as
+`minimum_go_version`; a newer release toolchain is accepted. A lock without
+either field keeps its previous meaning and uses the Builder's own Go version.
 
 See [lock.go](../internal/builder/lock.go), [lock tests](../internal/builder/lock_test.go),
 [build.go](../internal/builder/build.go) and [image types](../internal/image/types.go).

@@ -38,7 +38,6 @@ const (
 type ResolveOptions struct {
 	IngotVersion   string
 	BuilderVersion string
-	Toolchain      string
 	GOOS           string
 	GOARCH         string
 	GOExperiment   []string
@@ -57,9 +56,6 @@ func (options ResolveOptions) defaults() (ResolveOptions, error) {
 	}
 	if options.BuilderVersion == "" {
 		options.BuilderVersion = DefaultBuilderVersion
-	}
-	if options.Toolchain == "" {
-		options.Toolchain = runtime.Version()
 	}
 	if options.GOOS == "" {
 		options.GOOS = runtime.GOOS
@@ -98,15 +94,16 @@ func defaultTuning(goarch string) []TargetKey {
 }
 
 type resolvedModule struct {
-	Path     string
-	Version  string
-	Sum      string
-	GoModSum string
-	Dir      string
-	GoMod    string
-	Main     bool
-	Replace  *resolvedModule
-	Error    *struct{ Err string }
+	Path      string
+	Version   string
+	Sum       string
+	GoModSum  string
+	GoVersion string
+	Dir       string
+	GoMod     string
+	Main      bool
+	Replace   *resolvedModule
+	Error     *struct{ Err string }
 }
 
 type directSource struct {
@@ -184,7 +181,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	if runtimeReplacement != nil {
 		moduleReplacements[runtimeReplacement.modulePath] = *runtimeReplacement
 	}
-	if err := writeResolveRoot(staging, options, sources, nil, moduleReplacements); err != nil {
+	if err := writeResolveRoot(staging, sources, nil, moduleReplacements); err != nil {
 		return nil, err
 	}
 	environment := resolveEnvironment(options)
@@ -223,7 +220,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 			break
 		}
 		selected = next
-		if err := writeResolveRoot(staging, options, sources, selected, moduleReplacements); err != nil {
+		if err := writeResolveRoot(staging, sources, selected, moduleReplacements); err != nil {
 			return nil, err
 		}
 		if pass == resolveGraphPasses-1 {
@@ -338,7 +335,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 		if goModSum == "" {
 			return nil, &Error{Code: "INGOT-RESOLVE-GOMOD-SUM", Plugin: selectedModule.Path, Actual: selectedModule.Version}
 		}
-		modules = append(modules, LockedModule{Path: selectedModule.Path, Version: selectedModule.Version, Sum: sum, GoModSum: goModSum})
+		modules = append(modules, LockedModule{Path: selectedModule.Path, Version: selectedModule.Version, Sum: sum, GoModSum: goModSum, GoVersion: selectedModule.GoVersion})
 	}
 	sort.Slice(modules, func(i, j int) bool {
 		if modules[i].Path != modules[j].Path {
@@ -374,7 +371,7 @@ func Resolve(ctx context.Context, desired *DesiredPlugins, options ResolveOption
 	}
 	lock := &Lock{
 		LockVersion: 3, PluginsDigest: desiredDigest, IngotVersion: options.IngotVersion, BuilderVersion: options.BuilderVersion,
-		Replacements: replacements, Runtime: runtimeLock, Toolchain: ToolchainLock{Version: options.Toolchain},
+		Replacements: replacements, MinimumGoVersion: minimumGoVersion(selected).Version, Runtime: runtimeLock,
 		Target:      TargetLock{GOOS: options.GOOS, GOARCH: options.GOARCH, CGOEnabled: false, GOExperiment: options.GOExperiment, Tuning: options.Tuning},
 		Environment: EnvironmentLock{GOWORK: "off", GOTOOLCHAIN: "local", GOPROXY: "off", Mod: "readonly"},
 		Build:       BuildLock{Trimpath: true, BuildVCS: false, Tags: options.Tags, LDFlags: options.LDFlags, GCFlags: options.GCFlags, ASMFlags: options.ASMFlags},
@@ -450,10 +447,34 @@ func selectedGraphEqual(previous, next []resolvedModule) bool {
 	return true
 }
 
-func writeResolveRoot(directory string, options ResolveOptions, sources []directSource, transitive []resolvedModule, moduleReplacements map[string]moduleReplacement) error {
+// minimumGoVersion returns the language floor of the whole selected graph. It
+// includes local replacements, which never enter Lock.Modules but still
+// constrain the generated go directive.
+func minimumGoVersion(selected []resolvedModule) goRequirement {
+	requirement := goRequirement{Version: MinimumGeneratedGoVersion}
+	for _, item := range selected {
+		if item.Main {
+			continue
+		}
+		version, ok := normalizeGoVersion(item.GoVersion)
+		if !ok {
+			continue
+		}
+		if compareGoVersions(version, requirement.Version) > 0 {
+			source := item.Path
+			if item.Version != "" {
+				source += "@" + item.Version
+			}
+			requirement = goRequirement{Version: version, Source: source}
+		}
+	}
+	return requirement
+}
+
+func writeResolveRoot(directory string, sources []directSource, transitive []resolvedModule, moduleReplacements map[string]moduleReplacement) error {
 	var content strings.Builder
 	content.WriteString("module ingot.local/runtime-image\n\ngo ")
-	content.WriteString(strings.TrimPrefix(options.Toolchain, "go"))
+	content.WriteString(strings.TrimPrefix(minimumGoVersion(transitive).Version, "go"))
 	content.WriteString("\n\nrequire (\n")
 	seen := map[string]bool{}
 	selectedVersions := map[string]string{}

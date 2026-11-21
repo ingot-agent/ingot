@@ -28,8 +28,11 @@ func TestLockSerializationIsTargetNeutral(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Target.GOOS != runtime.GOOS || parsed.Target.GOARCH != runtime.GOARCH || parsed.Toolchain.Version != runtime.Version() {
-		t.Fatalf("ephemeral build facts = %#v %#v", parsed.Target, parsed.Toolchain)
+	if parsed.Target.GOOS != runtime.GOOS || parsed.Target.GOARCH != runtime.GOARCH || parsed.MinimumGoVersion != "go1.24.0" {
+		t.Fatalf("ephemeral build facts = %#v %#v", parsed.Target, parsed.MinimumGoVersion)
+	}
+	if parsed.Modules[0].GoVersion != "1.24.0" || parsed.Modules[1].GoVersion != "1.21.0" {
+		t.Fatalf("module language versions did not round-trip: %#v", parsed.Modules)
 	}
 }
 

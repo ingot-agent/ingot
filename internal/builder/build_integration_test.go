@@ -54,8 +54,7 @@ version = "v1.0.0"
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
 	lock, err := Resolve(context.Background(), desired, ResolveOptions{
-		Toolchain: runtime.Version(),
-		GOPROXY:   "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache,
+		GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +81,19 @@ version = "v1.0.0"
 		if _, err := os.Stat(filepath.Join(exportDirectory, name)); err != nil {
 			t.Fatalf("exported %s: %v", name, err)
 		}
+	}
+	// The generated module's language floor comes from the selected graph, not
+	// from the Go version that compiled this Builder. Both the local ingot-abi
+	// replacement and the test plugin declare go 1.24.0.
+	if lock.MinimumGoVersion != "go1.24.0" {
+		t.Fatalf("resolved minimum go version = %q, want the graph's go1.24.0", lock.MinimumGoVersion)
+	}
+	exportedGoMod, err := os.ReadFile(filepath.Join(exportDirectory, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(exportedGoMod), "\ngo 1.24.0\n") {
+		t.Fatalf("generated go directive is not the graph language floor:\n%s", exportedGoMod)
 	}
 	if _, err := os.Stat(filepath.Join(exportDirectory, layout.RuntimeExecutableName(runtime.GOOS))); !os.IsNotExist(err) {
 		t.Fatalf("source export produced a runtime binary: %v", err)
@@ -160,7 +172,7 @@ func TestResolveAndBuildLocalDevVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +307,7 @@ path=%q
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
 	t.Setenv("GOSUMDB", "off")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +379,7 @@ version="v1.0.0"
 		t.Fatal(err)
 	}
 	t.Setenv("GOSUMDB", "off")
-	_, err = Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(home, "cache", "gomod")})
+	_, err = Resolve(context.Background(), desired, ResolveOptions{GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: filepath.Join(home, "cache", "gomod")})
 	if err == nil || !strings.Contains(err.Error(), "INGOT-RESOLVE-RUNTIME-VERSION") {
 		t.Fatalf("MVS upgraded ingot ABI error = %v", err)
 	}
@@ -414,7 +426,7 @@ func TestResolveMaterializesPrunedTransitiveGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	moduleCache := filepath.Join(home, "cache", "gomod")
-	lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+	lock, err := Resolve(context.Background(), desired, ResolveOptions{GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,7 +479,7 @@ func TestDevSourceLocationDoesNotAffectArtifact(t *testing.T) {
 			t.Fatal(err)
 		}
 		moduleCache := filepath.Join(home, "cache", "gomod")
-		lock, err := Resolve(context.Background(), desired, ResolveOptions{Toolchain: runtime.Version(), GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
+		lock, err := Resolve(context.Background(), desired, ResolveOptions{GOPROXY: "file://" + filepath.ToSlash(proxy), GOMODCACHE: moduleCache})
 		if err != nil {
 			t.Fatal(err)
 		}
