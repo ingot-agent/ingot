@@ -110,12 +110,13 @@ facts:
   rather than the release that compiled the Core. A plugin may therefore adopt
   a newer Go without waiting for a Core release.
 - The exported type data must be readable by this Core's
-  `golang.org/x/tools/go/gcexportdata`, which follows Go's policy of supporting
-  the last two releases plus tip. Export data produced by a newer compiler than
+  `golang.org/x/tools/go/gcexportdata`, whose supported bitstream version is
+  selected by the pinned x/tools release. Building the Core with a newer Go does
+  not widen it; the dependency does. Export data produced by a newer compiler than
   the reader understands is reported as `INGOT-PACKAGES-EXPORT`; unlike a
   language-version mismatch, that is fixed by upgrading the Core, and it changes
   on a far slower cadence than plugins adopting new Go releases.
-- The Core source itself still requires Go 1.24.2 or newer to compile.
+- The Core source itself still requires Go 1.26.0 or newer to compile.
 
 Static wiring does not mean the runtime contains no reflection at all. The
 current generated validation helpers use `reflect` to reject nil capabilities

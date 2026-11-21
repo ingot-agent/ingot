@@ -44,7 +44,7 @@ PowerShell 对应 `-Prefix`、`-BinaryDir`、`-DestDir`、`-Version` 与 `-Force
 已有预发布 Home 会被原样保留；已移除的 Home、Profile、配置与 Runtime 安装参数
 不会被自动替代。
 
-若要从本仓库 checkout 构建 Core，则需要 Go 1.24.2 或更高版本：
+若要从本仓库 checkout 构建 Core，则需要 Go 1.26.0 或更高版本：
 
 ```sh
 GOWORK=off go build -o ingot ./cmd/ingot

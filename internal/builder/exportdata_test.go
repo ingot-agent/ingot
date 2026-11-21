@@ -49,5 +49,4 @@ func TestReadExportDataRejectsFutureFormat(t *testing.T) {
 	if err == nil {
 		t.Fatal("future export data version was accepted")
 	}
-	fmt.Println("error:", err)
 }

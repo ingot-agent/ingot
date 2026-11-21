@@ -12,6 +12,14 @@ on:
 permissions:
   contents: read
 
+# Single source of truth for the toolchain that produces released binaries.
+# Bump this deliberately: released executables carry this compiler, its
+# standard library and its security fixes. `.github/workflows/test.yml` names
+# the same version so a release-only toolchain regression is caught before a
+# tag is pushed.
+env:
+  RELEASE_GO_VERSION: "1.27.4"
+
 jobs:
   validate:
     name: Validate release
@@ -32,7 +40,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.RELEASE_GO_VERSION }}
           cache-dependency-path: go.sum
 
       - name: Validate tag and source version
@@ -105,7 +113,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.RELEASE_GO_VERSION }}
           cache-dependency-path: go.sum
 
       - name: Build core
@@ -147,7 +155,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.RELEASE_GO_VERSION }}
           cache-dependency-path: go.sum
 
       - name: Download platform binaries

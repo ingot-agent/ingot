@@ -263,6 +263,14 @@ toolchain on `PATH` satisfies the graph. The one remaining ceiling is the
 export-data format, which follows Go's "last two releases plus tip" policy and
 is reported as `INGOT-PACKAGES-EXPORT`; upgrading the Core fixes that.
 
+Building the Core from source now requires Go 1.26.0 or newer, up from 1.24.2,
+because the pinned `golang.org/x/tools` needs it. Released binaries are built
+with Go 1.27.4. Pulling that dependency forward is what lets a released Core
+decode export data written by Go 1.27 toolchains; without it, projects whose
+plugins are built by Go 1.27 fail with `INGOT-PACKAGES-EXPORT` even though the
+toolchain satisfies the graph. Users who only install a released binary are not
+affected by either change.
+
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated
 and account for external services/ports: a copied API key or workspace path can
