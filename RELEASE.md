@@ -171,6 +171,19 @@ git tag -a vX.Y.Z <reviewed-commit> -m "Release vX.Y.Z"
 git push origin refs/tags/vX.Y.Z
 ```
 
+Confirm the source development line at the reviewed commit before tagging. The
+workflow rejects a mismatch between this value and the tag, but it can only do so
+after the tag exists:
+
+```sh
+git show <reviewed-commit>:internal/buildinfo/buildinfo.go | grep -m1 'CoreVersion = '
+# Must print X.Y.Z-dev for tag vX.Y.Z.
+```
+
+Push the version-advance commit through review and merge it before tagging. The
+development line is not bumped automatically by a release, so a tag cut
+immediately after an unrelated merge will fail validation.
+
 [`release.yml`](.github/workflows/release.yml) then performs:
 
 | Job | Actual checks and outputs |
