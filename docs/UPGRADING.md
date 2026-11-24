@@ -271,6 +271,19 @@ plugins are built by Go 1.27 fail with `INGOT-PACKAGES-EXPORT` even though the
 toolchain satisfies the graph. Users who only install a released binary are not
 affected by either change.
 
+Building the Core from source now requires Go 1.27.0 or newer, up from 1.26.0.
+Only the `go` directive changed; no `toolchain` directive is recorded, so a
+contributor's toolchain selection stays under their own `GOTOOLCHAIN` setting
+and the CI unit job keeps testing the floor `go.mod` declares. Released binaries
+are still built with Go 1.27.4. This is not a user-facing requirement change: an
+Image build still accepts any release toolchain on `PATH` at least as new as the
+locked graph requires, and a generated module's `go` directive still comes from
+`minimum_go_version` rather than from the Core's own floor. Under the default
+`GOTOOLCHAIN=auto`, a contributor whose base toolchain is older selects Go
+1.27.0, the declared floor; choose the release toolchain explicitly with
+`go env -w GOTOOLCHAIN=go1.27.4` to compile with the same release published
+binaries use.
+
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated
 and account for external services/ports: a copied API key or workspace path can

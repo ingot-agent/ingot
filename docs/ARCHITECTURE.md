@@ -116,7 +116,7 @@ facts:
   the reader understands is reported as `INGOT-PACKAGES-EXPORT`; unlike a
   language-version mismatch, that is fixed by upgrading the Core, and it changes
   on a far slower cadence than plugins adopting new Go releases.
-- The Core source itself still requires Go 1.26.0 or newer to compile.
+- The Core source itself still requires Go 1.27.0 or newer to compile.
 
 Static wiring does not mean the runtime contains no reflection at all. The
 current generated validation helpers use `reflect` to reject nil capabilities

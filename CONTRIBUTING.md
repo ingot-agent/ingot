@@ -43,7 +43,7 @@ case for the plugin that first needs it.
 | Replaceable agent/domain capability contracts | [sdk](https://github.com/ingot-agent/sdk) |
 | Fixed Component constructor and host ABI contracts | [ingot-abi](https://github.com/ingot-agent/ingot-abi) |
 
-Use Go 1.26.0 or newer as declared by [`go.mod`](./go.mod), Git, and a C compiler
+Use Go 1.27.0 or newer as declared by [`go.mod`](./go.mod), Git, and a C compiler
 for race-enabled tests. Core builds do not require Node or a checkout of the
 plugins repository. Released-profile smoke tests need network/module-cache
 access to the exact plugin versions shipped in `internal/profiles/`.

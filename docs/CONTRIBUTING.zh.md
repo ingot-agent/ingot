@@ -31,7 +31,7 @@
 | 可替换的 Agent/领域 Capability Contract | [sdk](https://github.com/ingot-agent/sdk) |
 | 固定的 Component 构造函数与宿主 ABI Contract | [ingot-abi](https://github.com/ingot-agent/ingot-abi) |
 
-使用 [`go.mod`](../go.mod) 声明的 Go 1.26.0 或更高版本、Git，以及运行 race 测试所需的
+使用 [`go.mod`](../go.mod) 声明的 Go 1.27.0 或更高版本、Git，以及运行 race 测试所需的
 C 编译器。构建 Core 不需要 Node 或 plugins 仓库 checkout。已发布 Profile 的 smoke
 测试需要通过网络/模块缓存获取 `internal/profiles/` 固定的精确插件版本。
 

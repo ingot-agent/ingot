@@ -69,7 +69,7 @@ Remove-Item $installer
 ```
 
 然后初始化并构建 Agent 组合。即使 Core 来自 Release，本地执行 `ingot build`
-仍需要在 `PATH` 中提供 Go。Core 源码要求 Go 1.26.0 或更高版本；构建镜像则接受
+仍需要在 `PATH` 中提供 Go。Core 源码要求 Go 1.27.0 或更高版本；构建镜像则接受
 不低于锁定模块图要求的任意 Go release 工具链。构建要求与平台支持详见[使用说明](./USAGE.zh.md)。
 
 ```sh
