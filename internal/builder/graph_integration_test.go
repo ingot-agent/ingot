@@ -22,18 +22,8 @@ func TestLoadGraphStableManyOrderAndGenerate(t *testing.T) {
 	}
 	t.Parallel()
 	root := t.TempDir()
-	_, sourceFile, _, _ := runtime.Caller(0)
-	sdkRoot := os.Getenv("INGOT_SDK_ROOT")
-	if sdkRoot == "" {
-		sdkRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "sdk"))
-	}
-	ingotABIRoot := os.Getenv("INGOT_ABI_ROOT")
-	if ingotABIRoot == "" {
-		ingotABIRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "ingot-abi"))
-	}
-	if _, err := os.Stat(filepath.Join(ingotABIRoot, "go.mod")); err != nil {
-		t.Skip("local ingot ABI checkout not found; set INGOT_ABI_ROOT to run this test")
-	}
+	sdkRoot, ingotABIRoot := localContractRoots(t)
+	languageVersion := fixtureGoVersion(t, sdkRoot, ingotABIRoot)
 	providerA := filepath.Join(root, "provider-a")
 	providerB := filepath.Join(root, "provider-b")
 	consumer := filepath.Join(root, "consumer")
@@ -42,13 +32,13 @@ func TestLoadGraphStableManyOrderAndGenerate(t *testing.T) {
 	writeConsumerFixture(t, consumer)
 	rootGoMod := `module ingot.local/runtime-image
 
-go 1.24.0
+go ` + languageVersion + `
 
 require (
 	example.com/consumer v0.0.0
 	example.com/provider-a v0.0.0
 	example.com/provider-b v0.0.0
-	github.com/ingot-agent/ingot-abi v0.1.0
+	github.com/ingot-agent/ingot-abi ` + IngotABIVersion + `
 	github.com/ingot-agent/sdk v0.1.6
 	github.com/pelletier/go-toml/v2 v2.2.4
 )
@@ -310,16 +300,10 @@ func TestComponentCannotWrapOrExportHostType(t *testing.T) {
 func loadInvalidHostComponent(t *testing.T, dependencies, exports string) error {
 	t.Helper()
 	root := t.TempDir()
-	_, sourceFile, _, _ := runtime.Caller(0)
-	ingotABIRoot := os.Getenv("INGOT_ABI_ROOT")
-	if ingotABIRoot == "" {
-		ingotABIRoot = filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", "..", "ingot-abi"))
-	}
-	if _, err := os.Stat(filepath.Join(ingotABIRoot, "go.mod")); err != nil {
-		t.Skip("local ingot ABI checkout not found; set INGOT_ABI_ROOT to run this test")
-	}
+	sdkRoot, ingotABIRoot := localContractRoots(t)
+	languageVersion := fixtureGoVersion(t, sdkRoot, ingotABIRoot)
 	hostProvider := filepath.Join(root, "host-provider")
-	writeTestFile(t, filepath.Join(hostProvider, "go.mod"), "module example.com/host-provider\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/ingot-abi v0.1.0\n")
+	writeTestFile(t, filepath.Join(hostProvider, "go.mod"), "module example.com/host-provider\n\ngo "+languageVersion+"\n\nrequire github.com/ingot-agent/ingot-abi "+IngotABIVersion+"\n")
 	writeTestFile(t, filepath.Join(hostProvider, "component.go"), `package hostprovider
 
 import (
@@ -340,11 +324,11 @@ func New(context.Context, Dependencies) (Exports, ingotabi.Cleanup, error) {
 `)
 	writeTestFile(t, filepath.Join(root, "go.mod"), `module ingot.local/runtime-image
 
-go 1.24.0
+go `+languageVersion+`
 
 require (
 	example.com/host-provider v0.0.0
-	github.com/ingot-agent/ingot-abi v0.1.0
+	github.com/ingot-agent/ingot-abi `+IngotABIVersion+`
 	github.com/pelletier/go-toml/v2 v2.2.4
 )
 
@@ -363,9 +347,58 @@ replace github.com/ingot-agent/ingot-abi => `+filepath.ToSlash(ingotABIRoot)+"\n
 	return err
 }
 
+// localContractRoots resolves the sibling sdk and ingot-abi checkouts that the
+// graph fixtures replace into. Release-only checkouts skip instead.
+func localContractRoots(t *testing.T) (string, string) {
+	t.Helper()
+	_, sourceFile, _, _ := runtime.Caller(0)
+	repositoryRoot := filepath.Clean(filepath.Join(filepath.Dir(sourceFile), "..", "..", ".."))
+	sdkRoot := os.Getenv("INGOT_SDK_ROOT")
+	if sdkRoot == "" {
+		sdkRoot = filepath.Join(repositoryRoot, "sdk")
+	}
+	ingotABIRoot := os.Getenv("INGOT_ABI_ROOT")
+	if ingotABIRoot == "" {
+		ingotABIRoot = filepath.Join(repositoryRoot, "ingot-abi")
+	}
+	if _, err := os.Stat(filepath.Join(ingotABIRoot, "go.mod")); err != nil {
+		t.Skip("local ingot ABI checkout not found; set INGOT_ABI_ROOT to run this test")
+	}
+	return sdkRoot, ingotABIRoot
+}
+
+// fixtureGoVersion returns the highest go directive among the local checkouts a
+// fixture replaces, so a fixture never declares a language version older than a
+// module it depends on. Go rejects that with "updates to go.mod needed" under
+// the -mod=readonly environment the Builder uses, so deriving the value keeps
+// these tests working as the contract modules adopt newer Go releases.
+func fixtureGoVersion(t *testing.T, roots ...string) string {
+	t.Helper()
+	minor, patch := 0, 0
+	for _, root := range roots {
+		data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+		if err != nil {
+			t.Skipf("local checkout %s not found: %v", root, err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "go ") {
+				continue
+			}
+			declaredMinor, declaredPatch, ok := parseGoVersion(strings.TrimPrefix(line, "go "))
+			if ok && (declaredMinor > minor || (declaredMinor == minor && declaredPatch > patch)) {
+				minor, patch = declaredMinor, declaredPatch
+			}
+			break
+		}
+	}
+	return fmt.Sprintf("1.%d.%d", minor, patch)
+}
+
 func writeProviderFixture(t *testing.T, root, modulePath, packageName string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo 1.24.0\n\nrequire github.com/ingot-agent/ingot-abi v0.1.0\n")
+	sdkRoot, ingotABIRoot := localContractRoots(t)
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module "+modulePath+"\n\ngo "+fixtureGoVersion(t, sdkRoot, ingotABIRoot)+"\n\nrequire github.com/ingot-agent/ingot-abi "+IngotABIVersion+"\n")
 	writeTestFile(t, filepath.Join(root, "component.go"), `package `+packageName+`
 
 import (
@@ -412,7 +445,8 @@ func New(_ context.Context, deps Dependencies) (Exports, ingotabi.Cleanup, error
 
 func writeConsumerFixture(t *testing.T, root string) {
 	t.Helper()
-	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/consumer\n\ngo 1.24.0\n\nrequire (\n\tgithub.com/ingot-agent/ingot-abi v0.1.0\n\tgithub.com/ingot-agent/sdk v0.1.6\n)\n")
+	sdkRoot, ingotABIRoot := localContractRoots(t)
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module example.com/consumer\n\ngo "+fixtureGoVersion(t, sdkRoot, ingotABIRoot)+"\n\nrequire (\n\tgithub.com/ingot-agent/ingot-abi "+IngotABIVersion+"\n\tgithub.com/ingot-agent/sdk v0.1.6\n)\n")
 	writeTestFile(t, filepath.Join(root, "component.go"), `package consumer
 
 import (

@@ -127,19 +127,19 @@ ingot up -d -- web   # then open http://127.0.0.1:7316/
 ```
 
 Open [http://127.0.0.1:7316/](http://127.0.0.1:7316/). For the shipped plugin
-`v0.1.0` profile, select the browser Operation `model.openai-compatible.config`
-in group `configuration` and add one initial provider with its endpoint, API
-key, and model IDs. Run `ingot restart default`, refresh the browser, then use
-`model.runtime.config` in the same group to set the default provider and model.
-Restart once more after saving changed defaults. These are browser Operations;
-the restarts are Core CLI commands. Follow each Operation's `restart_required`
-result; configuration changes need no Image rebuild. See the
+`v0.2.0` profile, select the browser Operation `/model-openai-compatible config`
+in group `model-openai-compatible` and add one initial provider with its
+endpoint, API key, and model IDs. Then use `/model-runtime config` in group
+`model-runtime` to set the default provider and model. Provider and default
+changes can apply live in these modules, so follow each Operation's
+`restart_required` result and run `ingot restart default` only when it asks for
+one. These are browser Operations; the restarts are Core CLI commands.
+Configuration changes need no Image rebuild. See the
 [version-specific setup notes](./docs/USAGE.md#configure-the-browser-agent)
 before configuring multiple providers.
 
-The plugins repository's `main` docs describe newer source behavior and command
-names (`/model-openai-compatible config`, `/model-runtime config`), which can
-differ from the exact modules selected by this Core's profiles.
+The plugins repository's `main` docs describe plugin source that may be newer
+than the exact modules selected by this Core's profiles.
 
 The browser workspace starts before a provider is configured. Its frontend is
 embedded in the Image, so running it needs neither Node nor a separate web

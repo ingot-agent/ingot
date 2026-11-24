@@ -196,7 +196,7 @@ release notes. From the project directory:
 
 ```sh
 # Replace both the module and version with the intended released dependency.
-ingot plugin update github.com/ingot-agent/plugins/tool-shell@v0.1.0
+ingot plugin update github.com/ingot-agent/plugins/tool-shell@v0.2.0
 git diff -- plugins.toml plugins.lock
 ingot project show
 ingot build default --locked
@@ -283,6 +283,28 @@ locked graph requires, and a generated module's `go` directive still comes from
 1.27.0, the declared floor; choose the release toolchain explicitly with
 `go env -w GOTOOLCHAIN=go1.27.4` to compile with the same release published
 binaries use.
+
+The shipped `default` and `minimal` profiles now select plugin `v0.2.0` modules
+(the seven modules released for the first time use `v0.1.0`), and the Builder
+pins ABI `v0.1.1`. Those plugin releases declare Go 1.26.0, and a composition
+inherits the highest `go` directive in its locked graph, so a project built from
+the updated profiles requires a Go 1.26.0 or newer toolchain on `PATH`.
+
+This is a real change for Image builds, not only for building the Core. The
+Builder runs with `GOTOOLCHAIN=local` and never downloads a toolchain, so on a
+machine whose Go is older than 1.26.0 the build stops with:
+
+```text
+go: go.mod requires go >= 1.26.0 (running go 1.24.x; GOTOOLCHAIN=local)
+```
+
+Install Go 1.26.0 or newer as the `go` on `PATH`. Setting `GOTOOLCHAIN` in
+the surrounding environment does not help: the Builder replaces that variable
+with `local` for every build command it runs, so only the toolchain it finds on
+`PATH` counts. Existing Images and Runtimes keep working: the requirement
+applies when a Runtime is built, not when it runs. Locks produced before this
+change keep their recorded `minimum_go_version` until the next
+`ingot project resolve`.
 
 Before production startup, use a separate Home/Runtime with a **copy** of state
 to test migrations and startup where practical. Keep its workspaces isolated

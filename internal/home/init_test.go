@@ -46,7 +46,7 @@ func TestInitWritesSchemaCatalogAndManagedProfileRecipe(t *testing.T) {
 		t.Fatalf("plugins = %d", len(desired.Plugins))
 	}
 	for _, plugin := range desired.Plugins {
-		if plugin.Path != "" || plugin.Version != "v0.1.0" {
+		if plugin.Path != "" || plugin.Version != "v0.2.0" {
 			t.Fatalf("plugin source = %#v, want exact released module", plugin)
 		}
 		if !strings.HasPrefix(plugin.Module, "github.com/ingot-agent/plugins/") {

@@ -150,7 +150,7 @@ pre-release `current`, top-level `state`, or old Image manifest layouts.
 The profile definitions shipped with this checkout are the authority for the
 initial recipe: [`default.toml`](../internal/profiles/default.toml) and
 [`minimal.toml`](../internal/profiles/minimal.toml). Both pin every selected
-plugin to `v0.1.0`; a newer Core release can ship different exact selections.
+plugin to `v0.2.0`; a newer Core release can ship different exact selections.
 
 | Profile | Selected plugins |
 | --- | --- |
@@ -314,7 +314,7 @@ After `ingot up -d -- web`, open
 is an expected initial state; the browser can start, but model requests require
 a configured provider and model.
 
-The following steps target the exact plugin `v0.1.0` modules selected by the
+The following steps target the exact plugin `v0.2.0` modules selected by the
 checked-in profiles. Their browser Operation names are under group
 `configuration`; select them from the browser's Operation picker.
 
@@ -344,11 +344,12 @@ Follow the Operation's own `restart_required` result. This configuration result
 is separate from Core `runtime show`'s binding/generation `restart_required`:
 Core does not inspect plugin configuration changes.
 
-Newer plugin source on `main` uses `/model-openai-compatible config`,
-`/model-runtime config`, and `/app-webui config`, and its provider/default
-configuration can apply live. Those names and hot-update behavior must not be
-assumed for the profile's published `v0.1.0` modules. Read plugin docs and
-changelogs at the module versions in your recipe/lock.
+The profile's `v0.2.0` modules also expose `/model-openai-compatible config`,
+`/model-runtime config`, and `/app-webui config`, with a stable plugin Group and
+a local operation Name. Provider and default changes there can apply live. Read
+each Operation's own `restart_required` result instead of assuming either
+behavior, and check plugin docs and changelogs at the module versions in your
+recipe/lock.
 
 For direct file editing, stop the Runtime first and follow the relevant
 [plugin guide](https://github.com/ingot-agent/plugins/tree/main/docs), then
@@ -443,7 +444,7 @@ name = "Coding Essentials"
 
 [[plugins]]
 module = "github.com/ingot-agent/plugins/tool-shell"
-version = "v0.1.0"
+version = "v0.2.0"
 ```
 
 ```text
