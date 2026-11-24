@@ -49,7 +49,7 @@ Unix options are `--prefix`, `--bindir`, `--destdir`, `--version`, and
 untouched; the removed Home, profile, configuration, and Runtime installer
 flags have no automatic replacement.
 
-To build the Core from a checkout of this repository, Go 1.26.0 or newer is required:
+To build the Core from a checkout of this repository, Go 1.27.0 or newer is required:
 
 ```sh
 GOWORK=off go build -o ingot ./cmd/ingot

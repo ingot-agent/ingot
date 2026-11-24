@@ -14,7 +14,7 @@ are in [docs/UPGRADING.md](docs/UPGRADING.md).
 | Builder identity | Same file, `DefaultBuilderVersion` | Builder identity entering locks and Image build inputs |
 | Fixed host ABI | Same file, `IngotABIModulePath` / `IngotABIVersion` | Exact ABI module version; a Go MVS upgrade away from it is rejected |
 | Shipped compositions | [`internal/profiles/default.toml`](internal/profiles/default.toml), [`minimal.toml`](internal/profiles/minimal.toml) | Ordered exact released plugin modules |
-| Core build toolchain | [`go.mod`](go.mod) for the floor, `RELEASE_GO_VERSION` in workflows for released binaries | Core declares Go 1.26.0 and releases are built with 1.27.4; plugin dependencies can require more for Image builds |
+| Core build toolchain | [`go.mod`](go.mod) for the floor, `RELEASE_GO_VERSION` in workflows for released binaries | Core declares Go 1.27.0 and releases are built with 1.27.4; plugin dependencies can require more for Image builds |
 | Export-data compatibility | `golang.org/x/tools` in [`go.mod`](go.mod) | The Builder decodes compiler export data, so a `RELEASE_GO_VERSION` that writes a newer bitstream than the pinned x/tools reads makes plugin builds fail with `INGOT-PACKAGES-EXPORT`. The release `validate` job runs the Core tests with that toolchain on `PATH`, so a mismatch fails before a tag is published |
 | Persistent formats | [FILE_FORMATS.md](docs/FILE_FORMATS.md), [UPGRADING.md](docs/UPGRADING.md) | Independent format versions and migration limitations |
 
