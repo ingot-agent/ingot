@@ -26,7 +26,7 @@ const (
 	// between Plugins and generated Runtime Images.
 	IngotABIModulePath = "github.com/ingot-agent/ingot-abi"
 	// IngotABIVersion is the exact Runtime ABI version pinned by this Builder.
-	IngotABIVersion = "v0.1.0"
+	IngotABIVersion = "v0.1.1"
 	// RuntimeSupportTOMLModule is the TOML decoder used by the generated
 	// runtime configuration support.
 	RuntimeSupportTOMLModule = "github.com/pelletier/go-toml/v2"

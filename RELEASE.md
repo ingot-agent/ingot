@@ -19,8 +19,8 @@ are in [docs/UPGRADING.md](docs/UPGRADING.md).
 | Persistent formats | [FILE_FORMATS.md](docs/FILE_FORMATS.md), [UPGRADING.md](docs/UPGRADING.md) | Independent format versions and migration limitations |
 
 At this source revision the Core development line is `0.3.3-dev`, composition
-protocol is `0.3.0`, Builder identity is `0.3.2`, ABI is `v0.1.0`, and both
-profiles select plugin `v0.1.0` modules. These are source facts, not a promise
+protocol is `0.3.0`, Builder identity is `0.3.2`, ABI is `v0.1.1`, and both
+profiles select plugin `v0.2.0` modules. These are source facts, not a promise
 that a same-numbered Core Release exists or that all those repositories are
 released together. Read these files at the intended release commit; do not copy
 this snapshot into a future release without rechecking it.
@@ -57,7 +57,7 @@ Before creating a release tag:
 4. Release affected plugins following the
    [plugins release procedure](https://github.com/ingot-agent/plugins/blob/main/RELEASE.md).
    Plugin modules use subdirectory-prefixed tags such as
-   `tool-shell/v0.1.0`; selecting `github.com/ingot-agent/plugins/tool-shell@v0.1.0`
+   `tool-shell/v0.2.0`; selecting `github.com/ingot-agent/plugins/tool-shell@v0.2.0`
    is distinct from a root repository tag. Confirm generated frontend assets
    are included by the plugin release process where applicable.
 5. Update the Core profile files to those actual module versions. Verify the
@@ -75,10 +75,10 @@ the candidate's real version set:
 
 ```sh
 git ls-remote --tags https://github.com/ingot-agent/ingot.git refs/tags/v0.3.2
-git ls-remote --tags https://github.com/ingot-agent/ingot-abi.git refs/tags/v0.1.0
-git ls-remote --tags https://github.com/ingot-agent/plugins.git refs/tags/tool-shell/v0.1.0
-GOWORK=off GOTOOLCHAIN=local go mod download -json github.com/ingot-agent/ingot-abi@v0.1.0
-GOWORK=off GOTOOLCHAIN=local go mod download -json github.com/ingot-agent/plugins/tool-shell@v0.1.0
+git ls-remote --tags https://github.com/ingot-agent/ingot-abi.git refs/tags/v0.1.1
+git ls-remote --tags https://github.com/ingot-agent/plugins.git refs/tags/tool-shell/v0.2.0
+GOWORK=off GOTOOLCHAIN=local go mod download -json github.com/ingot-agent/ingot-abi@v0.1.1
+GOWORK=off GOTOOLCHAIN=local go mod download -json github.com/ingot-agent/plugins/tool-shell@v0.2.0
 ```
 
 A tag's presence is not a compatibility test. The full composition smoke below

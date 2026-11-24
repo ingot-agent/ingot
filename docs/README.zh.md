@@ -83,16 +83,15 @@ ingot init .
 ingot up -d -- web
 ```
 
-打开 [http://127.0.0.1:7316/](http://127.0.0.1:7316/)。对于当前内置的插件 `v0.1.0`
-Profile，在浏览器 Operation 选择器的 `configuration` 分组中选择
-`model.openai-compatible.config`，先配置一个 Provider 的 endpoint、API key 与模型 ID。
-执行 `ingot restart default` 并刷新页面，再用同一分组的 `model.runtime.config` 设置默认
-Provider 和模型；保存修改后再次重启。配置项是浏览器 Operation，重启命令属于 Core CLI。
-请遵循 Operation 返回的 `restart_required`，配置修改无需重新构建 Image。多 Provider
-配置前请阅读[对应版本的设置说明](./USAGE.zh.md#配置浏览器-agent)。
+打开 [http://127.0.0.1:7316/](http://127.0.0.1:7316/)。对于当前内置的插件 `v0.2.0`
+Profile，在浏览器 Operation 选择器的 `model-openai-compatible` 分组中选择
+`/model-openai-compatible config`，先配置一个 Provider 的 endpoint、API key 与模型 ID；
+再用 `model-runtime` 分组的 `/model-runtime config` 设置默认 Provider 和模型。这些模块的
+Provider 与默认模型配置可以动态生效，请遵循各 Operation 返回的 `restart_required`，仅在它
+要求时才执行 `ingot restart default`。配置项是浏览器 Operation，重启命令属于 Core CLI；
+配置修改无需重新构建 Image。多 Provider 配置前请阅读[对应版本的设置说明](./USAGE.zh.md#配置浏览器-agent)。
 
-plugins 仓库 `main` 文档描述更新后的源码及命令名（`/model-openai-compatible config`、
-`/model-runtime config`），可能与本 Core Profile 精确选择的已发布模块不同。
+plugins 仓库 `main` 文档描述的插件源码可能新于本 Core Profile 精确选择的模块。
 
 浏览器工作区可以在尚未配置模型时启动。前端嵌入 Image，运行时无需 Node 或独立 Web
 服务器。当前面向可信的本机单用户场景。工作区选择、配置和应用行为详见

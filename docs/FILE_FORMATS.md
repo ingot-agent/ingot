@@ -35,7 +35,7 @@ the embedded default. `ingot setup` initializes managed Home; `ingot init`
 creates a project recipe and ensures Home exists. See
 [config.go](../internal/builder/config.go) and [config tests](../internal/builder/config_test.go).
 
-The Builder pins `github.com/ingot-agent/ingot-abi@v0.1.0`. Ordinary SDK/contract
+The Builder pins `github.com/ingot-agent/ingot-abi@v0.1.1`. Ordinary SDK/contract
 modules participate through plugin imports and Go type identity, without Core
 configuration. Development workspace overrides must remain development inputs;
 release checks use independently resolvable module versions.
@@ -47,7 +47,7 @@ plugins_version = 1
 
 [[plugins]]
 module = "github.com/ingot-agent/plugins/http-default"
-version = "v0.1.0"
+version = "v0.2.0"
 
 [[plugins]]
 module = "example.com/team/custom-plugin"
@@ -181,7 +181,7 @@ homepage = "https://example.com"
 
 [[plugins]]
 module = "github.com/ingot-agent/plugins/http-default"
-version = "v0.1.0"
+version = "v0.2.0"
 ```
 
 `id` follows Go module-path syntax; Collection and plugin versions are exact

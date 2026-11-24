@@ -336,17 +336,21 @@ func TestResolveRejectsMVSUpgradedIngotABI(t *testing.T) {
 	oldSDKSource := filepath.Join(t.TempDir(), "old-ingot-abi")
 	newSDKSource := filepath.Join(t.TempDir(), "new-ingot-abi")
 	pluginSource := filepath.Join(t.TempDir(), "plugin")
+	// The upgraded ABI must be strictly newer than the pinned one, whatever the
+	// pinned version currently is; hardcoding a literal silently stops testing
+	// an MVS upgrade as soon as the pin reaches that literal.
+	upgradedABI := nextABIVersion(t, IngotABIVersion)
 	writeTestIngotABIModule(t, oldSDKSource)
-	writeTestIngotABIModuleNamed(t, newSDKSource, "v0.1.1", "ingot-abi-new")
+	writeTestIngotABIModuleNamed(t, newSDKSource, upgradedABI, "ingot-abi-new")
 	writeModuleProxyVersion(t, proxy, IngotABIModulePath, IngotABIVersion, oldSDKSource)
-	writeModuleProxyVersion(t, proxy, IngotABIModulePath, "v0.1.1", newSDKSource)
+	writeModuleProxyVersion(t, proxy, IngotABIModulePath, upgradedABI, newSDKSource)
 	installTomlProxy(t, proxy)
 
 	writeTestFile(t, filepath.Join(pluginSource, "go.mod"), `module example.com/ingot-test-plugin
 
 go 1.24.0
 
-require github.com/ingot-agent/ingot-abi v0.1.1
+require github.com/ingot-agent/ingot-abi ` + upgradedABI + `
 `)
 	writeTestFile(t, filepath.Join(pluginSource, "ingot.plugin.toml"), `manifest_version = 1
 name = "test-plugin"
@@ -514,6 +518,18 @@ func makeModuleCacheRemovable(t *testing.T, home string) {
 			return nil
 		})
 	})
+}
+
+// nextABIVersion returns the patch release one above version, so a test that
+// simulates Go MVS selecting a newer ABI than the pinned one keeps doing so
+// after the pin moves.
+func nextABIVersion(t *testing.T, version string) string {
+	t.Helper()
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(version, "v%d.%d.%d", &major, &minor, &patch); err != nil {
+		t.Fatalf("parse ABI version %q: %v", version, err)
+	}
+	return fmt.Sprintf("v%d.%d.%d", major, minor, patch+1)
 }
 
 func writeTestIngotABIModule(t *testing.T, root string) {

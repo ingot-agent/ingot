@@ -14,7 +14,7 @@ func TestReleasedProfilesUseExactOfficialModules(t *testing.T) {
 		seenModules := map[string]bool{}
 		seenNames := map[string]bool{}
 		for _, plugin := range profile.Plugins {
-			if plugin.Version != "v0.1.0" {
+			if plugin.Version != "v0.2.0" {
 				t.Fatalf("profile %s plugin %s version = %s", name, plugin.Module, plugin.Version)
 			}
 			if seenModules[plugin.Module] {

@@ -128,7 +128,7 @@ ingot --home /path/to/home setup
 当前 checkout 的初始 Recipe 以
 [`default.toml`](../internal/profiles/default.toml) 和
 [`minimal.toml`](../internal/profiles/minimal.toml) 为准。两者的所有插件目前均固定到
-`v0.1.0`；后续 Core Release 可以提供不同的精确版本选择。
+`v0.2.0`；后续 Core Release 可以提供不同的精确版本选择。
 
 | Profile | 选中的插件 |
 | --- | --- |
@@ -276,7 +276,7 @@ binding，同时显示 `restart_required`；它不会在仍运行旧 Process 时
 [http://127.0.0.1:7316/](http://127.0.0.1:7316/)。模型尚未配置是正常初始状态：
 浏览器可以启动，但模型请求需要有效的 Provider 与模型。
 
-以下步骤对应当前 Profile 精确选择的插件 `v0.1.0`；其浏览器 Operation 位于
+以下步骤对应当前 Profile 精确选择的插件 `v0.2.0`；其浏览器 Operation 位于
 `configuration` 分组，请在 Operation 选择器中选择。
 
 1. 选择 `model.openai-compatible.config`，先添加**一个 Provider** 的名称、绝对
@@ -298,10 +298,11 @@ binding，同时显示 `restart_required`；它不会在仍运行旧 Process 时
 配置后也需要重启。遵循 Operation 自己返回的 `restart_required`；它与 Core
 `runtime show` 根据 binding/generation 输出的同名字段不同，Core 不检查插件配置变化。
 
-plugins 仓库 `main` 的更新源码使用 `/model-openai-compatible config`、
-`/model-runtime config`、`/app-webui config`，其中 Provider 和默认模型配置可以动态生效。
-不要将这些新命令名和热更新行为套用到当前 Profile 的已发布 `v0.1.0` 模块；插件文档和
-变更记录应与 recipe/lock 中的模块版本对应。
+当前 Profile 的 `v0.2.0` 模块同时提供 `/model-openai-compatible config`、
+`/model-runtime config`、`/app-webui config`（稳定插件 Group 加局部 operation Name），
+其中 Provider 和默认模型配置可以动态生效。请以各 Operation 自身返回的
+`restart_required` 为准，不要预设两种行为中的任一种；插件文档和变更记录应与
+recipe/lock 中的模块版本对应。
 
 若要手工编辑配置文件，先停止 Runtime，按照对应
 [插件指南](https://github.com/ingot-agent/plugins/tree/main/docs)编辑，再启动 Runtime。
@@ -382,7 +383,7 @@ name = "Coding Essentials"
 
 [[plugins]]
 module = "github.com/ingot-agent/plugins/tool-shell"
-version = "v0.1.0"
+version = "v0.2.0"
 ```
 
 ```text
